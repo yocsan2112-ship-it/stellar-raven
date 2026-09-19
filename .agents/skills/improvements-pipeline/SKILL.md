@@ -28,7 +28,7 @@ The terminal resolved transition is deletion from the active collection plus an 
 reused; choose the next numeric id from the maximum across both. Git history, the resolved receipt,
 and the upstream resolution comment preserve evidence without retaining stale finding files.
 
-Findings are for upstream service/data/content/spec gaps only. Own-repo fixes go to Solo todos.
+Findings are for upstream service/data/content/spec gaps only. Own-repo fixes go to `.agents/TODO.md`.
 
 GitHub state is not truth by itself. An upstream issue being closed or a PR being merged is
 evidence to inspect; a finding moves to `fixed-upstream` only after re-running the original
@@ -44,6 +44,8 @@ stranger can reproduce. Use the next id in the service prefix sequence:
 - `stellar-light-scout` -> `sls-NNN`
 - `stellar-docs` -> `sd-NNN`
 - `skills` -> `sk-NNN`
+- `workers-ai-provider` -> `wai-NNN`
+- `canonical-source` -> `cs-NNN`
 
 For a web-surface finding, classify the failing surface before choosing a collection or owner:
 
@@ -57,7 +59,10 @@ For a web-surface finding, classify the failing surface before choosing a collec
 - `canonical-source` — the defect belongs in the specification, implementation, product, or other
   authority that owns the fact, not in Docs or the marketing site.
 
-Keep these as routing categories, not speculative empty directories. Create a new service collection
+A `canonical-source` finding goes in `improvements/canonical-source/` when no service collection owns
+the source. Its intake rule is `mixed`: add a per-finding `repo` override in `intake.json` after
+verifying the owner. The other categories stay routing categories, not speculative empty directories.
+Create a new service collection
 only when the first verified finding has an identified owner, reproducible evidence, and a lifecycle
 that cannot be represented by an existing collection. Search absence alone is not a content defect:
 identify the canonical source, show why the selected surface undertakes to expose that truth, and
@@ -99,6 +104,9 @@ Before the write, read the rendered issue as an upstream maintainer: the title a
 must state the affected surface and concrete defect without eval IDs, internal workflow language, or
 a clipped transcript sentence. Put the smallest correction before optional context. Corpus/eval
 provenance belongs in compact evidence, not in the owner-facing ask.
+
+Read `references/upstream-writing-style.md` before drafting or filing upstream text. Use its
+ASD-STE100-inspired rules for owner-facing text. Preserve exact technical tokens.
 
 Before filing content/code drift, apply three cheap calibration checks:
 - distinguish the version where drift was observed from the version that introduced it; verify the
@@ -178,7 +186,7 @@ or when a user asks whether previous improvements were resolved.
      if a regression/recurrence is suspected.
    - also enumerate inbound `upstream-improvement-ready.yml` issues in `stellar-experimental/stellar-raven`;
      they are notification signals to verify, not proof of a fix.
-2. Build a deterministic state table in a Solo scratchpad:
+2. Build a deterministic state table in the round ledger:
 
 ```
 | finding | trigger evidence | upstream ref | ref state | PR checks/reviews | live re-check | action |
@@ -232,8 +240,8 @@ or when a user asks whether previous improvements were resolved.
      evidence, record why closure did not resolve it, and open a successor or follow-up ref
      only when the owner path is clear.
    - `superseded`: link the successor finding or upstream ref; do not stretch the old finding.
-   - `inconclusive`: do not change status; record the missing evidence and create a Solo todo or
-     timer for the next concrete check.
+   - `inconclusive`: do not change status; record the missing evidence and add a dated
+     `.agents/TODO.md` entry naming the next concrete check.
    - inbound handoff issue/PR: acknowledge with the live-recheck result, update the finding only
      when the evidence bar is met, and close the Raven notification after recording the resulting
      finding/status/ref. An evidence-only PR may append refs or reproduction evidence, but must not
@@ -279,12 +287,15 @@ npm run improvements:lint -- --live
 npm run improvements:probes
 ```
 
-Use Solo timers for a concrete future verification event instead of memory. Do not schedule a timer
-whose only outcome would be another reminder on an untouched issue. A timer body should include the
-finding ids, upstream refs, scratchpad id, and the exact re-check or maintainer signal to inspect.
-When an authorized filing or verification lane is blocked by an upstream capacity or rate limit,
-use a repeating 10-minute retry timer until the service recovers; cancel it immediately after a
-successful probe. A longer watchdog deadline is not the retry cadence.
+Record a concrete future verification event as a dated `.agents/TODO.md` entry instead of relying
+on memory. Do not record one whose only outcome would be another reminder on an untouched issue.
+The entry should name the finding ids, the upstream refs, the round ledger it came from, and the
+exact re-check or maintainer signal to inspect.
+
+Nothing fires these entries. There is no scheduler: the queue is read at the start of the next
+round, so write each entry so a stranger can act on it cold. When an authorized filing or
+verification lane is blocked by an upstream capacity or rate limit, retry inside the current
+session rather than deferring — a blocked lane that is written down and left is a lane that stops.
 
 ## Probes and recurrences
 
@@ -307,7 +318,7 @@ after finding/frontmatter/status changes.
 `npm run improvements:lint` is the gate. It fails when finding frontmatter is malformed, status/service
 values are invalid, declined disposition/evidence is missing, resolved-ledger receipts are malformed
 or collide with active IDs, evidence or recurrence fields are missing, the generated index bytes differ from
-the committed file, intake services do not cover the four collections exactly, an override points to a
+the committed file, intake services do not cover every collection exactly, an override points to a
 missing finding id, a repo string is not `owner/repo`, or a finding cannot resolve to a repo, mixed
 rule, or explicit unclear marker. `npm run improvements:lint -- --live` additionally checks each
 distinct intake repo and every recorded GitHub issue/PR/comment evidence URL. The base lint also
@@ -327,5 +338,5 @@ refresh statuses for upstream fixes with live evidence, and run live intake lint
 findings, probes, or intake always end with index regeneration if needed and lint.
 
 For broad cadence work, use the `truth-maintenance` skill as the coordinator: it creates the
-Solo scratchpad/todo, fans out issue/PR, drift, eval, and golden reviewers, and reconciles the
+round ledger, fans out issue/PR, drift, eval, and golden reviewers, and reconciles the
 lane verdicts before closeout.

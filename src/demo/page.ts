@@ -19,7 +19,13 @@
  * Expand/collapse is native <details>/<summary> in both states, so the locked
  * page needs zero JavaScript and the live client gets toggling for free.
  */
-import { BASE, FAVICON, FONT_FACE, HOST, OG_ALT, OG_IMAGE, TOKENS, ravenSvg } from "../site.ts";
+import {
+  BASE,
+  FONT_FACE,
+  TOKENS,
+  renderPublicHeadMetadata,
+  renderSiteHeader
+} from "../site.ts";
 import { DEMO_CAPS } from "./budget.ts";
 import { DEMO_GLOBE_PNG_BASE64 } from "./globe.ts";
 import { escapeHtml as esc, html, raw } from "../html.ts";
@@ -35,15 +41,16 @@ body{display:flex;flex-direction:column}
    globe in both states, no page script and no CSP change — a CSS
    background-image is governed by img-src 'self' data:.
    image-rendering:pixelated keeps the dither dots hard squares as the 560x350
-   frame upscales to 160vmin. */
+   frame upscales to 240vmin. */
 .stage{background:var(--green)}
-/* Match the homepage WebGL globe exactly: same 160vmin size, and the sphere
-   centred on 50vw − 61.92vmin (the shader's 0.5·u_res + offX·min·scale) rather
-   than pinned to the left edge — so the baked frame's left edge goes to
-   calc(50vw − 79.9vmin) (that centre minus the sphere's 17.94vmin inset). */
+/* Match the homepage WebGL globe exactly: same sphere size (the 840px frame is
+   240vmin wide at the same px-per-vmin as the old 560px/160vmin one), and the
+   sphere centred on 50vw − 61.92vmin (the shader's 0.5·u_res + offX·min·scale)
+   rather than pinned to the left edge — so the baked frame's left edge goes to
+   calc(50vw − 159.86vmin) (that centre minus the sphere's 97.94vmin inset). */
 .stage::after{content:"";position:absolute;inset:0;
   background-image:url("data:image/png;base64,${DEMO_GLOBE_PNG_BASE64}");
-  background-position:calc(50vw - 79.9vmin) bottom;background-size:160vmin auto;background-repeat:no-repeat;
+  background-position:calc(50vw - 159.86vmin) bottom;background-size:240vmin auto;background-repeat:no-repeat;
   image-rendering:pixelated}
 /* The globe now sits a touch DARKER than the field, so it never threatens
    legibility — the scrim is just a gentle top veil for depth and fades to
@@ -53,7 +60,6 @@ body{display:flex;flex-direction:column}
 
 .pwrap{width:100%;max-width:940px;margin:0 auto;padding:0 22px;position:relative;z-index:2}
 main.play{display:flex;flex-direction:column;padding-bottom:18px}
-.top-in .end{margin-left:auto}
 
 /* honest-context line under the header */
 .fineprint{font-family:var(--mono);font-size:11.5px;color:var(--ash);line-height:1.65;
@@ -96,6 +102,16 @@ main.play{display:flex;flex-direction:column;padding-bottom:18px}
 .mdt{overflow-anchor:none}
 .mdt:empty{display:none}
 @keyframes blink{50%{opacity:0}}
+
+/* ---- answer action row ---- */
+/* Compact row under each finished answer, in the existing .btn-ghost idiom
+   (mono, 11px, ghost border) — a visible "Copy" label, not a bare icon. The
+   negative top margin pulls it under the bubble's own 14px margin so it reads
+   as attached to that answer. .copied comes from the shared BASE styles.
+   The ghost button is 29px tall (11px/1 + 8px*2 + 1px*2), above the WCAG
+   2.5.8 24px minimum, so it needs no mobile override. */
+.answer-actions{display:flex;align-items:center;gap:8px;margin:-8px 0 14px}
+.answer-actions .copyfail{color:#ff8b66;border-color:rgba(255,85,0,.5)}
 
 .pulse{display:flex;align-items:center;gap:10px;margin:14px 0;font-family:var(--mono);
 font-size:12px;color:var(--dim)}
@@ -165,6 +181,8 @@ details.tcard[open]>summary::before{transform:rotate(90deg)}
 .composer textarea::placeholder{color:var(--ash)}
 .composer .btn-primary{padding:12px 18px}
 .composer .btn-primary:disabled{opacity:.45;cursor:not-allowed;transform:none;box-shadow:none}
+.composer-count{min-height:18px;margin:8px 0 0;font-family:var(--mono);font-size:11.5px;color:var(--ash)}
+.composer-count.over{color:#ff8b66}
 .sysnote{min-height:18px;margin-top:8px;font-family:var(--mono);font-size:11.5px;color:var(--ash)}
 .sysnote.err{color:#ff8b66}
 .sysnote a{color:var(--orange);text-decoration:underline;text-underline-offset:2px}
@@ -242,18 +260,123 @@ function mdCommitIndex(s, from){
   return last;
 }`;
 
-const DEMO_SCRIPT = DEMO_SCRIPT_CORE + `
+// Copy action for a finished answer. Split out of the IIFE for the same reason
+// as mdCommitIndex above: test/demo-copy-core.test.ts evaluates this source and
+// drives it directly, so the "one row per answer" and "copy the raw accumulated
+// Markdown" rules are proved by behavior, not by grepping the page HTML.
+// `doc` and `nav` are injected (rather than closed over) purely so the test can
+// pass stubs — the page passes the real `document` / `navigator`.
+export const DEMO_COPY_CORE = `
+function buildCopyRow(doc, nav, source){
+  var row = doc.createElement("div");
+  row.className = "answer-actions";
+  var btn = doc.createElement("button");
+  btn.type = "button";
+  // Each row owns its status region, so copy feedback never competes with the
+  // shared #sr turn-progress region. The region is emptied before every
+  // message so an identical repeat still announces.
+  var status = doc.createElement("span");
+  status.className = "sr-only";
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-atomic", "true");
+  var revert = null;
+  var pending = null;
+  // The visible label and the accessible name move together: "Copy" alone is
+  // ambiguous across many answers, so the idle name says what it copies.
+  function setLabel(label, name, mod){
+    btn.textContent = label;
+    btn.setAttribute("aria-label", name);
+    btn.className = "btn btn-ghost" + mod;
+  }
+  function announce(msg){
+    status.textContent = "";
+    if (pending) clearTimeout(pending);
+    pending = setTimeout(function(){ status.textContent = msg; pending = null; }, 50);
+  }
+  function flash(label, name, mod, msg){
+    setLabel(label, name, mod);
+    announce(msg);
+    if (revert) clearTimeout(revert);
+    revert = setTimeout(function(){
+      setLabel("Copy", "Copy this answer as Markdown", "");
+      revert = null;
+    }, 1600);
+  }
+  function failed(){
+    flash("Copy failed", "Copy failed", " copyfail",
+      "Copy failed \\u2014 select the answer and copy it manually.");
+  }
+  setLabel("Copy", "Copy this answer as Markdown", "");
+  btn.addEventListener("click", function(){
+    // Async Clipboard API only. It needs a secure context and can reject, so
+    // both the missing-API and the rejection path land in failed(). The
+    // deprecated synchronous copy command is deliberately not a fallback.
+    var clip = nav && nav.clipboard;
+    if (!clip || typeof clip.writeText !== "function") { failed(); return; }
+    clip.writeText(source).then(function(){
+      flash("Copied", "Copied this answer", " copied", "Answer copied to the clipboard.");
+    }, failed);
+  });
+  row.appendChild(btn);
+  row.appendChild(status);
+  return row;
+}
+
+// \`source\` is the turn's raw accumulated answer text, never the rendered DOM,
+// so tables, fenced code, and inline Markdown syntax survive the copy. No text
+// means no action row at all, and a bubble that already carries one is left
+// alone — exactly one Copy per assistant answer.
+function attachCopyRow(doc, nav, bubble, source){
+  if (!bubble || !bubble.parentNode || !source.trim()) return null;
+  var after = bubble.nextSibling;
+  if (after && after.className === "answer-actions") return null;
+  var row = buildCopyRow(doc, nav, source);
+  bubble.parentNode.insertBefore(row, after);
+  return row;
+}`;
+
+export const DEMO_COMPOSER_LIMIT_CORE = `
+function updateComposerLimitState(input, sendBtn, composerCount, announce, busy, wasOverLimit, userMessageLimit){
+  var chars = input.value.length;
+  var excess = Math.max(0, chars - userMessageLimit);
+  var label = chars.toLocaleString() + " / " + userMessageLimit.toLocaleString() + " characters";
+  if (excess) label += " \\u2014 " + excess.toLocaleString() + " character" + (excess === 1 ? "" : "s") + " over the limit";
+  composerCount.textContent = label;
+  composerCount.className = "composer-count" + (excess ? " over" : "");
+  input.setAttribute("aria-invalid", excess ? "true" : "false");
+  sendBtn.disabled = busy || excess > 0;
+  if (excess && !wasOverLimit) {
+    announce("Message is " + excess.toLocaleString() + " character" + (excess === 1 ? "" : "s") + " over the " + userMessageLimit.toLocaleString() + "-character limit. Send is disabled.");
+  }
+  return { excess: excess, overLimit: excess > 0 };
+}
+
+function composerSubmission(input, userMessageLimit, updateComposerLimit, setNote){
+  var excess = updateComposerLimit();
+  if (excess) {
+    setNote("Message is " + excess.toLocaleString() + " character" + (excess === 1 ? "" : "s") + " over the " + userMessageLimit.toLocaleString() + "-character limit.", "err");
+    return null;
+  }
+  var value = input.value.trim();
+  if (!value) return null;
+  input.value = "";
+  updateComposerLimit();
+  return value;
+}`;
+
+const DEMO_SCRIPT = DEMO_SCRIPT_CORE + DEMO_COPY_CORE + DEMO_COMPOSER_LIMIT_CORE + `
 (function(){
   "use strict";
   var log = document.getElementById("log");
   var form = document.getElementById("composer-form");
   var input = document.getElementById("composer-input");
   var sendBtn = document.getElementById("send");
+  var composerCount = document.getElementById("composer-count");
   var note = document.getElementById("sysnote");
   var composer = document.querySelector(".composer");
   var jump = document.getElementById("jump");
   var sr = document.getElementById("sr");
-  if (!log || !form || !input || !sendBtn || !note || !composer || !jump || !sr) return;
+  if (!log || !form || !input || !sendBtn || !composerCount || !note || !composer || !jump || !sr) return;
 
   var history = [];
   var cards = {};
@@ -342,6 +465,13 @@ const DEMO_SCRIPT = DEMO_SCRIPT_CORE + `
   }
   function announce(s){ sr.textContent = s; }
   function setNote(msg, kind){ note.textContent = msg || ""; note.className = "sysnote" + (kind ? " " + kind : ""); }
+  var userMessageLimit = ${DEMO_CAPS.maxUserMessageChars};
+  var wasOverLimit = false;
+  function updateComposerLimit(){
+    var state = updateComposerLimitState(input, sendBtn, composerCount, announce, busy, wasOverLimit, userMessageLimit);
+    wasOverLimit = state.overLimit;
+    return state.excess;
+  }
   function pretty(v){
     if (typeof v === "string") return v;
     try { return JSON.stringify(v, null, 2); } catch (e) { return String(v); }
@@ -585,12 +715,16 @@ const DEMO_SCRIPT = DEMO_SCRIPT_CORE + `
     hidePulse();
     if (current) { finishRender(); current.classList.remove("streaming"); }
     if (acc) history.push({ role: "assistant", content: acc });
+    // Every path that ends a turn funnels through here — done, error, and the
+    // no-done-frame fallback — so a partial answer cut off by length,
+    // "incomplete", or a stream error still gets its Copy action.
+    attachCopyRow(document, navigator, current, acc);
     current = null;
     mdTail = null;
     committed = 0;
     acc = "";
     busy = false;
-    sendBtn.disabled = false;
+    updateComposerLimit();
     updateJump();
     if (follow && (document.activeElement === document.body || document.activeElement === sendBtn)) {
       input.focus({ preventScroll: true });
@@ -634,6 +768,12 @@ const DEMO_SCRIPT = DEMO_SCRIPT_CORE + `
       if (f.reason === "length") {
         setNote(acc ? "The answer hit the demo's output-token limit and was cut off."
           : "The model spent its whole output budget reasoning and produced no answer \\u2014 try a simpler question.", "err");
+      } else if (f.reason === "incomplete") {
+        // Must warn even with text: the turn ended without a real finish, so
+        // whatever streamed may be a partial answer. The !acc branch below
+        // would stay silent here and announce a clean "Reply finished".
+        setNote(acc ? "The stream ended without finishing \\u2014 this answer may be incomplete."
+          : "The turn ended without a text answer \\u2014 the trace above shows what ran.", "err");
       } else if (f.reason && f.reason !== "stop" && !acc) {
         setNote("The turn ended (" + f.reason + ") without a text answer \\u2014 the trace above shows what ran.", "err");
       }
@@ -674,7 +814,7 @@ const DEMO_SCRIPT = DEMO_SCRIPT_CORE + `
     } catch (e) {
       hidePulse();
       setNote("Network error \\u2014 the message stays in your history; send again to retry.", "err");
-      busy = false; sendBtn.disabled = false; updateJump();
+      busy = false; updateComposerLimit(); updateJump();
       return;
     }
     if (!res.ok || !res.body) {
@@ -682,7 +822,7 @@ const DEMO_SCRIPT = DEMO_SCRIPT_CORE + `
       setNote(res.status === 401 ? "Session expired \\u2014 reload this page to sign in again."
         : res.status === 429 ? "Hourly chat limit reached \\u2014 try again in a bit."
         : "Request failed (" + res.status + ").", "err");
-      busy = false; sendBtn.disabled = false; updateJump();
+      busy = false; updateComposerLimit(); updateJump();
       return;
     }
     var reader = res.body.getReader();
@@ -716,10 +856,12 @@ const DEMO_SCRIPT = DEMO_SCRIPT_CORE + `
   form.addEventListener("submit", function(e){
     e.preventDefault();
     if (busy) return;
-    var v = input.value.trim();
+    var v = composerSubmission(input, userMessageLimit, updateComposerLimit, setNote);
     if (!v) return;
-    input.value = "";
     send(v);
+  });
+  input.addEventListener("input", function(){
+    updateComposerLimit();
   });
   input.addEventListener("keydown", function(e){
     if (e.key === "Enter" && !e.shiftKey) {
@@ -754,6 +896,7 @@ const DEMO_SCRIPT = DEMO_SCRIPT_CORE + `
     updateJump();
   });
   window.addEventListener("resize", updateJump, { passive: true });
+  updateComposerLimit();
   input.focus();
 })();
 `;
@@ -763,7 +906,7 @@ const DEMO_SCRIPT = DEMO_SCRIPT_CORE + `
 // hard-coded (Web Crypto is async, and these headers are a sync module const);
 // test/demo-page.test.ts recomputes it from the rendered page, so an edit to
 // DEMO_SCRIPT fails the suite with the new value to paste here.
-const DEMO_SCRIPT_SHA256 = "sha256-J8a/H9N+aCWIWwXf1IKq4BxIWw7z+EF+b9sFqmSB+I4=";
+const DEMO_SCRIPT_SHA256 = "sha256-ZB8MB5SKhRnJx0CaegzHU7J/JhdbqAhUdhGgxaO8z+o=";
 
 export const DEMO_PAGE_HEADERS: Record<string, string> = {
   "content-type": "text/html; charset=utf-8",
@@ -853,7 +996,7 @@ function sampleTrace(): string {
     `<span class="st ok">ok</span></summary><div class="tcard-body">` +
     `<div class="qline">query <b>${esc(SAMPLE_QUERY)}</b><span class="qf">limit=4</span></div>` +
     `<ol class="hits">${hits}</ol>` +
-    `<div class="hmeta">4 of 15 matches &middot; truncated &mdash; more matched than shown</div>` +
+    `<div class="hmeta">4 of 13 matches &middot; truncated &mdash; more matched than shown</div>` +
     `</div></details>` +
     `<details class="tcard" open><summary><span class="tw">execute</span>` +
     `<span class="tlabel">sandboxed JavaScript</span>` +
@@ -876,36 +1019,15 @@ const EXPLAINER =
   "answer before connecting Raven to the agent you use.";
 const DEMO_TITLE = "Playground · Stellar Raven";
 const DEMO_DESCRIPTION = "Try Stellar Raven's live agent playground for Stellar ecosystem questions.";
-const DEMO_URL = `https://${HOST}/playground`;
 
 function demoHead(): string {
   return `<!doctype html><html lang="en"><head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>${DEMO_TITLE}</title>
-<meta name="description" content="${DEMO_DESCRIPTION}"/>
-<meta name="robots" content="noindex"/>
-<meta name="theme-color" content="#0e150d"/>
-<meta name="color-scheme" content="dark"/>
-<meta property="og:type" content="website"/>
-<meta property="og:title" content="${DEMO_TITLE}"/>
-<meta property="og:description" content="${DEMO_DESCRIPTION}"/>
-<meta property="og:image" content="${OG_IMAGE}"/>
-<meta property="og:image:width" content="1200"/>
-<meta property="og:image:height" content="630"/>
-<meta property="og:image:type" content="image/png"/>
-<meta property="og:image:alt" content="${OG_ALT}"/>
-<meta property="og:url" content="${DEMO_URL}"/>
-<meta property="og:site_name" content="Stellar Raven"/>
-<meta property="og:locale" content="en_US"/>
-<meta name="twitter:card" content="summary_large_image"/>
-<meta name="twitter:title" content="${DEMO_TITLE}"/>
-<meta name="twitter:description" content="${DEMO_DESCRIPTION}"/>
-<meta name="twitter:image" content="${OG_IMAGE}"/>
-<meta name="twitter:image:alt" content="${OG_ALT}"/>
-<link rel="icon" href="${FAVICON}"/>
-<link rel="apple-touch-icon" href="${FAVICON}"/>
-<link rel="canonical" href="${DEMO_URL}"/>
+${renderPublicHeadMetadata({
+  title: DEMO_TITLE,
+  description: DEMO_DESCRIPTION,
+  path: "/playground",
+  noindex: true
+})}
 <style>${FONT_FACE}${TOKENS}${BASE}${DEMO_CSS}</style>
 </head><body>`;
 }
@@ -913,10 +1035,14 @@ function demoHead(): string {
 function topBar(): string {
   return (
     `<div class="stage"></div><div class="scrim"></div>` +
-    `<header class="top"><div class="pwrap top-in">` +
-    `<a class="brand" href="/">${ravenSvg("rv")}<span class="wm"><b>Stellar Raven</b><i>playground</i></span></a>` +
-    `<span class="end"><a class="btn btn-ghost" href="/">raven home</a></span>` +
-    `</div></header>`
+    renderSiteHeader({
+      label: "playground",
+      containerClass: "pwrap",
+      links: [
+        { href: "/", label: "Home" },
+        { href: "/docs", label: "Docs" }
+      ]
+    })
   );
 }
 
@@ -952,13 +1078,12 @@ function chatBody(): string {
     `<div id="log" role="log" aria-live="off"></div>` +
     `<div class="composer"><button id="jump" class="jump" type="button" hidden></button>` +
     `<div id="sr" class="sr-only" role="status"></div><form id="composer-form">` +
-    // maxlength mirrors DEMO_CAPS.maxUserMessageChars (src/demo/budget.ts);
-    // the server clamps regardless — this just fails early in the UI.
-    `<textarea id="composer-input" maxlength="${DEMO_CAPS.maxUserMessageChars}" rows="1" ` +
+    `<textarea id="composer-input" rows="1" aria-describedby="composer-count" ` +
     `placeholder="Ask about the Stellar ecosystem…" ` +
     `aria-label="Message the playground agent"></textarea>` +
     `<button id="send" class="btn btn-primary" type="submit">Send</button>` +
-    `</form><div id="sysnote" class="sysnote" role="status"></div></div>` +
+    `</form><div id="composer-count" class="composer-count"></div>` +
+    `<div id="sysnote" class="sysnote" role="status"></div></div>` +
     `</main>${demoFooter()}` +
     `<script>${DEMO_SCRIPT}</script>`
   );

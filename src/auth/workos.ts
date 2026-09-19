@@ -31,20 +31,25 @@
  * Pure module: no cloudflare:workers import (type-only provider imports) —
  * unit-testable under plain Node (test/auth.test.ts).
  */
+import { AuthorizationError } from "@cloudflare/workers-oauth-provider";
 import type { AuthRequest, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import {
   CONSENT_HEADERS,
+  DOCS_HEADERS,
   LANDING_HEADERS,
   ROBOTS_HEADERS,
   SITEMAP_HEADERS,
   TERMS_HEADERS,
   consentPage,
+  docsPage,
   landingPage,
   robotsTxt,
   sitemapXml,
   termsPage
 } from "../site";
 import { OG_PNG_BASE64 } from "../og";
+import { logEvent } from "../observability.ts";
+import { hasAllowedRedirectTransport } from "./redirects";
 import { skillHealthResponse } from "../skills/canary.ts";
 import { mintDemoCookie, parseDemoParkedState } from "../demo/auth";
 
@@ -59,8 +64,30 @@ declare global {
 const WORKOS_AUTHORIZE_URL = "https://api.workos.com/user_management/authorize";
 const WORKOS_AUTHENTICATE_URL = "https://api.workos.com/user_management/authenticate";
 
-/** Parked /authorize requests expire from OAUTH_KV after 10 minutes. */
+/**
+ * Parked /authorize requests expire from OAUTH_KV after 10 minutes, and the
+ * browser-binding cookie rides the same clock. Deliberately NOT raised
+ * alongside the consent window below: a parked state carries a login-DoS
+ * surface the consent cookie does not. `login:${state}` is read and deleted
+ * non-atomically over eventually-consistent KV, and /callback consumes the
+ * entry BEFORE it validates the binding cookie — so anyone holding a leaked
+ * state value can burn the victim's parked login with `?code=junk&state=...`.
+ * They cannot complete a grant (the binding cookie stops that), but they can
+ * destroy one, and a longer TTL only widens that window. WorkOS's own code
+ * lifetime starts when a code is ISSUED, so it does not cap this leg.
+ */
 export const LOGIN_STATE_TTL_SECONDS = 10 * 60;
+
+/**
+ * The consent page is a HUMAN dwell window, not an automated round trip: the
+ * page asks the user to read two legal documents that it opens in new tabs.
+ * The double-submit token has no server-side state tied to it and cannot
+ * approve a stale registration — POST re-parses the query and the provider
+ * re-validates client and redirect_uri on both the POST and at
+ * completeAuthorization — so a longer window costs only a longer-lived
+ * approval capability on a shared profile. Separate clock, separate reason.
+ */
+export const CONSENT_CSRF_TTL_SECONDS = 30 * 60;
 
 /** Consent-form double-submit CSRF cookie (GET sets, POST validates + clears). */
 const CONSENT_CSRF_COOKIE = "__Host-MCP_CONSENT_CSRF";
@@ -70,8 +97,8 @@ const COOKIE_ATTRS = "HttpOnly; Secure; Path=/; SameSite=Lax";
 
 /**
  * Shape parked in KV under `login:${state}` — a validated discriminated
- * union (demo-playground review finding 2: the callback must never treat
- * unknown JSON as an MCP flow). Both branches carry the browser-binding
+ * union. The callback must never treat unknown JSON as an MCP flow. Both
+ * branches carry the browser-binding
  * cookie secret; the demo branch redirects only to fixed same-origin paths
  * (enforced by parseDemoParkedState in src/demo/auth.ts).
  */
@@ -102,6 +129,10 @@ export const WorkOSAuthHandler = {
       return new Response(termsPage(), { headers: TERMS_HEADERS });
     }
 
+    if (isRead && url.pathname === "/docs") {
+      return new Response(docsPage(), { headers: DOCS_HEADERS });
+    }
+
     if (isRead && url.pathname === "/og.png") {
       return ogImageResponse();
     }
@@ -126,8 +157,9 @@ export const WorkOSAuthHandler = {
     }
 
     if (url.pathname === "/authorize" && request.method === "GET") {
-      const oauthReq = await parseAuthRequest(provider, request);
-      if (!oauthReq) return text("Invalid authorization request", 400);
+      const resolved = await resolveAuthRequest(provider, request);
+      if (!resolved.ok) return resolved.response;
+      const oauthReq = resolved.request;
       const client = await provider.lookupClient(oauthReq.clientId);
       // Double-submit CSRF: random token goes into both a cookie and a
       // hidden form field; POST requires them to match.
@@ -136,29 +168,52 @@ export const WorkOSAuthHandler = {
         clientName: client?.clientName?.trim() || oauthReq.clientId || "Unknown MCP client",
         scopes: oauthReq.scope,
         csrfToken,
-        formAction: `/authorize${url.search}`
+        formAction: `/authorize${url.search}`,
+        redirectDestination: oauthReq.redirectUri
       });
       return new Response(body, {
-        headers: { ...CONSENT_HEADERS, "set-cookie": setCookie(CONSENT_CSRF_COOKIE, csrfToken) }
+        headers: {
+          ...CONSENT_HEADERS,
+          "set-cookie": setCookie(CONSENT_CSRF_COOKIE, csrfToken, CONSENT_CSRF_TTL_SECONDS)
+        }
       });
     }
 
     if (url.pathname === "/authorize" && request.method === "POST") {
-      const oauthReq = await parseAuthRequest(provider, request);
-      if (!oauthReq) return text("Invalid authorization request", 400);
+      // Re-parsed (and re-validated) before the form is read or any state is
+      // parked, so an error redirect here still carries no consent decision.
+      const resolved = await resolveAuthRequest(provider, request);
+      if (!resolved.ok) return resolved.response;
+      const oauthReq = resolved.request;
 
       const form = await request.formData();
       const fromForm = form.get("csrf_token");
       const fromCookie = readCookie(request, CONSENT_CSRF_COOKIE);
       if (typeof fromForm !== "string" || !fromCookie || fromForm !== fromCookie) {
-        return text("CSRF token mismatch", 400, { "set-cookie": clearCookie(CONSENT_CSRF_COOKIE) });
+        return retryConsent("CSRF token mismatch", url);
       }
 
-      // Explicit Terms/Privacy acknowledgement: the consent form's checkbox
-      // (name="tos_agree") only submits when ticked. The CSS-only gate is UX;
-      // this is the enforcement boundary — no ack, no grant.
+      const decisions = form.getAll("decision");
+      if (decisions.length === 1 && decisions[0] === "deny") {
+        return authorizationErrorResponse(
+          new AuthorizationError("access_denied", {
+            description: "The user denied the authorization request.",
+            redirectUri: oauthReq.redirectUri,
+            state: oauthReq.state || undefined,
+            issuer: oauthReq.issuer
+          }),
+          { "set-cookie": clearCookie(CONSENT_CSRF_COOKIE) }
+        );
+      }
+      // An unknown or duplicate decision must not fall through as approval.
+      if (decisions.length !== 0) {
+        return retryConsent("Invalid consent decision", url);
+      }
+
+      // Native form validation helps the browser user. The server still owns
+      // the enforcement boundary: no acknowledgement means no grant.
       if (!form.get("tos_agree")) {
-        return text("Terms acknowledgement required", 400, { "set-cookie": clearCookie(CONSENT_CSRF_COOKIE) });
+        return retryConsent("Terms acknowledgement required", url);
       }
 
       // Park the parsed request for /callback; the binding secret ties the
@@ -172,7 +227,7 @@ export const WorkOSAuthHandler = {
       );
 
       const headers = new Headers({ location: workosAuthorizeUrl(env, url.origin, state) });
-      headers.append("set-cookie", setCookie(STATE_BINDING_COOKIE, binding));
+      headers.append("set-cookie", setCookie(STATE_BINDING_COOKIE, binding, LOGIN_STATE_TTL_SECONDS));
       headers.append("set-cookie", clearCookie(CONSENT_CSRF_COOKIE));
       return new Response(null, { status: 302, headers });
     }
@@ -348,7 +403,7 @@ export async function demoLoginRedirect(request: Request, env: Env): Promise<Res
     location: workosAuthorizeUrl(env, url.origin, state),
     "cache-control": "no-store"
   });
-  headers.append("set-cookie", setCookie(STATE_BINDING_COOKIE, binding));
+  headers.append("set-cookie", setCookie(STATE_BINDING_COOKIE, binding, LOGIN_STATE_TTL_SECONDS));
   return new Response(null, { status: 302, headers });
 }
 
@@ -384,12 +439,102 @@ async function sha256Hex(input: string): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-async function parseAuthRequest(provider: OAuthHelpers, request: Request): Promise<AuthRequest | null> {
+/** Either a validated request, or the response to send instead. */
+type ResolvedAuthRequest =
+  | { ok: true; request: AuthRequest }
+  | { ok: false; response: Response };
+
+/**
+ * Both /authorize legs resolve the request through here, so this owns two
+ * things: enforcing our PKCE posture, and turning a failure into the RIGHT
+ * kind of refusal.
+ *
+ * The provider (>=0.10.1) already gets the hard part right. `parseAuthRequest`
+ * throws a bare `AuthorizationError` for a missing/unknown `client_id` or an
+ * unregistered `redirect_uri` — the cases where redirecting would BE the
+ * vulnerability — and only after validating the redirect URI does it attach
+ * `redirectUri`/`state`/`issuer` to subsequent errors. A populated
+ * `redirectUri` is the documented signal that redirecting is safe
+ * ("Present only after client and redirect validation").
+ *
+ * Our own rule is stricter than upstream on purpose: 0.10.1 requires PKCE of
+ * PUBLIC clients, and rejects a method without a challenge, but still lets a
+ * CONFIDENTIAL client skip PKCE entirely. MCP (2025-11-25) requires S256 of
+ * clients, so we require it of all of them. Raising it as an
+ * `AuthorizationError` built from the ALREADY-VALIDATED `parsed` fields — never
+ * from raw query values — gets it the same spec-correct delivery.
+ */
+async function resolveAuthRequest(
+  provider: OAuthHelpers,
+  request: Request
+): Promise<ResolvedAuthRequest> {
   try {
-    return await provider.parseAuthRequest(request);
-  } catch {
-    return null;
+    const parsed = await provider.parseAuthRequest(request);
+    if (!hasAllowedRedirectTransport(parsed.redirectUri)) {
+      throw new AuthorizationError("invalid_request", {
+        description: "redirect_uri must use https for non-loopback hosts."
+      });
+    }
+    if (!parsed.codeChallenge || parsed.codeChallengeMethod !== "S256") {
+      throw new AuthorizationError("invalid_request", {
+        description: "PKCE is required: send code_challenge with code_challenge_method=S256.",
+        redirectUri: parsed.redirectUri,
+        state: parsed.state || undefined,
+        issuer: parsed.issuer
+      });
+    }
+    return { ok: true, request: parsed };
+  } catch (error) {
+    return { ok: false, response: authorizationErrorResponse(error) };
   }
+}
+
+/**
+ * 303, never 302: a 302 only *permits* the user agent to rewrite the method, so
+ * on the POST leg it can replay the consent form body — csrf_token included —
+ * to the client's redirect URI. 303 names a retrieval request (RFC 9110
+ * §15.4.4). 307 would be strictly wrong for the same reason.
+ *
+ * `iss` goes on error responses too: the provider advertises RFC 9207 support,
+ * and §2 requires the parameter on error responses for servers that do, so
+ * omitting it makes conforming clients reject the response.
+ *
+ * The log records `error.code`, not `error.description` — descriptions
+ * interpolate request-supplied values upstream, and a log field is the wrong
+ * place for attacker-chosen text. The description still goes to the client,
+ * percent-encoded by URLSearchParams, which is what it is for.
+ */
+function authorizationErrorResponse(
+  error: unknown,
+  headers: Record<string, string> = {}
+): Response {
+  if (
+    !(error instanceof AuthorizationError) ||
+    !error.redirectUri ||
+    !hasAllowedRedirectTransport(error.redirectUri)
+  ) {
+    return text("Invalid authorization request", 400, headers, unredirectableReason(error));
+  }
+  const target = new URL(error.redirectUri);
+  target.searchParams.set("error", error.code);
+  if (error.description) target.searchParams.set("error_description", error.description);
+  if (error.state) target.searchParams.set("state", error.state);
+  if (error.issuer) target.searchParams.set("iss", error.issuer);
+  logEvent("auth_reject", { status: 303, reason: error.code });
+  return new Response(null, {
+    status: 303,
+    headers: { location: target.toString(), "cache-control": "no-store", ...headers }
+  });
+}
+
+/**
+ * Unredirectable failures share one client response. Log a developer-authored
+ * code or class name to distinguish them without recording attacker text.
+ */
+function unredirectableReason(error: unknown): string {
+  if (error instanceof AuthorizationError) return `unredirectable:${error.code}`;
+  if (error instanceof Error) return `unredirectable:${error.name}`;
+  return "unredirectable:unknown";
 }
 
 function readCookie(request: Request, name: string): string | null {
@@ -400,15 +545,46 @@ function readCookie(request: Request, name: string): string | null {
   return null;
 }
 
-function setCookie(name: string, value: string): string {
-  return `${name}=${value}; ${COOKIE_ATTRS}; Max-Age=${LOGIN_STATE_TTL_SECONDS}`;
+function setCookie(name: string, value: string, ttlSeconds: number): string {
+  return `${name}=${value}; ${COOKIE_ATTRS}; Max-Age=${ttlSeconds}`;
 }
 
 function clearCookie(name: string): string {
   return `${name}=; ${COOKIE_ATTRS}; Max-Age=0`;
 }
 
-function text(body: string, status: number, headers: Record<string, string> = {}): Response {
+/**
+ * Recoverable consent failure: log the real reason, then send the browser back
+ * to its own form action so the GET handler above mints a fresh token and
+ * cookie and re-renders the consent page.
+ *
+ * 303 (not 302) so the redirect is unambiguously a GET. `url.search` is safe to
+ * echo: parseAuthRequest already validated it on this request, and nothing has
+ * been granted or parked yet. The GET replaces the prior CSRF cookie.
+ *
+ * Known ceiling: a browser that refuses the cookie loops consent→consent rather
+ * than dead-ending. It could never have completed the flow either way, and a
+ * live page beats a 400.
+ */
+function retryConsent(reason: string, url: URL): Response {
+  logEvent("auth_reject", { status: 303, reason });
+  return new Response(null, {
+    status: 303,
+    headers: { location: `/authorize${url.search}`, "cache-control": "no-store" }
+  });
+}
+
+/**
+ * Log each rejection at the response boundary. `body` and `reason` contain
+ * developer-authored constants, never request or provider text.
+ */
+function text(
+  body: string,
+  status: number,
+  headers: Record<string, string> = {},
+  reason: string = body
+): Response {
+  logEvent("auth_reject", { status, reason });
   return new Response(body, {
     status,
     headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", ...headers }

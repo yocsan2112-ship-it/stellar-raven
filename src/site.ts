@@ -1,9 +1,11 @@
 /**
  * Public presentation surface for stellar-raven-codemode.
  *
- * Two server-rendered pages, one visual system:
+ * Server-rendered pages, one visual system:
  *   - landingPage()  → GET /            (public marketing page)
  *   - consentPage()  → GET /authorize   (OAuth consent, rendered by workos.ts)
+ *   - termsPage()    → GET /terms       (Raven terms, script-free prose)
+ *   - docsPage()     → GET /docs        (public how-it-works, script-free prose)
  *
  * Design — "dithered signal": a dark-green field (#151f14) with a single hot
  * orange (#ff5500), a Bayer-dithered orange globe rising out of the bottom-left
@@ -31,6 +33,8 @@ import {
 } from "./fonts";
 import { escapeHtml } from "./html";
 import { CONSENT_GLOBE_PNG_BASE64 } from "./consent-globe";
+import { getCatalog } from "./catalog/load";
+import { USAGE_RETENTION_MONTHS } from "./auth/retention";
 
 const MCP_ENDPOINT = "https://raven.stellar.org/mcp";
 export const HOST = "raven.stellar.org";
@@ -110,7 +114,7 @@ body.no-gl .stage{background:
   box-shadow:0 0 0 0 rgba(255,85,0,.7);animation:pulse 2.4s ease-out infinite}
 @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(255,85,0,.55)}70%{box-shadow:0 0 0 10px rgba(255,85,0,0)}100%{box-shadow:0 0 0 0 rgba(255,85,0,0)}}
 
-/* ---- top bar: just the logo, prominent ---- */
+/* ---- shared top bar ---- */
 .top{position:relative;z-index:5}
 .top-in{display:flex;align-items:center;height:92px}
 .brand{display:flex;align-items:center;gap:14px}
@@ -287,7 +291,9 @@ footer{position:relative;z-index:2;border-top:1px solid var(--line);padding:26px
   background:rgba(14,21,13,.72);
   backdrop-filter:blur(10px) saturate(.9);-webkit-backdrop-filter:blur(10px) saturate(.9)}
 .foot{display:flex;flex-wrap:wrap;gap:14px 26px;align-items:center;justify-content:space-between}
-.foot .l{font-family:var(--mono);font-size:12px;color:var(--ash);text-shadow:0 1px 3px rgba(14,21,13,.9)}
+/* #7b8971 is --ash lifted to 5.0:1 against the footer field (#0e150d composite)
+   — WCAG AA needs 4.5:1 and plain --ash measured 4.41:1 (axe). Same hue family. */
+.foot .l{font-family:var(--mono);font-size:12px;color:#7b8971;text-shadow:0 1px 3px rgba(14,21,13,.9)}
 .foot .l b{color:var(--dim);font-weight:400}
 .foot-links{display:flex;gap:24px}
 .foot-links a{font-family:var(--mono);font-size:12px;color:var(--dim);text-shadow:0 1px 3px rgba(14,21,13,.9)}
@@ -312,7 +318,13 @@ footer{position:relative;z-index:2;border-top:1px solid var(--line);padding:26px
   .stats{padding:110px 22px 0}
   .stats .st{padding:0 14px}
   .bento,.vs{grid-template-columns:1fr}
+  .foot-links{flex-wrap:wrap;gap:12px 20px}
   .cta-row{padding:44px 22px 58px}
+}
+@media (max-width:480px){
+  .brand .wm{display:none}
+  .top-nav{gap:7px}
+  .top-nav .btn-ghost{padding:9px 11px}
 }
 @media (prefers-reduced-motion:reduce){*{animation:none!important}}
 `;
@@ -467,6 +479,46 @@ export const OG_ALT =
   "Stellar Raven — Stellar docs and ecosystem context, one connection. A Bayer-dithered orange globe " +
   "beside the endpoint raven.stellar.org/mcp.";
 
+export function renderPublicHeadMetadata(args: {
+  title: string;
+  description: string;
+  path: string;
+  noindex: boolean;
+}): string {
+  const title = escapeHtml(args.title);
+  const description = escapeHtml(args.description);
+  const canonicalUrl = escapeHtml(`https://${HOST}${args.path}`);
+  const imageUrl = escapeHtml(OG_IMAGE);
+  const imageAlt = escapeHtml(OG_ALT);
+  const favicon = escapeHtml(FAVICON);
+
+  return `<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>${title}</title>
+<meta name="description" content="${description}"/>
+${args.noindex ? `<meta name="robots" content="noindex"/>\n` : ""}<meta name="theme-color" content="#0e150d"/>
+<meta name="color-scheme" content="dark"/>
+<meta property="og:type" content="website"/>
+<meta property="og:title" content="${title}"/>
+<meta property="og:description" content="${description}"/>
+<meta property="og:image" content="${imageUrl}"/>
+<meta property="og:image:width" content="1200"/>
+<meta property="og:image:height" content="630"/>
+<meta property="og:image:type" content="image/png"/>
+<meta property="og:image:alt" content="${imageAlt}"/>
+<meta property="og:url" content="${canonicalUrl}"/>
+<meta property="og:site_name" content="Stellar Raven"/>
+<meta property="og:locale" content="en_US"/>
+<meta name="twitter:card" content="summary_large_image"/>
+<meta name="twitter:title" content="${title}"/>
+<meta name="twitter:description" content="${description}"/>
+<meta name="twitter:image" content="${imageUrl}"/>
+<meta name="twitter:image:alt" content="${imageAlt}"/>
+<link rel="icon" href="${favicon}"/>
+<link rel="apple-touch-icon" href="${favicon}"/>
+<link rel="canonical" href="${canonicalUrl}"/>`;
+}
+
 function head(
   title: string,
   description: string,
@@ -476,31 +528,7 @@ function head(
   path: string = "/"
 ): string {
   return `<!doctype html><html lang="en"><head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>${escapeHtml(title)}</title>
-<meta name="description" content="${escapeHtml(description)}"/>
-${noindex ? `<meta name="robots" content="noindex"/>\n` : ""}<meta name="theme-color" content="#0e150d"/>
-<meta name="color-scheme" content="dark"/>
-<meta property="og:type" content="website"/>
-<meta property="og:title" content="${escapeHtml(title)}"/>
-<meta property="og:description" content="${escapeHtml(description)}"/>
-<meta property="og:image" content="${OG_IMAGE}"/>
-<meta property="og:image:width" content="1200"/>
-<meta property="og:image:height" content="630"/>
-<meta property="og:image:type" content="image/png"/>
-<meta property="og:image:alt" content="${escapeHtml(OG_ALT)}"/>
-<meta property="og:url" content="https://${HOST}${path}"/>
-<meta property="og:site_name" content="Stellar Raven"/>
-<meta property="og:locale" content="en_US"/>
-<meta name="twitter:card" content="summary_large_image"/>
-<meta name="twitter:title" content="${escapeHtml(title)}"/>
-<meta name="twitter:description" content="${escapeHtml(description)}"/>
-<meta name="twitter:image" content="${OG_IMAGE}"/>
-<meta name="twitter:image:alt" content="${escapeHtml(OG_ALT)}"/>
-<link rel="icon" href="${FAVICON}"/>
-<link rel="apple-touch-icon" href="${FAVICON}"/>
-<link rel="canonical" href="https://${HOST}${path}"/>
+${renderPublicHeadMetadata({ title, description, path, noindex })}
 <style>${FONT_FACE}${TOKENS}${css}</style>${headExtra}
 </head><body>`;
 }
@@ -598,8 +626,22 @@ function panels(): string {
   }).join("");
 }
 
-function brand(): string {
-  return `<a class="brand" href="/">${ravenSvg("rv")}<span class="wm"><b>Stellar Raven</b><i>codemode</i></span></a>`;
+export function renderSiteHeader(args: {
+  label: string;
+  links: readonly { href: string; label: string }[];
+  containerClass?: string;
+}): string {
+  const links = args.links
+    .map(
+      (link) =>
+        `<a class="btn btn-ghost" href="${escapeHtml(link.href)}">${escapeHtml(link.label)}</a>`
+    )
+    .join("");
+  return (
+    `<header class="top"><div class="${escapeHtml(args.containerClass ?? "wrap")} top-in">` +
+    `<a class="brand" href="/" aria-label="Stellar Raven home">${ravenSvg("rv")}<span class="wm"><b>Stellar Raven</b>` +
+    `<i>${escapeHtml(args.label)}</i></span></a><nav class="top-nav">${links}</nav></div></header>`
+  );
 }
 
 // JSON-LD structured data — landing page only (the consent page stays
@@ -650,6 +692,7 @@ const JSONLD =
   `</script>`;
 
 export function landingPage(): string {
+  const counts = getDocCatalogCounts();
   return (
     head(
       "Stellar Raven — the Stellar MCP server for AI agents",
@@ -658,8 +701,13 @@ export function landingPage(): string {
       JSONLD
     ) +
     `<div class="stage"><canvas id="gl"></canvas></div><div class="scrim"></div>` +
-    `<header class="top"><div class="wrap top-in">${brand()}` +
-    `<nav class="top-nav"><a class="btn btn-ghost" href="/playground">Playground</a></nav></div></header>` +
+    renderSiteHeader({
+      label: "codemode",
+      links: [
+        { href: "/docs", label: "Docs" },
+        { href: "/playground", label: "Playground" }
+      ]
+    }) +
     `<main class="wrap"><section class="hero" id="connect"><div class="hero-in">
   <p class="eyebrow">Remote MCP server <span class="live"><span class="dot"></span>live</span></p>
   <h1 class="title">Stellar <span class="r">Raven</span></h1>
@@ -686,9 +734,9 @@ export function landingPage(): string {
 </div></section></main>` +
     `<div class="below">
   <div class="stats" aria-label="What one connection covers">
-    <span class="st"><b>54</b> live operations</span>
-    <span class="st"><b>276</b> catalog entries</span>
-    <span class="st"><b>18</b> playbooks</span>
+    <span class="st"><b>${counts.operations}</b> live operations</span>
+    <span class="st"><b>${counts.operations + counts.skills + counts.sections}</b> catalog entries</span>
+    <span class="st"><b>${counts.skills}</b> playbooks</span>
     <span class="st"><b>1</b> sign-in</span>
     <span class="st"><b>0</b> API keys</span>
   </div>
@@ -720,7 +768,7 @@ export function landingPage(): string {
       <div class="cell">
         <div class="tag">Proven playbooks</div>
         <h3>Tested procedures, read mid-task</h3>
-        <p>Eighteen step-by-step guides your agent pulls in section by section, exactly when it needs them.</p>
+        <p>${counts.skills} step-by-step guides your agent pulls in section by section, exactly when it needs them.</p>
         <div class="chips"><span class="chip">smart contracts</span><span class="chip">payments</span><span class="chip">dApps</span><span class="chip">data &amp; indexing</span></div>
       </div>
     </div>
@@ -760,9 +808,10 @@ export function landingPage(): string {
         </ul>
       </div>
     </div>
-    <p class="hood">Under the hood: two MCP tools. <code>search</code> ranks 276 catalog entries — operations, docs, and
-      skill sections; <code>execute</code> runs your agent's JavaScript in a no-network sandbox where
-      every call is validated against the catalog.</p>
+    <p class="hood">Under the hood: two MCP tools. <code>search</code> ranks
+      ${counts.operations} operations and ${counts.skills} whole skills;
+      skill sections remain exact-read affordances on their parent skill. <code>execute</code> runs
+      your agent's JavaScript in a no-network sandbox where every call is validated against the catalog.</p>
   </section>
 
   <div class="cta-row">
@@ -780,7 +829,9 @@ function siteFooter(): string {
   return `<footer><div class="wrap foot">
   <div class="l">${escapeHtml(HOST)} <b>·</b> Stellar context, one connection</div>
   <div class="foot-links">
+    <a href="/docs">Docs</a>
     <a href="https://github.com/stellar-experimental/stellar-raven" target="_blank" rel="noopener">GitHub</a>
+    <a href="https://discord.gg/stellardev" target="_blank" rel="noopener">Discord</a>
     <a href="https://stellar.org" target="_blank" rel="noopener">Stellar</a>
     <a href="/terms">Raven Terms</a>
     <a href="https://stellar.org/terms-of-service" target="_blank" rel="noopener">Stellar Terms</a>
@@ -801,10 +852,10 @@ body{display:flex;flex-direction:column}
    the field — the inverse of the playground's darker, recessed sphere. */
 .stage{background:var(--green)}
 /* Match the homepage WebGL globe exactly (see the demo page for the derivation):
-   same 160vmin size, sphere centred on 50vw − 61.92vmin rather than left-pinned. */
+   same sphere size (840px frame = 240vmin), centred on 50vw − 61.92vmin rather than left-pinned. */
 .stage::after{content:"";position:absolute;inset:0;
   background-image:url("data:image/png;base64,${CONSENT_GLOBE_PNG_BASE64}");
-  background-position:calc(50vw - 79.9vmin) bottom;background-size:160vmin auto;background-repeat:no-repeat;
+  background-position:calc(50vw - 159.86vmin) bottom;background-size:240vmin auto;background-repeat:no-repeat;
   image-rendering:pixelated}
 /* gentle top veil for depth; fades clear over the bottom-left sphere so the
    olive glow reads (the centred card carries its own contrast for its text). */
@@ -813,8 +864,7 @@ body{display:flex;flex-direction:column}
 main.auth{flex:1;display:flex;align-items:center;justify-content:center;padding:40px 22px 64px;
   position:relative;z-index:2}
 .card{width:100%;max-width:460px;border:1px solid var(--line-2);border-radius:20px;
-  background:linear-gradient(180deg,rgba(24,38,23,.84),rgba(14,21,13,.82));
-  backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+  background:var(--green-2);
   box-shadow:0 40px 90px -38px rgba(0,0,0,.85),inset 0 1px 0 rgba(238,240,226,.05);overflow:hidden}
 .card-top{padding:36px 34px 0;text-align:center}
 .conn{display:flex;align-items:center;justify-content:center;margin:6px 0 24px}
@@ -830,19 +880,32 @@ main.auth{flex:1;display:flex;align-items:center;justify-content:center;padding:
 .card .sub{color:var(--dim);font-size:15px;max-width:35ch;margin:14px auto 0;line-height:1.55;
   text-wrap:balance}
 .card .sub b{color:var(--fog);font-weight:600}
+.card .unverified{color:var(--dim);font-size:13px;max-width:36ch;margin:10px auto 0;line-height:1.5;
+  text-wrap:balance}
+.destination{margin:24px 34px 0;padding:16px;border:1px solid var(--line-2);border-radius:10px;
+  background:rgba(6,10,6,.28)}
+.destination h2{font-size:13px;font-weight:600;color:var(--fog);margin:0}
+.destination p{font-size:13px;color:var(--dim);margin:4px 0 10px;line-height:1.5}
+.destination code{display:block;font-family:var(--mono);font-size:12px;color:var(--fog);
+  line-height:1.6;overflow-wrap:anywhere;white-space:pre-wrap;unicode-bidi:isolate}
 .panel-h{font-family:var(--mono);font-size:11px;font-weight:500;letter-spacing:.18em;text-transform:uppercase;
-  color:var(--dim);padding:28px 34px 4px}
+  color:var(--dim);margin:0;padding:24px 34px 4px}
 .scopes{list-style:none;margin:0;padding:0 34px}
 /* grid so the tick centres on the mcp pill by row (align-items:center), while the
    description flows in column 2 under the pill — no per-element margin nudging. */
 .scopes li{display:grid;grid-template-columns:auto 1fr;column-gap:12px;align-items:center;padding:13px 0;border-top:1px solid var(--line)}
 .scopes li:first-child{border-top:0}
 .tick{flex:none}
-.scope-code{grid-column:2;justify-self:start;font-family:var(--mono);font-size:12px;color:var(--orange);background:var(--orange-soft);
+.scope-code{grid-column:2;justify-self:start;font-family:var(--mono);font-size:12px;color:var(--orange-2);background:var(--orange-soft);
   border:1px solid rgba(255,85,0,.24);padding:1px 7px;border-radius:6px}
 .scope-desc{grid-column:2;font-size:13.5px;color:var(--dim);margin-top:6px;line-height:1.5}
+.scope-empty{padding:13px 34px 0;margin:0;font-size:13.5px;color:var(--dim);line-height:1.5}
 .act{padding:24px 34px 32px}
-.act .btn-primary{width:100%;justify-content:center;padding:15px}
+.act .btn-primary{width:100%;justify-content:center;padding:15px;box-shadow:none}
+.act .btn-cancel{width:100%;justify-content:center;min-height:46px;margin-top:10px;padding:10px;
+  color:var(--fog);background:transparent;border:1px solid var(--line-2);box-shadow:none}
+.act .btn-cancel:hover{background:rgba(238,240,226,.06);border-color:var(--dim)}
+.act :is(button,input,a):focus-visible{outline:2px solid var(--fog);outline-offset:4px}
 .consent-row{display:flex;align-items:flex-start;gap:10px;cursor:pointer;font-size:12.5px;
   color:var(--dim);line-height:1.5;margin:0 0 16px}
 /* centre the box on the first line, not the whole phrase (see the demo page). */
@@ -850,11 +913,6 @@ main.auth{flex:1;display:flex;align-items:center;justify-content:center;padding:
 .consent-row span{min-width:0;max-width:48ch;text-wrap:balance}
 .consent-row a{color:var(--fog);text-decoration:underline;text-underline-offset:2px}
 .consent-row a:hover{color:var(--orange)}
-/* CSS-only gate (script-free page): the submit button is inert until #tos-agree
-   is checked. Server-side POST /authorize also requires tos_agree — this is UX,
-   not the enforcement boundary. */
-.act:not(:has(#tos-agree:checked)) .btn-primary{opacity:.45;pointer-events:none;
-  cursor:not-allowed;box-shadow:none;transform:none}
 .note{display:flex;gap:9px;align-items:center;font-size:12.5px;color:var(--dim);margin:16px 0 0;line-height:1.5}
 .note span{min-width:0;text-wrap:balance}
 .note svg{flex:none}
@@ -862,9 +920,10 @@ main.auth{flex:1;display:flex;align-items:center;justify-content:center;padding:
   position:relative;z-index:2}
 .auth-brand .rv{width:22px;height:22px;fill:var(--orange);filter:drop-shadow(0 0 12px rgba(255,85,0,.5));align-self:center}
 .auth-brand b{font-family:var(--display);font-weight:600;font-size:17px;color:var(--fog)}
-.auth-brand i{font-family:var(--mono);font-style:normal;font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--ash)}
+.auth-brand i{font-family:var(--mono);font-style:normal;font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--dim)}
 @media (max-width:380px){
-  .card-top,.panel-h,.scopes,.act{padding-inline:22px}
+  .card-top,.panel-h,.scopes,.scope-empty,.act{padding-inline:22px}
+  .destination{margin-inline:22px}
   .card h1{max-width:21ch}
 }
 `;
@@ -883,23 +942,23 @@ const SHIELD =
   `fill="none" stroke="#71806a" stroke-width="1.3" stroke-linejoin="round"/></svg>`;
 
 const SCOPE_GLOSS: Record<string, string> = {
-  mcp: "Run search and execute against the Stellar service catalog on your behalf."
+  mcp: "Search Stellar resources and retrieve data on your behalf."
 };
 
-/**
- * View-model rendering for the consent page. workos.ts passes the already-safe
- * display strings and wraps the result in a Response (cookies live there).
- */
+/** Render untrusted client metadata as text. The auth handler owns validation and cookies. */
 export function consentPage(args: {
   clientName: string;
   scopes: string[];
   csrfToken: string;
   formAction: string;
+  /** Exact redirect URI from the validated authorization request. */
+  redirectDestination: string;
 }): string {
   const clientName = escapeHtml(args.clientName.trim() || "Unknown MCP client");
   const initial = escapeHtml((args.clientName.trim() || "?").charAt(0).toUpperCase());
-  const scopes = args.scopes.length ? args.scopes : ["(no scopes requested)"];
-  const scopeItems = scopes
+  // Match the browser's destination serialization, including IDN hostnames.
+  const destination = new URL(args.redirectDestination).href;
+  const scopeItems = args.scopes
     .map((s) => {
       const gloss = SCOPE_GLOSS[s];
       return (
@@ -912,27 +971,34 @@ export function consentPage(args: {
   return (
     head("Authorize · Stellar Raven", "Authorize an MCP client to connect to Stellar Raven.", BASE + CONSENT_CSS, "", true) +
     `<div class="stage"></div><div class="scrim"></div>` +
-    `<div class="auth-brand">${ravenSvg("rv")}<b>Stellar Raven</b><i>codemode</i></div>` +
+    `<header class="auth-brand">${ravenSvg("rv")}<b>Stellar Raven</b><i>codemode</i></header>` +
     `<main class="auth"><div class="card">
   <div class="card-top">
-    <div class="conn"><div class="node client">${initial}</div><div class="wire"></div>
+    <div class="conn" aria-hidden="true"><div class="node client">${initial}</div><div class="wire"></div>
       <div class="node raven">${ravenSvg("rv")}</div></div>
-    <h1>${clientName} wants to connect</h1>
-    <p class="sub">It will access <b>Stellar Raven</b> for you once you sign in with WorkOS.</p>
+    <h1><bdi>${clientName}</bdi> wants to connect</h1>
+    <p class="unverified">App name supplied by the client, not verified by Stellar Raven.</p>
+    <p class="sub">This app will use <b>Stellar Raven</b> on your behalf.</p>
   </div>
-  <div class="panel-h">This connection grants</div>
-  <ul class="scopes">${scopeItems}</ul>
+  <section class="destination" aria-labelledby="destination-title">
+    <h2 id="destination-title">Return address</h2>
+    <p>After sign-in, your browser returns here.</p>
+    <code dir="ltr">${escapeHtml(destination)}</code>
+  </section>
+  <h2 class="panel-h">This connection grants</h2>
+  ${scopeItems ? `<ul class="scopes">${scopeItems}</ul>` : `<p class="scope-empty">No scopes requested.</p>`}
   <div class="act">
     <form method="post" action="${escapeHtml(args.formAction)}">
       <input type="hidden" name="csrf_token" value="${escapeHtml(args.csrfToken)}"/>
-      <label class="consent-row"><input type="checkbox" name="tos_agree" id="tos-agree"/>
+      <label class="consent-row"><input type="checkbox" name="tos_agree" id="tos-agree" required/>
         <span>I have read and agree to the
         <a href="/terms" target="_blank" rel="noopener">Terms of Service</a>
         and the <a href="https://stellar.org/privacy-policy" target="_blank" rel="noopener">Privacy Policy</a>.</span></label>
-      <button class="btn btn-primary" type="submit">Approve and continue ${ARROW}</button>
+      <button class="btn btn-primary" type="submit">Sign in and connect ${ARROW}</button>
+      <button class="btn btn-cancel" type="submit" name="decision" value="deny" formnovalidate>Cancel</button>
     </form>
-    <p class="note">${SHIELD}<span>Only continue if you started this connection. Approving redirects
-      you to WorkOS AuthKit to sign in — your password never reaches this server.</span></p>
+    <p class="note">${SHIELD}<span>Continue only if you recognize this app and started this connection.
+      You will sign in with WorkOS. Raven never receives your password.</span></p>
   </div>
 </div></main>` +
     `</body></html>`
@@ -945,13 +1011,13 @@ export function consentPage(args: {
 // authoritative copy lives here (this file is the source of truth).
 // ---------------------------------------------------------------------------
 
-export const TERMS_EFFECTIVE_DATE = "August 5, 2026";
+export const TERMS_EFFECTIVE_DATE = "September 11, 2026";
 
 const TERMS_CSS = `
 .stage{background:var(--green)}
 .stage::after{content:"";position:absolute;inset:0;
   background-image:url("data:image/png;base64,${CONSENT_GLOBE_PNG_BASE64}");
-  background-position:calc(50vw - 79.9vmin) bottom;background-size:160vmin auto;background-repeat:no-repeat;
+  background-position:calc(50vw - 159.86vmin) bottom;background-size:240vmin auto;background-repeat:no-repeat;
   image-rendering:pixelated;opacity:.5}
 .scrim{background:linear-gradient(180deg,rgba(14,21,13,.86) 0%,rgba(14,21,13,.92) 40%,rgba(14,21,13,.96) 100%)}
 /* header + footer share the prose column so the page reads as one measure */
@@ -978,9 +1044,9 @@ const TERMS_BODY = `
 <h1>Stellar Raven Terms of Service</h1>
 <p class="eff">Effective ${TERMS_EFFECTIVE_DATE}</p>
 <p class="lead">These Terms of Service ("Terms") govern your access to and use of raven.stellar.org,
-raven.stellar.buzz, and agents.stellar.buzz, together with any successor or alias hostname for the
-same service, including the Model Context Protocol endpoint and the public playground (collectively,
-the "Service"), operated by the Stellar Development Foundation ("SDF," "we," or "us").</p>
+raven.stellar.buzz and agents.stellar.buzz, including the Model Context Protocol endpoint and the
+public playground (collectively, the "Service"), operated by the Stellar Development Foundation
+("SDF," "we," or "us").</p>
 <p>By accessing or using the Service, you agree to be bound by the
 <a href="https://stellar.org/terms-of-service" target="_blank" rel="noopener">Stellar.org Terms of Service</a>
 (the "Stellar ToS") and the
@@ -1063,38 +1129,34 @@ Stellar ToS apply to your use of AI-generated output obtained through or informe
     Service other than as a read-only information-retrieval tool;</li>
   <li>use the Service to overload, disrupt, or interfere with the Service or any third-party service
     reached through it; or</li>
-  <li>probe, scan, or test the vulnerability of the Service, breach or circumvent its authentication,
-    rate limiting, or access controls, or otherwise attack the Service or the infrastructure it runs
-    on. This restriction applies to SDF's deployment of the Service, not to the source code, which
-    you may use, modify, and redistribute under its open-source license as described in Section 4.</li>
+  <li>reverse engineer, or attempt to extract the underlying models, prompts, or algorithms of, the
+    Service.</li>
 </ol>
 
 <h2>9. Data and privacy</h2>
 <p>Your use of the Service is subject to the Privacy Policy. The following describes how the Service
 handles data, and supplements that policy:</p>
-<p><b>Authentication.</b> Sign-in is handled by WorkOS, a third-party authentication provider, which
-receives your email address and holds it on SDF's behalf to identify your account. The Service itself
-receives only an account identifier from WorkOS, which is one-way hashed before storage; the Service
-does not store your email address. Authentication tokens issued by WorkOS during sign-in are not
-retained. The Service does not collect names, addresses, payment information, wallet keys, or
-special-category data.</p>
-<p><b>Operational logs.</b> The Service's own structured logs contain content-free operational data such
-as status, timing, counts, exposed operation identifiers, and pseudonymous account joins. They do not
-contain submitted queries, execute code, tool results, response or answer text, provider error messages,
-or hashes derived from that content. Cloudflare may separately retain platform request metadata under
-its fixed retention schedule, currently no longer than seven days.</p>
-<p><b>Temporary artifacts.</b> For authenticated MCP use, an oversized, secret-redacted execute result
-may be stored in SDF's Cloudflare R2 environment for up to seven days so the same authenticated account
-can inspect it. These artifacts have no public URL and expire automatically.</p>
+<p><b>Authentication.</b> Sign-in is handled by WorkOS, a third-party authentication provider that
+receives and processes your email address. WorkOS may send the Service an authentication response
+containing your email address, but the Service does not read or store that value. The Service uses
+only an account identifier from WorkOS, which it one-way hashes before storage, and does not retain
+WorkOS sign-in tokens. The Service does not collect names, addresses, payment information, wallet
+keys, or special-category data.</p>
+<p><b>Operational and quality logs.</b> To operate the Service and improve response quality, the Service
+stores observability data, which may include the queries submitted and the responses returned, for 30
+days, after which it is deleted. This data is stored in SDF's Cloudflare environment.</p>
+<p><b>Usage statistics.</b> Separately, we retain tool-response records for ${USAGE_RETENTION_MONTHS} UTC calendar months, including the current month.
+These records contain response times, tool names, access methods, pseudonymous account identifiers, and collection status.
+They do not contain queries, answers, email addresses, or IP addresses.
+We use these records to count tool responses and distinct active accounts.
+We delete records from older months daily. Recovery backups may retain deleted records for up to 30 additional days.
+You may request deletion through the contact below.</p>
 <p><b>No sensitive data.</b> You should not submit personal, confidential, or sensitive information to the
 Service. You are solely responsible for the content you or your agent submit, and for any consequences of
 submitting content you should not have submitted.</p>
-<p><b>Your choices.</b> Raven's structured content logging and AI Gateway request logging are disabled
-for every user. You may request deletion
-of data associated with your account by contacting us at
-<a href="mailto:frontier@stellar.org">frontier@stellar.org</a>. Active grants, rate-limit records, and
-temporary artifacts can be removed; platform logs already retained by Cloudflare expire on their fixed
-schedule rather than through selective deletion.</p>
+<p><b>Your choices.</b> You may opt out of query and response logging and you may request deletion of
+data associated with your account by contacting us at
+<a href="mailto:frontier@stellar.org">frontier@stellar.org</a>.</p>
 
 <h2>10. Changes; contact</h2>
 <p>We may modify these Terms or the Service at any time without prior notice. Your continued use of the
@@ -1113,9 +1175,13 @@ export function termsPage(): string {
       "/terms"
     ) +
     `<div class="stage"></div><div class="scrim"></div>` +
-    `<header class="top"><div class="wrap top-in">${brand()}` +
-    `<nav class="top-nav"><a class="btn btn-ghost" href="/">Home</a>` +
-    `<a class="btn btn-ghost" href="/playground">Playground</a></nav></div></header>` +
+    renderSiteHeader({
+      label: "codemode",
+      links: [
+        { href: "/", label: "Home" },
+        { href: "/playground", label: "Playground" }
+      ]
+    }) +
     `<main class="legal">${TERMS_BODY}</main>` +
     siteFooter() +
     `</body></html>`
@@ -1123,6 +1189,283 @@ export function termsPage(): string {
 }
 
 export const TERMS_HEADERS: Record<string, string> = {
+  "content-type": "text/html; charset=utf-8",
+  "cache-control": "public, max-age=300",
+  "content-security-policy":
+    "default-src 'none'; style-src 'unsafe-inline'; font-src data:; img-src data:; " +
+    "frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "no-referrer"
+};
+
+// ---------------------------------------------------------------------------
+// Documentation (GET /docs) — the public how-it-works page: what Raven is,
+// how to connect, the two-tool workflow, the source families, and
+// troubleshooting. Script-free static prose in the same visual system as
+// /terms. Catalog counts are checked against catalog/manifest.json; token
+// lifetimes against src/auth/gate.ts.
+// ---------------------------------------------------------------------------
+
+/** Catalog entry counts by kind, as the landing and docs copy renders them. */
+export type DocCatalogCounts = { operations: number; skills: number; sections: number };
+
+let docCatalogCounts: DocCatalogCounts | undefined;
+
+/**
+ * Current counts derive from the validated manifest, computed on first use and
+ * cached for the isolate's lifetime.
+ *
+ * Lazy on purpose: every auth-handler route imports this module, but only the
+ * landing and docs pages render a count. Deriving at module scope charged each
+ * isolate init a full getCatalog() validation of the ~700 KB manifest, so
+ * /authorize, /callback, and /health paid for prose they never emit.
+ */
+export function getDocCatalogCounts(): DocCatalogCounts {
+  docCatalogCounts ??= getCatalog().entries.reduce(
+    (counts, entry) => {
+      if (entry.kind === "operation") counts.operations += 1;
+      else if (entry.kind === "skill") counts.skills += 1;
+      else if (entry.kind === "skill-section") counts.sections += 1;
+      return counts;
+    },
+    { operations: 0, skills: 0, sections: 0 }
+  );
+  return docCatalogCounts;
+}
+
+/**
+ * Every codemode helper the production sandbox exposes, in the nested form the
+ * sandbox sees. src/executor/providers.ts is the source: the four discovery
+ * dispatch fns plus the skill/artifact prelude namespaces. test/server.test.ts
+ * checks this list against that provider's own fn table and against the
+ * rendered page, so a new helper cannot ship with /docs naming the old set.
+ */
+export const DOC_CODEMODE_HELPERS = [
+  "codemode.spec",
+  "codemode.search",
+  "codemode.catalog",
+  "codemode.describe",
+  "codemode.skill.read",
+  "codemode.skill.run",
+  "codemode.artifact.info",
+  "codemode.artifact.read"
+] as const;
+
+/**
+ * The static search -> execute example shown on /docs. Single source of truth
+ * for both the rendered trace and its test: test/server.test.ts re-runs
+ * searchCatalogPage with this query/limit and asserts the displayed top-three
+ * still matches, and that the execute example only calls operations from that
+ * displayed shortlist. Update this constant together with docTrace().
+ */
+export const DOC_TRACE_EXAMPLE = {
+  query: "find Soroswap project and research its liquidity",
+  limit: 3,
+  hitIds: [
+    "lumenloop.find_content_about_project",
+    "scout.searchResearch",
+    "scout.searchProjects"
+  ],
+  executeOperationIds: ["scout.searchProjects", "scout.searchResearch"]
+};
+
+const DOCS_CSS = `
+.stage{background:var(--green)}
+.stage::after{content:"";position:absolute;inset:0;
+  background-image:url("data:image/png;base64,${CONSENT_GLOBE_PNG_BASE64}");
+  background-position:calc(50vw - 159.86vmin) bottom;background-size:240vmin auto;background-repeat:no-repeat;
+  image-rendering:pixelated;opacity:.5}
+.scrim{background:linear-gradient(180deg,rgba(14,21,13,.86) 0%,rgba(14,21,13,.92) 40%,rgba(14,21,13,.96) 100%)}
+.top-in,.foot{max-width:780px;margin:0 auto}
+.docs{max-width:780px;margin:0 auto;padding:8px 32px 80px;position:relative;z-index:2}
+.docs h1{font-family:var(--display);font-weight:700;font-size:clamp(32px,5vw,48px);line-height:1.05;
+  letter-spacing:-.02em;color:var(--fog);margin:0}
+.docs .eff{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--orange);margin:16px 0 0}
+.docs h2{font-family:var(--mono);font-size:12.5px;font-weight:500;letter-spacing:.18em;text-transform:uppercase;
+  color:var(--orange);margin:44px 0 0;padding-top:22px;border-top:1px solid var(--line)}
+.docs p{font-size:15.5px;color:var(--dim);line-height:1.7;margin:16px 0 0}
+.docs p b,.docs li b{color:var(--fog);font-weight:600}
+.docs a{color:var(--fog);text-decoration:underline;text-underline-offset:2px;overflow-wrap:anywhere}
+.docs a:hover{color:var(--orange)}
+.docs .lead{font-size:17px;color:var(--fog);opacity:.94}
+.docs ul{margin:16px 0 0;padding-left:22px;color:var(--dim);font-size:15.5px;line-height:1.7}
+.docs li{margin-top:10px}
+.docs li::marker{color:var(--ash)}
+.docs code{font-family:var(--mono);font-size:.85em;font-weight:500;color:var(--orange);
+  background:var(--orange-soft);border:1px solid rgba(255,85,0,.24);padding:1px 6px;border-radius:6px;
+  white-space:nowrap}
+/* the signature element: the real search -> execute flow, rendered as one
+   annotated terminal trace using the shared term/code material */
+.trace{margin:26px 0 0;border:1px solid var(--line);border-radius:12px;background:rgba(6,10,6,.82);
+  overflow:hidden}
+.trace-step{padding:10px 16px;border-bottom:1px solid var(--line);font-family:var(--mono);
+  font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--dim)}
+.trace-step b{color:var(--orange);font-weight:500}
+.trace pre.code{border-bottom:0}
+.trace-note{padding:12px 18px;font-family:var(--sans);font-size:13px;color:var(--dim);line-height:1.6}
+.trace-note b{color:var(--fog);font-weight:600}
+@media (max-width:820px){.docs{padding:8px 22px 64px}}
+/* The longest inline code span is 37 characters — wider than a 320px
+   viewport's text column. body sets overflow-x:hidden, so a nowrap span
+   that wide is clipped rather than scrolled. Below 400px the spans wrap
+   instead; wider viewports keep them on one line. */
+@media (max-width:400px){.docs code{white-space:pre-wrap;overflow-wrap:anywhere}}
+`;
+
+function docTrace(): string {
+  const { query, limit, hitIds, executeOperationIds } = DOC_TRACE_EXAMPLE;
+  // Render the called operations straight from DOC_TRACE_EXAMPLE so the shown
+  // script can never drift from the shortlist its regression test binds to.
+  const [firstService, firstOp] = executeOperationIds[0]!.split(".");
+  const [secondService, secondOp] = executeOperationIds[1]!.split(".");
+  return `<div class="trace">
+  <div class="trace-step"><b>1 · search</b> ranks the catalog</div>
+  <pre class="code" tabindex="0"><span class="p">search</span>({ query: <span class="s">"${query}"</span>, limit: <span class="k">${limit}</span> })
+<span class="c">→ ranked hits with TypeScript signatures:</span>
+<span class="c">  ${hitIds.join(" · ")}</span></pre>
+  <div class="trace-step"><b>2 · execute</b> composes them in one script</div>
+  <pre class="code" tabindex="0"><span class="k">const</span> found = <span class="k">await</span> <span class="p">${firstService}.</span><span class="p">${firstOp}</span>({ q: <span class="s">"soroswap"</span> });
+<span class="k">if</span> (!found.ok) <span class="k">return</span> found.error;   <span class="c">// check r.ok first</span>
+<span class="k">if</span> (found.<span class="s">data</span>.projects.length === <span class="k">0</span>)    <span class="c">// ok:true can still be empty</span>
+  <span class="k">return</span> { note: <span class="s">"no matches"</span> };
+<span class="k">const</span> top = found.<span class="s">data</span>.projects[<span class="k">0</span>];       <span class="c">// payloads live under .data</span>
+<span class="k">return await</span> <span class="p">${secondService}.</span><span class="p">${secondOp}</span>({ q: <span class="s">\`\${top.name} liquidity\`</span> });  <span class="c">// composition</span></pre>
+  <div class="trace-note">Every service call resolves to <b>{ ok: true, data }</b> or
+    <b>{ ok: false, error }</b>. It never throws across the tool boundary.</div>
+</div>`;
+}
+
+/**
+ * A function, not a module-scope constant: the copy interpolates
+ * getDocCatalogCounts(), and a constant would force that catalog read back into
+ * module init for every route that merely imports this file.
+ */
+function docsBody(): string {
+  const counts = getDocCatalogCounts();
+  const helperList = DOC_CODEMODE_HELPERS.map(
+    (helper, index) =>
+      `${index === DOC_CODEMODE_HELPERS.length - 1 ? "and " : ""}<code>${helper}</code>`
+  ).join(", ");
+  return `
+<h1>Stellar Raven documentation</h1>
+<p class="eff">How Raven works, how to connect, and how to fix problems</p>
+
+<h2>What Raven is</h2>
+<p class="lead">Stellar Raven is a remote Model Context Protocol (MCP) server that gives AI agents
+Stellar documentation and ecosystem context through one connection.</p>
+<p>Raven exposes exactly two tools over a single catalog of
+<b>${counts.operations} operations</b>,
+<b>${counts.skills} skills</b>, and
+<b>${counts.sections} sections</b>. One browser sign-in covers everything;
+you never handle API keys for the underlying services.</p>
+
+<h2>Connect your agent</h2>
+<p>Add <code>https://raven.stellar.org/mcp</code> to any MCP client that supports streamable HTTP
+and OAuth — Claude Desktop, Claude Code, Cursor, Codex, VS Code, and others.</p>
+<ul>
+  <li>The client starts an <b>OAuth sign-in in your browser</b>. Sign in once and approve the connection.</li>
+  <li>Access tokens last <b>1 hour</b>; compatible clients refresh them automatically within a fixed
+    <b>90-day</b> authorization window before you sign in again.</li>
+  <li>No per-service keys are ever issued to your agent. All upstream service credentials stay
+    on Raven's server.</li>
+</ul>
+
+<h2>The two tools</h2>
+<p><b>search</b> ranks exposed operations and whole skills against your question. Operation hits
+carry a ready-to-call TypeScript signature, and runnable-skill hits can carry one too. Skill hits
+list their <code>availableSections</code> instead — individual skill sections are not searchable,
+so your agent reads them by exact section id. <b>execute</b> takes that shortlist and runs one
+JavaScript script inside a sandboxed isolate with <b>no network access</b>. Service operations run
+through host-side adapters that hold the upstream credentials and enforce policy.
+The eight allowed codemode helpers (${helperList}) are functions on one host provider,
+inside the same sandbox boundary. This is the working loop:</p>
+${docTrace()}
+
+<h2>The four source families</h2>
+<p>Each family answers different questions, and Raven's guidance tells your agent which to trust:</p>
+<ul>
+  <li><b>Lumenloop</b> (lumenloop.*) — community and editorial ecosystem intelligence: project
+    directory details, published research, content, audio/video passages, and SCF funding context.</li>
+  <li><b>Scout</b> (scout.*) — the live ecosystem graph: projects, repos, builders, partners,
+    hackathons, audits, and stablecoins.</li>
+  <li><b>Stellar Docs</b> (stellarDocs.*) — official Stellar documentation. The authority for
+    protocol behavior, standards status, and API shapes.</li>
+  <li><b>Skills</b> (skills.*) — pinned operational playbooks read section by section: tested
+    build, integration, security, and data procedures.</li>
+</ul>
+<p>Ecosystem facts start with Lumenloop or Scout. Protocol and standards claims stay unverified
+until official docs confirm them.</p>
+
+<h2>Troubleshooting</h2>
+<ul>
+  <li><b>Read the envelope first.</b> Every service call resolves to <code>{ ok: true, data }</code>
+    or <code>{ ok: false, error }</code>. Payload fields live under <code>.data</code> — read
+    <code>r.data.projects</code>, never <code>r.projects</code>. <code>codemode.skill.run</code>,
+    <code>codemode.artifact.info</code>, and <code>codemode.artifact.read</code> use that same
+    envelope. The discovery helpers answer at the top level instead: <code>codemode.search</code>
+    gives <code>r.hits</code>, <code>codemode.describe</code> gives entry fields such as
+    <code>r.signature</code> and <code>r.inputSchema</code>, <code>codemode.skill.read(id)</code>
+    gives <code>r.content</code>, and <code>codemode.skill.read(id, { sections })</code> gives
+    <code>r.sections</code>.</li>
+  <li><b>An empty answer may not be an answer.</b> An <code>error.kind</code> of
+    <code>"error"</code> means the call failed. A kind of <code>"soft-empty"</code> means the
+    service answered with nothing — that is inconclusive, not proof something does not exist.
+    Widen the search across families before concluding a negative.</li>
+  <li><b>Big results get truncated.</b> Output is capped near the model's context budget. When a
+    truncated response reports an available artifact, read the full payload back inside execute
+    with <code>codemode.artifact.read(id)</code>, then return only the fields you need. Artifacts
+    expire after seven days, are stored only for signed-in MCP clients — API-key and Playground
+    calls get none — and payloads above 2 MiB skip storage. When no artifact is reported, inspect
+    the operation's signature before using arguments like <code>limit</code> or
+    <code>fields</code> — only some operations accept them. The general fallback is to project the
+    result in JavaScript — return just the fields you need — or split the script into smaller
+    calls.</li>
+  <li><b>Service health.</b> Check <code>/health</code> for the service heartbeat and
+    <code>/health/skills</code> for playbook availability. Both are public and need no sign-in.</li>
+  <li><b>Sign-in fails or loops.</b> The sign-in happens in your browser through WorkOS AuthKit;
+    approve the Terms acknowledgement checkbox on the consent screen. After 90 days your client
+    must send you through sign-in again — this is expected. If a client cannot complete OAuth at
+    all, ask the operator for a named API key and send
+    <code>Authorization: Bearer name:token</code> instead.</li>
+</ul>
+
+<h2>Get help</h2>
+<p>Ask in <b>#raven</b> in the <a href="https://discord.gg/stellardev" target="_blank" rel="noopener">Stellar
+Developers Discord</a>. That channel is the support channel for Raven. Use it for connection
+problems, catalog questions, and failures this page does not resolve.</p>
+<p>Report a security vulnerability privately instead: use GitHub private vulnerability reporting on
+<a href="https://github.com/stellar-experimental/stellar-raven" target="_blank" rel="noopener">stellar-experimental/stellar-raven</a>,
+or email <a href="mailto:frontier@stellar.org">frontier@stellar.org</a>. Do not post a
+vulnerability in Discord.</p>
+`;
+}
+
+export function docsPage(): string {
+  return (
+    head(
+      "Documentation · Stellar Raven",
+      "How to connect your AI agent to Stellar Raven, what search and execute do, and how to troubleshoot common failures.",
+      BASE + DOCS_CSS,
+      "",
+      false,
+      "/docs"
+    ) +
+    `<div class="stage"></div><div class="scrim"></div>` +
+    renderSiteHeader({
+      label: "codemode",
+      links: [
+        { href: "/", label: "Home" },
+        { href: "/playground", label: "Playground" }
+      ]
+    }) +
+    `<main class="docs">${docsBody()}</main>` +
+    siteFooter() +
+    `</body></html>`
+  );
+}
+
+export const DOCS_HEADERS: Record<string, string> = {
   "content-type": "text/html; charset=utf-8",
   "cache-control": "public, max-age=300",
   "content-security-policy":
@@ -1155,6 +1498,12 @@ export const LANDING_HEADERS: Record<string, string> = {
 export const CONSENT_HEADERS: Record<string, string> = {
   "content-type": "text/html; charset=utf-8",
   "cache-control": "no-store",
+  // The consent URL carries the client's `state` and `code_challenge` in its
+  // query string, and this page invites the user to click through to /terms
+  // and to the Stellar privacy policy. The default referrer policy would send
+  // that whole URL on the same-origin hop — straight into request logs — so
+  // send no referrer at all. Matches the /callback interstitial.
+  "referrer-policy": "no-referrer",
   "content-security-policy":
     "default-src 'none'; style-src 'unsafe-inline'; font-src data:; img-src data:; " +
     "frame-ancestors 'none'; base-uri 'none'",
@@ -1186,6 +1535,7 @@ export function sitemapXml(): string {
     `<?xml version="1.0" encoding="UTF-8"?>\n` +
     `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
     `  <url><loc>https://${HOST}/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>\n` +
+    `  <url><loc>https://${HOST}/docs</loc><changefreq>monthly</changefreq><priority>0.7</priority></url>\n` +
     `  <url><loc>https://${HOST}/terms</loc><changefreq>yearly</changefreq><priority>0.3</priority></url>\n` +
     `</urlset>\n`
   );

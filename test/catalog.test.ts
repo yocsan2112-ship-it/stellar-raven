@@ -15,6 +15,7 @@ import { RUNNERS } from "../src/skills/runners/index.ts";
 import {
   assertNoNonExposedRefs,
   assertSideEffectingOpsExcluded,
+  attachKnownAliases,
   attachRetrievalProfiles
 } from "../scripts/build-catalog.mjs";
 import { EXCLUDED_SCOUT_OPS } from "../scripts/exposure.mjs";
@@ -22,6 +23,16 @@ import { MICRO_MAP } from "../src/mcp/micro-map.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const MANIFEST_PATH = join(ROOT, "catalog", "manifest.json");
+const VALID_ALIAS_RECEIPTS = [
+  {
+    path: "research/qa-deep-dive-2026-08-25/receipts/wisdomtree-live-sources.json",
+    sha256: "49df01cdaaf1368881dd643ff53c93d2fa238bfa39fb7eaa6d4efea4eb8bedb6"
+  },
+  {
+    path: "research/qa-deep-dive-2026-08-25/receipts/wisdomtree-toml.txt",
+    sha256: "773b534176e3a9b7bdc9671568226d15978192fed4914725d786534a8168c156"
+  }
+] as const;
 
 function runBuilder(): string {
   execFileSync(process.execPath, [join(ROOT, "scripts", "build-catalog.mjs")], {
@@ -68,6 +79,97 @@ describe("build-catalog.mjs", () => {
   it("has globally unique ids", () => {
     const ids = catalog.entries.map((e) => e.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("attaches only the receipt-backed WisdomTree entity alias pack", () => {
+    const aliased = catalog.entries.filter(
+      (entry) => entry.knownAliases
+    );
+    expect(aliased.map((entry) => entry.id)).toEqual([
+      "lumenloop.find_content_by_entity"
+    ]);
+    for (const entry of aliased) {
+      expect(entry.knownAliases).toEqual([
+        "CRDT",
+        "CRDYX",
+        "WisdomTree Private Credit and Alternative Income Digital Fund",
+        "WisdomTree Private Credit"
+      ]);
+      expect(entry.knownAliasTriggers).toEqual([
+        "CRDT",
+        "CRDYX",
+        "WisdomTree"
+      ]);
+    }
+  });
+
+  it("rejects invalid alias provenance, generic triggers, and orphaned targets", () => {
+    const entries = catalog.entries;
+    expect(() => attachKnownAliases(entries, [{
+      provenance: [],
+      aliases: ["one", "two"],
+      triggers: ["one"],
+      entryIds: ["lumenloop.search_directory"]
+    }])).toThrow(/no receipt provenance/);
+    expect(() => attachKnownAliases(entries, [{
+      provenance: [null],
+      aliases: ["one", "two"],
+      triggers: ["one"],
+      entryIds: ["lumenloop.search_directory"]
+    }])).toThrow(/receipt objects/);
+    expect(() => attachKnownAliases(entries, [{
+      provenance: [{ path: "research/does-not-exist.txt" }],
+      aliases: ["one", "two"],
+      triggers: ["one"],
+      entryIds: ["lumenloop.search_directory"]
+    }])).toThrow(/does not exist/);
+    expect(() => attachKnownAliases(entries, [{
+      provenance: [{ path: "node_modules/.package-lock.json" }],
+      aliases: ["one", "two"],
+      triggers: ["one"],
+      entryIds: ["lumenloop.search_directory"]
+    }])).toThrow(/not checked in/);
+    expect(() => attachKnownAliases(entries, [{
+      provenance: [{ path: VALID_ALIAS_RECEIPTS[0].path }],
+      aliases: ["one", "two"],
+      triggers: ["one"],
+      entryIds: ["lumenloop.search_directory"]
+    }])).toThrow(/requires SHA-256/);
+    expect(() => attachKnownAliases(entries, [{
+      provenance: [{ ...VALID_ALIAS_RECEIPTS[0], sha256: "0".repeat(64) }],
+      aliases: ["one", "two"],
+      triggers: ["one"],
+      entryIds: ["lumenloop.search_directory"]
+    }])).toThrow(/SHA-256 does not match/);
+    for (const trigger of [
+      "credit",
+      "token",
+      "the",
+      "private credit",
+      "credit card",
+      "CreditCard",
+      "creditcard",
+      "the and"
+    ]) {
+      expect(() => attachKnownAliases(entries, [{
+        provenance: VALID_ALIAS_RECEIPTS,
+        aliases: ["one", "two"],
+        triggers: [trigger],
+        entryIds: ["lumenloop.search_directory"]
+      }]), trigger).toThrow(/generic or a stopword/);
+    }
+    expect(() => attachKnownAliases(entries, [{
+      provenance: VALID_ALIAS_RECEIPTS,
+      aliases: ["one", "two"],
+      triggers: ["one"],
+      entryIds: ["lumenloop.not_exposed"]
+    }])).toThrow(/non-exposed catalog entry/);
+  });
+
+  it("rejects unpaired canonical alias fields", () => {
+    const rawCatalog = JSON.parse(raw) as { entries: Array<Record<string, unknown>> };
+    rawCatalog.entries[0]!.knownAliases = ["one", "two"];
+    expect(() => loadManifest(rawCatalog)).toThrow(/must appear together/);
   });
 
   it("attaches only exact, exposed operation recovery edges", () => {
@@ -132,6 +234,47 @@ describe("build-catalog.mjs", () => {
     );
   });
 
+  it("attaches the live-derived Scout recovery profiles without profiling the change feed", () => {
+    const byId = new Map(catalog.entries.map((entry) => [entry.id, entry]));
+    const broadMiss = ["empty", "weak", "adjacent", "ambiguous"];
+    const corroborate = ["weak", "adjacent", "ambiguous", "partial"];
+
+    expect(byId.get("scout.listContracts")?.retrievalProfile).toEqual({
+      lane: "directory",
+      emptyScope: "operation",
+      recoverWith: [
+        { id: "scout.searchRepos", relation: "source-code", on: ["empty", "partial"] },
+        { id: "lumenloop.search_content_semantic", relation: "broader-semantic", on: broadMiss },
+        { id: "scout.searchResearch", relation: "cited-research", on: corroborate }
+      ]
+    });
+    expect(byId.get("scout.getRepoTrust")?.retrievalProfile).toEqual({
+      lane: "detail",
+      emptyScope: "operation",
+      recoverWith: [
+        { id: "scout.searchRepos", relation: "source-code", on: ["empty", "partial"] },
+        { id: "lumenloop.search_content_semantic", relation: "broader-semantic", on: broadMiss },
+        { id: "scout.searchResearch", relation: "cited-research", on: corroborate }
+      ]
+    });
+    for (const id of ["scout.scfPitch", "scout.vetIdea"]) {
+      expect(byId.get(id)?.retrievalProfile, id).toEqual({
+        lane: "research",
+        emptyScope: "inconclusive",
+        recoverWith: [
+          {
+            id: "lumenloop.find_similar_scf_submissions",
+            relation: "broader-semantic",
+            on: broadMiss
+          },
+          { id: "scout.searchHackathonBuilds", relation: "source-code", on: ["weak", "partial"] },
+          { id: "scout.searchResearch", relation: "cited-research", on: corroborate }
+        ]
+      });
+    }
+    expect(byId.get("scout.getChanges")?.retrievalProfile).toBeUndefined();
+  });
+
   it("has the expected entry counts per service/kind", () => {
     const count = (pred: (e: Catalog["entries"][number]) => boolean) =>
       catalog.entries.filter(pred).length;
@@ -156,26 +299,37 @@ describe("build-catalog.mjs", () => {
       catalog.entries.filter((e) => e.service === "lumenloop" && e.kind === "skill-section")
     ).toHaveLength(0);
 
-    // Scout: 24 exposed of 28 upstream OpenAPI operations — the 3 write/
+    // Scout: 30 exposed of 37 upstream OpenAPI operations — the 4 write/
     // side-effecting endpoints (submitFeedback, submitPartnerListing,
-    // partnerAssistant) are excluded at build time, plus getFeedbackSchema:
+    // partnerAssistant, partnerOnboard) are excluded at build time, plus getFeedbackSchema:
     // read-only, but a dead end whose only purpose is to shape the excluded
     // feedback submission (its upstream description names the non-exposed
-    // scout.submitFeedback). matchPartners and partnerOnboard stay exposed —
-    // their OpenAPI descriptions document pure AI ranking/extraction with no
-    // persistence.
-    expect(count((e) => e.service === "scout" && e.kind === "operation")).toBe(24);
+    // scout.submitFeedback). The read-only hackathonBrief and matchPartners
+    // operations stay exposed. Their OpenAPI contracts describe no persistence.
+    // resolveProject is read-only and fully typed. The accepted 1.9.1 surface
+    // keeps getQualityReport hidden until a general scoring repair passes. It
+    // keeps verifyClaim hidden under a separate current-surface routing decision.
+    expect(count((e) => e.service === "scout" && e.kind === "operation")).toBe(30);
     expect(count((e) => e.id === "scout.submitFeedback")).toBe(0);
     expect(count((e) => e.id === "scout.getFeedbackSchema")).toBe(0);
     expect(count((e) => e.id === "scout.submitPartnerListing")).toBe(0);
     expect(count((e) => e.id === "scout.partnerAssistant")).toBe(0);
+    expect(count((e) => e.id === "scout.partnerOnboard")).toBe(0);
+    expect(count((e) => e.id === "scout.getQualityReport")).toBe(0);
+    expect(count((e) => e.id === "scout.verifyClaim")).toBe(0);
+    expect(count((e) => e.id === "scout.resolveProject")).toBe(1);
+    expect(count((e) => e.id === "scout.hackathonBrief")).toBe(1);
     expect(count((e) => e.id === "scout.matchPartners")).toBe(1);
-    expect(count((e) => e.id === "scout.partnerOnboard")).toBe(1);
     for (const id of [
       "scout.listAudits",
       "scout.searchHackathonBuilds",
       "scout.getPeople",
-      "scout.getStablecoins"
+      "scout.getStablecoins",
+      "scout.getChanges",
+      "scout.listContracts",
+      "scout.getRepoTrust",
+      "scout.scfPitch",
+      "scout.vetIdea"
     ]) {
       expect(count((e) => e.id === id), id).toBe(1);
     }
@@ -187,23 +341,23 @@ describe("build-catalog.mjs", () => {
     expect(docs.map((e) => e.id)).toContain("stellarDocs.search_docs");
     expect(docs.map((e) => e.id)).toContain("stellarDocs.search_docs_in_category");
     expect(docs.map((e) => e.id)).toContain("stellarDocs.search_meeting_notes");
-    // Every docs op carries the algolia execute-mapping block for Phase 3.
+    // Every docs operation carries its Algolia execution mapping.
     for (const op of docs) {
       expect(op.transport?.type, op.id).toBe("algolia");
       expect((op.transport as Record<string, unknown>).algolia, op.id).toBeDefined();
       expect(op.inputSchema).not.toBeNull();
     }
 
-    // Skills mirror: 18 whole-skill entries — the 7 retired Lumenloop
+    // Skills mirror: 20 whole-skill entries — the 7 retired Lumenloop
     // API-onboarding skills are never emitted, skill or sections (see
     // build-catalog.mjs RETIRED_ONBOARDING_SKILLS + the rename-guard).
-    expect(count((e) => e.service === "skills" && e.kind === "skill")).toBe(18);
-    expect(count((e) => e.service === "skills" && e.kind === "skill-section")).toBeGreaterThan(0);
+    expect(count((e) => e.service === "skills" && e.kind === "skill")).toBe(20);
+    expect(count((e) => e.service === "skills" && e.kind === "skill-section")).toBe(202);
     expect(count((e) => e.id.includes("lumenloop-api-"))).toBe(0);
     expect(count((e) => e.id.includes("lumenloop-mcp-connect"))).toBe(0);
 
-    // Grand total: everything in the manifest is exposed (ADR-0003).
-    expect(catalog.entries).toHaveLength(276);
+    // Grand total: 60 operations + 20 whole skills + 202 skill sections.
+    expect(catalog.entries).toHaveLength(282);
   });
 
   it("carries exactly version/generatedAt/entries at the top level", () => {
@@ -255,6 +409,88 @@ describe("build-catalog.mjs", () => {
     });
   });
 
+  it("preserves the evidence-backed model contracts", () => {
+    const byId = new Map(catalog.entries.map((entry) => [entry.id, entry]));
+    const entity = byId.get("lumenloop.find_content_by_entity")!;
+    const related = byId.get("lumenloop.get_related_projects")!;
+    const av = byId.get("lumenloop.find_av_passages")!;
+    const hackathon = byId.get("scout.searchHackathonBuilds")!;
+    const rfps = byId.get("scout.getRfps")!;
+
+    expect(entity.description).toContain("Content grouped by type in articles, av, events, proposals, and scf_submissions");
+    expect(entity.description).not.toContain("Array of content items");
+    expect(related.description).toContain("An object with content");
+    expect(related.description).not.toContain("Array of mentioned projects");
+    const avOperationDescription = av.description.split("\n\n")[0]!;
+    expect(avOperationDescription).toBe(
+      "Find specific passages in long videos, podcasts, and recorded talks by semantic similarity. Returns parent recording metadata, AI summaries, and an opaque ordering offset."
+    );
+    expect(avOperationDescription).not.toContain("Transcript text");
+    expect(av.description).toContain(
+      "created_at (upstream metadata; do not treat it as the recording date or recency evidence)"
+    );
+    expect(av.description).not.toContain("matched chunk text");
+    expect(av.description).not.toContain("recording's date");
+    expect(av.description).not.toContain("quote what was said");
+    expect(Object.keys((hackathon.inputSchema as { properties: Record<string, unknown> }).properties).sort()).toEqual([
+      "limit",
+      "q",
+      "track",
+      "winnersOnly"
+    ]);
+    expect(rfps.description).toContain("the sponsor brief is still soliciting");
+    expect(rfps.description).toContain("meta.scfRound.submissionWindow");
+    expect(rfps.description).not.toContain("open briefs are fundable in the current SCF round");
+    const statusDescription = (
+      rfps.inputSchema as { properties: { status: { description: string } } }
+    ).properties.status.description;
+    expect(statusDescription).toContain("brief is still soliciting");
+    expect(statusDescription).toContain("submissionWindow");
+    expect(statusDescription).toContain("currentPhase");
+    const rfpOutput = rfps.outputSchema as {
+      properties: {
+        funding: { description: string };
+        meta: { properties: { scfRound: { properties: Record<string, { description?: string }> } } };
+        rfps: { items: { properties: { status: { description: string } } } };
+      };
+    };
+    expect(rfpOutput.properties.funding.description).toContain(
+      "without asserting an open submission window"
+    );
+    expect(rfpOutput.properties.rfps.items.properties.status.description).toContain(
+      "brief is still soliciting"
+    );
+    const round = rfpOutput.properties.meta.properties.scfRound.properties;
+    expect(Object.keys(round)).toEqual(
+      expect.arrayContaining(["currentPhase", "roundsInProgress", "verifyAt"])
+    );
+    expect(round.currentRound?.description).toContain("NOT a claim that submissions are open");
+  });
+
+  it("emits the authored object contract for Docs page sections", () => {
+    const page = catalog.entries.find((entry) => entry.id === "stellarDocs.get_doc_page_sections")!;
+    expect(page.description).toContain(
+      "An object with page, sections, nbSections, complete, truncated"
+    );
+    const output = page.outputSchema as {
+      required: string[];
+      properties: {
+        sections: { items: { required: string[]; properties: Record<string, unknown> } };
+      };
+    };
+    expect(output.required).toEqual(["page", "sections", "nbSections", "complete", "truncated"]);
+    expect(output.properties.sections.items.required).toEqual([
+      "url",
+      "url_without_anchor",
+      "anchor",
+      "type",
+      "breadcrumb"
+    ]);
+    expect(output.properties.sections.items.properties).toHaveProperty("content");
+    expect(output.properties.sections.items.properties).toHaveProperty("snippet");
+    expect(output.properties.sections.items.required).not.toContain("content");
+  });
+
   it("maps each design-stage build domain to exact Scout, skill, and Docs authority", () => {
     const expected = [
       ["Design/build/integrate", "skills.stellar-dev.smart-contracts", "stellarDocs.search_soroban_contract_docs"],
@@ -288,11 +524,66 @@ describe("build-catalog.mjs", () => {
   });
 });
 
-describe("x-routing ingestion — routingKeywords field (scoring lever 7, issue #21)", () => {
+describe("x-routing ingestion — routingKeywords and routingPhrases fields", () => {
+  const expectedExposedRoutingIds = [
+    "scout.analyzeEcosystem",
+    "scout.compareHackathons",
+    "scout.explainRepo",
+    "scout.getBuilders",
+    "scout.getChangelog",
+    "scout.getChanges",
+    "scout.getClusters",
+    "scout.getHackathon",
+    "scout.getHackathons",
+    "scout.getLeaderboard",
+    "scout.getPartner",
+    "scout.getPartners",
+    "scout.getPeople",
+    "scout.getRepoTrust",
+    "scout.getRfps",
+    "scout.getSkill",
+    "scout.getStablecoins",
+    "scout.getStatus",
+    "scout.hackathonBrief",
+    "scout.listAudits",
+    "scout.listContracts",
+    "scout.listSkills",
+    "scout.matchPartners",
+    "scout.resolveProject",
+    "scout.scfPitch",
+    "scout.searchHackathonBuilds",
+    "scout.searchProjects",
+    "scout.searchRepos",
+    "scout.searchResearch",
+    "scout.vetIdea"
+  ];
+
+  function sourceExposedRoutingIds(): string[] {
+    const inventory = JSON.parse(
+      readFileSync(join(ROOT, "inventory", "stellar-light.json"), "utf8")
+    ) as {
+      openapi: {
+        paths: Record<string, Record<string, {
+          operationId?: string;
+          "x-routing"?: unknown;
+        }>>;
+      };
+    };
+    const ids: string[] = [];
+    for (const [path, pathItem] of Object.entries(inventory.openapi.paths)) {
+      for (const [method, operation] of Object.entries(pathItem)) {
+        if (!operation.operationId || operation["x-routing"] === undefined) continue;
+        if (EXCLUDED_SCOUT_OPS.has(`${method.toUpperCase()} ${path}`)) continue;
+        ids.push(`scout.${operation.operationId}`);
+      }
+    }
+    return ids.sort();
+  }
+
   it("attaches routingKeywords to exactly the exposed scout ops that publish x-routing", () => {
-    const withField = catalog.entries.filter((e) => (e.routingKeywords ?? []).length > 0);
-    // 21 upstream ops carry x-routing; partnerAssistant is build-excluded.
-    expect(withField).toHaveLength(20);
+    const withField = catalog.entries.filter((entry) => (entry.routingKeywords ?? []).length > 0);
+    expect(sourceExposedRoutingIds()).toEqual(expectedExposedRoutingIds);
+    expect(withField.map((entry) => entry.id).sort()).toEqual(expectedExposedRoutingIds);
     for (const entry of withField) {
       expect(entry.service, entry.id).toBe("scout");
       expect(entry.kind, entry.id).toBe("operation");
@@ -311,18 +602,55 @@ describe("x-routing ingestion — routingKeywords field (scoring lever 7, issue 
     }
   });
 
+  it("preserves bounded positive source phrases only on exposed Scout operations", () => {
+    const withPhrases = catalog.entries.filter((entry) => (entry.routingPhrases ?? []).length > 0);
+    expect(withPhrases.map((entry) => entry.id).sort()).toEqual(expectedExposedRoutingIds);
+    for (const entry of withPhrases) {
+      expect(entry.service, entry.id).toBe("scout");
+      expect(entry.kind, entry.id).toBe("operation");
+      expect(
+        entry.routingPhrases!.reduce((total, phrase) => total + phrase.tokens.length, 0),
+        entry.id
+      ).toBeLessThanOrEqual(256);
+      for (const phrase of entry.routingPhrases!) {
+        expect(phrase.tokens.length, `${entry.id}:${phrase.field}`).toBeGreaterThanOrEqual(2);
+      }
+    }
+  });
+
+  it("keeps the published multiword leaderboard keyword as one source phrase", () => {
+    const leaderboard = catalog.entries.find((entry) => entry.id === "scout.getLeaderboard");
+    expect(leaderboard?.routingPhrases).toContainEqual({
+      field: "keywords",
+      tokens: ["top", "projects"]
+    });
+  });
+
   it("drops notFor — cross-op routing clauses never become this op's vocabulary", () => {
     // Sentinel: getBuilders' upstream x-routing notFor routes stat questions
     // to getLeaderboard. Ingesting notFor would plant "leaderboard" here and
     // recreate the cross-capture the 1.7.16 fix removed.
     const builders = catalog.entries.find((e) => e.id === "scout.getBuilders");
     expect(builders?.routingKeywords ?? []).not.toContain("leaderboard");
+    expect(builders?.routingPhrases ?? []).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ tokens: expect.arrayContaining(["leaderboard"]) })])
+    );
   });
 
   it("ADR-0003 guard scans routingKeywords like any other emitted text", () => {
     const entries = catalog.entries.map((e) => ({ ...e }));
     const victim = entries.find((e) => e.id === "scout.getBuilders")!;
     victim.routingKeywords = [...(victim.routingKeywords ?? []), "scout.partnerAssistant"];
+    expect(() => assertNoNonExposedRefs(entries)).toThrow(/ADR-0003 leak/);
+  });
+
+  it("ADR-0003 guard scans routingPhrases like any other emitted text", () => {
+    const entries = catalog.entries.map((entry) => ({ ...entry }));
+    const victim = entries.find((entry) => entry.id === "scout.getBuilders")!;
+    victim.routingPhrases = [
+      ...(victim.routingPhrases ?? []),
+      { field: "useWhen", tokens: ["scout.partnerAssistant", "lookup"] }
+    ];
     expect(() => assertNoNonExposedRefs(entries)).toThrow(/ADR-0003 leak/);
   });
 });

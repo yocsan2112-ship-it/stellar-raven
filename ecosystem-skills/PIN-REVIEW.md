@@ -57,3 +57,280 @@ These are the pins in force when the ledger was introduced; they were already se
 recorded here so the CI check has a starting state. The gate applies to every change after this
 entry. The `sel:` column was added when the gate widened from commit-only to the whole served
 selection; the digests are of the same pins already listed, not a re-pin.
+
+### 2026-08-10 — stellar-dev re-pin (drift issue #19)
+
+| Source | Pinned commit | Selection | Reviewed |
+| --- | --- | --- | --- |
+| `stellar-dev` | `9e3d3fe0de8587205b020e0148ea67525e38e494` | `sel:5f80e607aef7` | read + independently reviewed |
+
+The other three sources did not move; their selections are unchanged from the baseline entry.
+
+**What the selection gained.** A new skill, `cross-chain` (`SKILL.md`, `axelar.md`, `cctp.md`) —
+CCTP V2, Axelar GMP/ITS, and NEAR Intents routing for Stellar. This is a new **exposed** surface:
+the served skill count goes 19 → 20 and the catalog goes 276 → 283 entries (18 → 19 searchable
+skills, 204 → 210 sections). It is filed into the `stellar-appdev` group in `groups.json`.
+
+**What changed in already-served bodies.**
+
+- `zk-proofs` — a status rewrite, not a rewording: CAP-0074 (BN254 base ops) and CAP-0075
+  (Poseidon/Poseidon2 permutations) move from "proposed" to Final/Protocol 25+, CAP-0080 (BN254 G1
+  MSM, Fr arithmetic, on-curve checks) is added at Protocol 26+, and the Noir and RISC Zero
+  walkthroughs flip from attestation-oracle workarounds to on-chain verification.
+- `standards` — the same CAP status corrections, plus a new K2 money-market section carrying ~20
+  pubnet contract addresses dated 2026-07-31.
+- `agentic-payments` — MPP "Channel mode" renamed "Session mode" (channel-backed), plus corrected
+  `mppx` import paths, per-route handlers, and SDK version-alignment notes.
+- `data` — drops the flat "Infinite Scroll queries back to genesis" claim; deep `getLedgers`
+  history is now correctly framed as a property of the provider's data lake, bounded by
+  `getHealth().oldestLedger` on a plain instance.
+
+**Why it is safe to serve.** Reviewed by the author against the printed body diff and
+independently by a separate agent (Solo scratchpad 795, Lane A) reading the old/new bodies
+directly. No behavior-hijack directive, no "ignore previous"-class instruction, no literal
+credential, and no reference to a non-exposed operation or a retired skill; every related-skill
+link resolves to an exposed manifest entry, and the companion files are emitted as
+`skills.stellar-dev.cross-chain#file:axelar.md` / `#file:cctp.md`. The gateway self-description in
+`standards` is pre-existing, accurate, and unchanged by this pin. The CAP status claims were
+corroborated against primary sources — the stellar-protocol CAP index and CAP documents, the
+official ZK docs, and a live Horizon root reporting `current_protocol_version: 27` — rather than
+taken on the vendor's word; the Nethermind UltraHonk and RISC Zero verifier claims were confirmed
+at source level (the contracts import the CAP-0080 host functions they say they need) but not
+built or executed here.
+
+**Bounded risks accepted, recorded so they are not rediscovered as surprises.** Three of the new
+and changed bodies direct the reader to re-check mutable external sources (Circle's token/Fast
+matrices, the NEAR 1Click API docs, Axelar's on-chain registries and Axelarscan, K2's contract
+page). That is correct staleness hygiene for fast-moving rails, but it is external prompt input and
+does not outrank system or developer instructions. `cctp.md` also points at a third-party demo repo
+with an install-and-run command — the only supply-chain execution prompt in the selection. The K2
+addresses are upstream's word as of their stated date; treat the linked contract page as the source
+of truth before anything hard-codes them.
+
+### 2026-08-14 — stellar-dev and stellar-light re-pin (drift issue #20)
+
+| Source | Pinned commit | Selection | Reviewed |
+| --- | --- | --- | --- |
+| `stellar-dev` | `812598a8538dc5479196145d2175b4a991bee1d9` | `sel:7aa692ae3f4e` | read in full |
+| `stellar-light` | `0d169e4ab64ddcc87ef61cc8e1737151fd39a05e` | `sel:3c790de8392e` | read in full |
+
+The `stellar-dev` selection changes 18 files. It splits four large skills into eight companion
+files. It adds trustline-removal checks, durable Horizon cursor guidance, and contract-build
+diagnostics. It also shortens the `zk-proofs` routing description.
+
+The `stellar-light` selection changes two reference files. It documents new read-only filters,
+code-evidence fields, confidence semantics, and current `smart-contracts` skill links.
+
+The full old-pin to new-pin body diff was reviewed. The changed text contains no credential,
+behavior-hijack instruction, retired skill, or non-exposed Raven operation reference. The new
+companion files preserve the existing topics and make section reads smaller.
+
+### 2026-08-19 — stellar-light re-pin
+
+| Source | Pinned commit | Selection | Reviewed |
+| --- | --- | --- | --- |
+| `stellar-light` | `2eebd982dc31c20198f59b40e29c83dcf71f688b` | `sel:cdb4d944079c` | read in full |
+
+The other three sources did not move. Their selections remain unchanged from the preceding entry.
+
+The new selection documents useful read-only composite operations. Raven now exposes the
+Hackathon Build Brief.
+
+The raw skill also advertises `POST /api/feedback` and `GET /api/feedback`. The prior selection
+already advertised both operations. Raven excludes the write because it is side-effecting. Raven
+also excludes its schema-only read because the write is unavailable.
+
+Raven applies one manifest-derived exposure filter to every selected file at build and read time.
+The filter removes a complete Markdown section, table row, or list item that names an excluded
+Scout path. It fails closed for an unsafe prose shape. This selection passed the guard across all
+four files. Raven serves no feedback workflow from the pinned body.
+
+### 2026-08-19 — stellar-dev re-pin (skills findings sk-016 and sk-017)
+
+| Source | Pinned commit | Selection | Reviewed |
+| --- | --- | --- | --- |
+| `stellar-dev` | `1f4b94e01ca24a2c00cb3b2cb3fcf6d07ad76462` | `sel:d9d847463c64` | complete old-to-new body diff read |
+
+The other three sources did not change their served selections.
+
+Five files changed. `agentic-payments/SKILL.md` and `agentic-payments/mpp.md` add MPP discovery,
+the runtime 402 Challenge authority rule, and optional registries. `dapp/smart-accounts.md`,
+`standards/ecosystem.md`, and `standards/resources.md` replace archived repository links and
+describe both smart-account kits as supported siblings with different authorization models.
+
+The changes stay within each skill's topic and match upstream PRs 109 and 110. They add no
+credential, behavior-hijack instruction, retired skill, or non-exposed Raven operation reference.
+The external OpenAPI, registry, SDK, and repository links are relevant reference material.
+
+### 2026-08-25 — stellar-light re-pin (drift issue #35)
+
+| Source | Pinned commit | Selection | Reviewed |
+| --- | --- | --- | --- |
+| `stellar-light` | `540c4c3f19e9bb88b9f6cbd611601b73542713e3` | `sel:1fc95be3ced4` | complete old-to-new body diff read |
+
+The other three sources did not change their served selections.
+
+One API reference file changed. It documents the exact project `type` filter and the new
+read-only `GET /api/projects/resolve` operation. The resolver defines conservative miss,
+supersession, and unsourced-status semantics.
+
+The changes stay within the Scout skill's topic. They add no credential or behavior-hijack
+instruction. The API reference omits the live `matchedOn: "repo"` value for the new resolver.
+Raven filters the resolver text and keeps that operation unexposed because OpenAPI leaves its
+nested identity and evidence objects untyped. Finding `sls-075` tracks both contract gaps.
+
+### 2026-08-25 — stellar-dev and stellar-light re-pin (skills finding sk-020)
+
+| Source | Pinned commit | Selection | Reviewed |
+| --- | --- | --- | --- |
+| `stellar-dev` | `b78983c92330d81943fa99cdaee4e4a52e85eba3` | `sel:6e2d2c8fc280` | complete old-to-new body diff read |
+| `stellar-light` | `2e4e412f0ae71a81424b02354d4bcff3835c80ff` | `sel:4fe145b613cd` | complete old-to-new body diff read |
+
+The other two sources did not change their served selections.
+
+Two files changed.
+
+`stellar-dev/standards/resources.md` replaces the community Discord invite. The old
+`discord.gg/stellar` vanity code is held by an unrelated guild and lands in a channel named
+`🚨・security-trap`. The new `discord.gg/stellardev` resolves to the "Stellar Developers" guild, which
+`developers.stellar.org` also links. This is the fix for finding `sk-020`; it is why this re-pin
+happened. Upstream merged it as PR 114. The pinned commit is the PR head and is an ancestor of
+`main`; the merge commit carries the same selected tree.
+
+`stellar-light/stellar-scout/references/api-reference.md` adds the `matchedOn: "repo"` value to the
+resolver contract and adds a `q` free-text filter to the skills-catalog description. The
+`matchedOn` addition closes half of the contract gap that finding `sls-075` recorded on 2026-08-25.
+`GET /api/projects/resolve` stays unexposed, so Raven still filters that resolver text.
+
+Both changes stay within their skill's topic. They add no credential, behavior-hijack instruction,
+retired skill, or non-exposed Raven operation reference. The catalog diff for this re-pin is
+provenance only: commits, blob hashes, content digests, and timestamps.
+
+### 2026-08-28 — stellar-light re-pin (drift issue #86)
+
+| Source | Pinned commit | Selection | Reviewed |
+| --- | --- | --- | --- |
+| `stellar-light` | `d25b9f6bd842159b5a33aa6125ecb62373c2d8b5` | `sel:56a2798fd09a` | complete old-to-new body diff read |
+
+The other three sources did not change their served selections.
+
+One API reference file changed. It adds exact guidance for the `corrected`, `semantic`, and `all`
+project-search match modes. It also adds sections for `GET /api/quality` and `GET /api/verify`.
+
+The changes stay within the Scout skill's topic. They add no credential, behavior-hijack
+instruction, or retired skill. Raven still excludes both new sections through the shared Scout
+operation and skill-body exposure filter. The build and skill-scrub guards verify that the served
+skill cannot advertise either excluded path.
+
+### 2026-09-08 — stellar-dev re-pin (drift issue #91)
+
+| Source | Pinned commit | Selection | Reviewed |
+| --- | --- | --- | --- |
+| `stellar-dev` | `03b2f8e8c88a42b16551926a938ec8173763b45a` | `sel:e9f82f593834` | complete old-to-new body diff read |
+
+The other three sources did not change their served selections.
+
+The selection expands the MPP and x402 guides with production patterns and fail-closed setup.
+It adds asset verification guidance and a LayerZero companion to the cross-chain skill.
+The LayerZero guide keeps transaction submission behind explicit user signing agreement.
+
+An independent Claude Fable high reviewer read all five changed `stellar-dev` files and their diffs.
+The reviewer verified every new blob hash, checked the added links, and checked mutable claims.
+The changes contain no credential, behavior-hijack instruction, retired skill, or excluded operation.
+The round ledger records the reviewer, evidence, and bounded external-claim risks.
+
+Findings `sk-023` and `sk-024` still reproduce at this pin.
+Their status remains `verified`, and this change records dated recurrence evidence.
+
+### 2026-09-09 — isolated stellar-dev acceptance from issue #141
+
+| Source | Pinned commit | Selection | Reviewed |
+| --- | --- | --- | --- |
+| `stellar-dev` | `0472452a05731de5e0a1e886d8aae6df24873fe2` | `sel:7b68c8b72b2f` | All four changed body diffs read |
+
+The Astra author and parent read all four changed stellar-dev body diffs.
+The independent Grok 4.6 high reviewer read those diffs and verified the source claims.
+The other three source selections remain unchanged.
+The root and reviewer each fetched and verified all 44 selected files without the cache.
+
+The stellar-dev changes separate x402 facilitator requirements from protocol requirements.
+They explain the general MPP protocol and update the Soroban SDK example to version 27.
+The changes contain no literal credential, instruction override, retired skill, or excluded Raven operation reference.
+The live source hashes match the selected bodies.
+The source audit confirms stable soroban-sdk 27.0.6 and Mainnet protocol 27.
+It confirms MPP payment-method-agnostic scope and the public x402 facilitator's Stellar testnet-only support.
+The audit does not claim a compiled Rust example or a payment test.
+
+The combined Scout candidate remains rejected and does not ship.
+Its OpenAPI omits the live `issued-single-holder` RWA state.
+The accepted Scout inventory and Stellar Light selection remain byte-identical to the base.
+
+The isolated candidate passes the routing gate, 1995 tests, and 85 smoke tests.
+All routing thresholds and accepted totals remain unchanged.
+The catalog evidence fingerprint changes. Incidental ranking changes cause no grade losses.
+The acceptance review is `.agents/rounds/2026-09-09-skill-pin-acceptance-grok.md`.
+The source audit is `.agents/rounds/2026-09-09-upstream-handoffs-grok.md`.
+The rejected candidate remains documented in `.agents/rounds/2026-09-09-drift-141-astra.md`.
+This entry approves the isolated pin for merge, not production deployment or finding retirement.
+
+### 2026-09-15 — trustless-work source added
+
+| Source | Pinned commit | Selection | Reviewed |
+| --- | --- | --- | --- |
+| `trustless-work` | `634f32bd4be6769b0cae52e72db4899d5f5a069c` | `sel:7c6d71f8eef2` | independent Grok 4.6 high review complete |
+
+The four existing sources did not move; their selections are unchanged.
+
+**What the selection serves.** A new source: [Trustless-Work/trustlesswork-skill](https://github.com/Trustless-Work/trustlesswork-skill),
+the Trustless Work escrow-integration skill (Escrow-as-a-Service on Stellar). The repo holds one
+skill directory, `trustless-work-dev/`, at the repo ROOT — pinned with the new `path: "."` mode
+(skill dirs at the repo root, cherry-picked; the sibling `scripts/` dir is recorded under
+`unpinnedUpstream`). The selection is 22 files: the `SKILL.md` router, a constitution of protocol
+invariants, and companion files for the escrow REST API (production V1 and testnet-only beta V2),
+React SDK hooks, JS SDK, and the pre-built Blocks UI. This is a new exposed surface: the
+mirrored/pinned skill count goes 20 → 21 (`lumenloop-mcp-connect` stays retired from serving), and
+the served catalog goes 253 → 282 entries (19 → 20 searchable whole skills, 174 → 202 sections).
+It is filed into the new `ecosystem-platforms` group in `groups.json`.
+
+**Review result.** The contributing author and an independent Grok 4.6 high reviewer inspected the
+source selection. The independent reviewer differs from the author and orchestrator. The reviewer
+accepted all 22 selected files, source boundaries, hashes, external links, and authentication scope.
+The selected bodies contain no instruction override, literal credential, retired skill, or
+non-exposed Raven operation reference. The beta authentication conflict remains recorded in
+`improvements/skills/sk-025-trustless-work-beta-auth-scope.md`.
+
+The complete routing comparison covers 544 rows. Fourteen normal-dump rows and one holdout row
+change ordered identities. No movement adds Trustless Work to an unrelated query. The independent
+reviewer accepted all 15 movements without a threshold, label, or scorer change. Current totals are
+legacy `213/280/314`, skills `16/23/23`, and holdout `10/22/27` with 11 forbidden captures. Every
+committed numerical baseline and accepted total remains unchanged. The durable review is
+`.agents/rounds/2026-09-16-trustless-work/source-review.md`. The decision ledger is
+`.agents/rounds/2026-09-16-trustless-work-acceptance.md`.
+
+**Bounded risk accepted, recorded so it is not rediscovered as a surprise.** The Blocks UI files
+instruct installing and running the vendor's own published packages (`npm install
+@trustless-work/blocks`, `npx trustless-work <component>`) — a supply-chain execution prompt of the
+same class already recorded for `cctp.md` in the 2026-08-10 entry.
+
+### 2026-09-16 — Light skill paired with Scout 1.9.52, RWA excluded
+
+| Source | Pinned commit | Selection | Reviewed |
+| --- | --- | --- | --- |
+| `stellar-light` | `3b587aa9f23d21fc572f6e93cb6d11031dbc24e6` | `sel:339145ff9f53` | body diff read; independent Grok high review |
+
+The selection changes two skill files. The other four source selections stay unchanged.
+Open RFPs now mean soliciting briefs; `meta.scfRound` determines the current submission window.
+Repository scores use code evidence. Funding is one input, not a gate.
+Missing hackathon submission records remain `null`, not zero.
+Partner filters add `asset-issuer` and explain `accepting=0`.
+
+This pin requires the reviewed Scout 1.9.52 inventory and the existing exposure scrub.
+`GET /api/rwa` remains excluded. The scrub removes its new reference section.
+The scrub also removes the new block quote about the unavailable bare `/api/repos` path.
+The `/api/repos/search`, `/api/repos/explain`, and `/api/repos/trust` references remain available.
+No new operation becomes callable. No runner declares a changed Scout operation.
+No active golden answer needs a change from these surviving claims.
+
+The parent read the generated body diff. Grok independently checked the source and emitted bytes.
+See [the pairing review](../.agents/rounds/2026-09-16-truth-maintenance/light-pin-excluded-rwa-review.md).
+This entry records source review only. Routing acceptance and production verification remain separate gates.

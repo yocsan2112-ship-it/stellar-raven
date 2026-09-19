@@ -11,7 +11,10 @@ import {
   readIntake,
   resolveIntake,
   section,
+  UPSTREAM_TITLE_MAX,
+  UPSTREAM_TITLE_MIN,
   writeFindingFrontmatter,
+  writeIndex,
 } from "./improvements-lib.mjs";
 
 const args = parseArgs(process.argv.slice(2));
@@ -24,7 +27,7 @@ const RAVEN_REPO = "stellar-experimental/stellar-raven";
 const HANDOFF_TEMPLATE = "upstream-improvement-ready.yml";
 const AUTOMATION_MARKER = "<!-- generated-by-stellar-raven -->";
 const AUTOMATION_NOTICE =
-  `This issue was filed from [Stellar Raven](https://github.com/${RAVEN_REPO})'s automated evaluation pipeline. Evidence and a public source record are included below. The finding may still be incomplete or incorrect — please verify against the live surface before acting on it.`;
+  `[Stellar Raven](https://github.com/${RAVEN_REPO}) filed this issue from its automated evaluation pipeline. The issue includes evidence and a public source record. Please verify the live surface before you act.`;
 if (!args.file) {
   console.error("usage: node scripts/improvements-file-issue.mjs --file improvements/...md [--repo owner/name] [--dry-run] [--render-body-file /tmp/body.md]");
   process.exit(2);
@@ -197,28 +200,54 @@ function repoHasLabel(repo, label) {
   return result.status === 0 && Number(result.stdout.trim()) > 0;
 }
 
+// Everything below runs AFTER the public write. `gh issue create` exited 0, so an issue almost
+// certainly exists upstream even when the steps that record it locally fail. The warning differs by
+// step, because the risk does. While the finding still shows its pre-filing status, a re-run would
+// file a duplicate, so those messages refuse one outright. Once the frontmatter records the issue,
+// the reported-upstream dedupe guard refuses a re-run by itself, and only the index repair remains.
 const url = result.stdout.trim();
+const filedOn = new Date().toISOString().slice(0, 10);
+const evidenceLine = `upstream issue filed ${filedOn}: ${url}`;
+const REPAIR_BY_HAND = [
+  "Forward repair, by hand:",
+  `  1. Open ${url} and confirm the issue exists.`,
+  `  2. In ${finding.relPath}, set 'status: reported-upstream'.`,
+  "  3. Under 'evidence:', append the entry:",
+  `       - ${evidenceLine}`,
+  "  4. Run npm run improvements:index, then npm run improvements:lint.",
+].join("\n");
+
 const verify = spawnSync("gh", ["issue", "view", url, "--json", "url", "--jq", ".url"], {
   encoding: "utf8",
 });
 if (verify.status !== 0 || verify.stdout.trim() !== url) {
   process.stderr.write(verify.stderr ?? "");
-  console.error(`issue was created at ${url}, but GitHub read-back failed; local finding was not mutated`);
+  console.error(`${finding.frontmatter.id}: gh reported the issue at ${url}, but the read-back failed.`);
+  console.error("The issue may already exist upstream. Do not re-run this command — a second run files a duplicate.");
+  console.error("The local finding was not changed, so the repair only adds what the filing would have added.");
+  console.error(REPAIR_BY_HAND);
   process.exit(1);
 }
 console.log(url);
-writeFindingFrontmatter(finding, {
-  status: "reported-upstream",
-  evidenceAppend: `upstream issue filed ${new Date().toISOString().slice(0, 10)}: ${url}`,
-});
-const indexResult = spawnSync(process.execPath, [path.join(import.meta.dirname, "improvements-index.mjs")], {
-  encoding: "utf8",
-});
-if (indexResult.status !== 0) {
-  process.stderr.write(indexResult.stderr);
-  process.stderr.write(indexResult.stdout);
-  console.error("issue was filed and the finding was updated, but improvements/INDEX.md regeneration failed");
-  process.exit(indexResult.status ?? 1);
+try {
+  writeFindingFrontmatter(finding, { status: "reported-upstream", evidenceAppend: evidenceLine });
+} catch (error) {
+  console.error(`${finding.frontmatter.id}: the issue was filed at ${url}, but the local finding was not updated.`);
+  console.error(`  ${error.message}`);
+  console.error("The issue already exists upstream. Do not re-run this command — a second run files a duplicate.");
+  console.error("The write is atomic, so the finding still holds its previous content.");
+  console.error(REPAIR_BY_HAND);
+  process.exit(1);
+}
+try {
+  writeIndex();
+} catch (error) {
+  console.error(`${finding.frontmatter.id}: the issue was filed at ${url} and the finding records it, but improvements/INDEX.md was not regenerated.`);
+  console.error(`  ${error.message}`);
+  console.error("The issue exists upstream and the finding already records it, so a re-run is unnecessary.");
+  console.error("The finding is now reported-upstream, so the dedupe guard refuses another filing anyway.");
+  console.error("Forward repair: run npm run improvements:index, then npm run improvements:lint.");
+  process.exit(1);
 }
 
 function renderBody(finding) {
@@ -253,18 +282,24 @@ function renderBody(finding) {
     "",
     "## Source Record",
     "",
-    `This was found by the downstream Raven eval/improvements loop and recorded as ${fm.id} (${fm.service}, discovered ${fm.discovered}).`,
+    `Raven recorded this finding as ${fm.id} (${fm.service}, discovered ${fm.discovered}).`,
     "",
     `Public source record: [${finding.relPath}](${sourceUrl})`,
     ...(immutableSourceUrl ? ["", `Immutable source snapshot: [${sourceCommit.slice(0, 12)}](${immutableSourceUrl})`] : []),
     "",
     "## Resolution Handoff",
     "",
-    "When a fix is deployed, please link the resolving issue or PR to the source record above and notify Raven through:",
+    "When you deploy a fix, link the resolving issue or pull request to the source record.",
+    "Then notify Raven through:",
     "",
     handoffUrl,
     "",
-    "Include the finding id, resolving issue/PR, deployed version or timestamp, and the smallest live recheck. Raven independently verifies the upstream surface before changing the finding to `fixed-upstream`; issue closure or a merged PR alone is not treated as proof. After a distinct reviewer repeats the live check, the active finding is retired to Raven's resolved ledger; a commit-pinned snapshot is preserved when available.",
+    "Include the finding ID and the resolving issue or pull request.",
+    "Include the deployed version or timestamp. Include the smallest live recheck.",
+    "Raven verifies the live surface before it sets the finding to `fixed-upstream`.",
+    "An issue closure or merged pull request does not prove the fix.",
+    "A separate reviewer repeats the live check before Raven retires the active finding.",
+    "Raven keeps a commit-pinned snapshot when one is available.",
     "",
   ].join("\n");
 }
@@ -285,15 +320,17 @@ function latestMatchingSourceCommit(finding) {
 function issueTitle(finding) {
   const explicit = String(finding.frontmatter.upstreamTitle ?? "").trim();
   if (explicit) {
-    if (explicit.length < 20 || explicit.length > 120) {
-      console.error(`${finding.frontmatter.id}: upstreamTitle must be 20-120 characters`);
+    // Same cap constants the lint enforces when the record lands (upstreamTitleError in
+    // improvements-lib.mjs); duplicating the numbers here would let the two drift.
+    if (explicit.length < UPSTREAM_TITLE_MIN || explicit.length > UPSTREAM_TITLE_MAX) {
+      console.error(`${finding.frontmatter.id}: upstreamTitle must be ${UPSTREAM_TITLE_MIN}-${UPSTREAM_TITLE_MAX} characters`);
       process.exit(2);
     }
     return explicit;
   }
   if (["proposed", "verified"].includes(finding.frontmatter.status)) {
     console.error(
-      `${finding.frontmatter.id}: add a reader-first upstreamTitle (20-120 characters) before filing`,
+      `${finding.frontmatter.id}: add a reader-first upstreamTitle (${UPSTREAM_TITLE_MIN}-${UPSTREAM_TITLE_MAX} characters) before filing`,
     );
     process.exit(2);
   }

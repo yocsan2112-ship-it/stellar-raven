@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "updated": "2026-08-05",
+  "updated": "2026-09-17",
   "notes": [
     "Verified with gh on 2026-07-13. Lumenloop API/content-pipeline issues belong in lumenloop/lumenloop-backend; directory-record corrections belong in lumenloop/stellar-ecosystem-db.",
     "Algolia ranking-only docs findings may not have a clear public intake even though developers.stellar.org content lives in stellar/stellar-docs."
@@ -13,7 +13,8 @@
           "stellar/stellar-dev-skill",
           "lumenloop/lumenloop-skills",
           "OpenZeppelin/openzeppelin-skills",
-          "Stellar-Light/stellar-scout"
+          "Stellar-Light/stellar-scout",
+          "Trustless-Work/trustlesswork-skill"
         ],
         "rule": "Target the source repository that owns the referenced skill; never file against this repo's mirror."
       },
@@ -21,7 +22,8 @@
         "stellar-dev": "stellar/stellar-dev-skill",
         "lumenloop": "lumenloop/lumenloop-skills",
         "openzeppelin-stellar": "OpenZeppelin/openzeppelin-skills",
-        "stellar-light": "Stellar-Light/stellar-scout"
+        "stellar-light": "Stellar-Light/stellar-scout",
+        "trustless-work": "Trustless-Work/trustlesswork-skill"
       }
     },
     "stellar-light-scout": {
@@ -40,6 +42,15 @@
       "repo": "lumenloop/lumenloop-backend",
       "directoryRepo": "lumenloop/stellar-ecosystem-db",
       "rule": "File API and content-pipeline findings in lumenloop/lumenloop-backend. Use lumenloop/stellar-ecosystem-db only for committed directory-record corrections."
+    },
+    "workers-ai-provider": {
+      "type": "github-issues",
+      "repo": "cloudflare/ai",
+      "rule": "The package metadata identifies cloudflare/ai as the issue owner for workers-ai-provider."
+    },
+    "canonical-source": {
+      "type": "mixed",
+      "rule": "A canonical-source finding names the dependency or product repository that owns the defective fact or code. Set a per-finding repo override after owner verification."
     }
   },
   "findings": {
@@ -99,9 +110,9 @@
       "repo": "lumenloop/lumenloop-backend",
       "reason": "Lumenloop API/content-pipeline owner confirmed 2026-07-13."
     },
-    "sd-001": {
-      "intake": "unclear",
-      "reason": "Algolia ranking/tokenization behavior; not clearly owned by stellar/stellar-docs issue intake."
+    "ll-028": {
+      "repo": "lumenloop/lumenloop-backend",
+      "reason": "list_documents query-parameter validation is API behavior, not a committed directory record."
     },
     "sd-003": {
       "repo": "stellar/stellar-docs",
@@ -115,10 +126,6 @@
       "repo": "stellar/stellar-docs",
       "reason": "Docs content gap."
     },
-    "sd-008": {
-      "repo": "stellar/stellar-docs",
-      "reason": "Official Software Versions content lags live Mainnet activation and stable release feeds."
-    },
     "sd-009": {
       "repo": "stellar/stellar-docs",
       "reason": "Developer docs omit the canonical SEP-6 interactive-component deprecation status."
@@ -126,10 +133,6 @@
     "sd-014": {
       "repo": "stellar/stellar-docs",
       "reason": "Ledger, transaction-set, result, archive, and SCP documentation lacks one explicit transaction-inclusion verification recipe and trust-boundary explanation."
-    },
-    "sd-025": {
-      "repo": "stellar/stellar-docs",
-      "reason": "The Horizon-to-RPC migration guide still describes CAP-67 unified asset events as near-future despite Protocol 23 finality and live Protocol 27."
     },
     "sd-027": {
       "repo": "stellar/stellar-docs",
@@ -151,20 +154,25 @@
       "repo": "stellar/stellar-docs",
       "reason": "The Wallets Kit docs retain a v1 API and an @^1-pinned npm @creit.tech install; the v2 migration uses JSR @creit-tech/stellar-wallets-kit and static initialization."
     },
-    "sd-036": {
-      "repo": "stellar/stellar-protocol",
-      "reason": "CAP-0075's protocol-version and field-selector contradictions are owned by the normative stellar-protocol source, distinct from sd-021's Stellar Docs errors."
-    },
     "sd-037": {
       "repo": "stellar/stellar-protocol",
       "reason": "SLP proposal-family discoverability is rooted in the normative stellar-protocol limits/ source and needs canonical family metadata/cross-links."
     },
-    "sd-039": {
+    "sd-046": {
       "repo": "stellar/stellar-docs",
-      "reason": "Official Tools pages conflate the self-hosted OpenZeppelin Relayer with the managed Channels service."
+      "reason": "The Lumens and Accounts pages omit the two-reserve pool-share trustline exception that the Liquidity Pools page and CAP-0038 define."
     },
-    "sk-003": {
-      "repo": "stellar/stellar-dev-skill"
+    "sd-048": {
+      "repo": "stellar/stellar-protocol",
+      "reason": "CAP-0075 owns the Poseidon2 S-box-degree contradiction; the shipped ABI and host accept only degree 5."
+    },
+    "sd-050": {
+      "repo": "stellar/stellar-docs",
+      "reason": "The Client & XDR SDKs page prose is developers.stellar.org content owned by the docs repository."
+    },
+    "sd-052": {
+      "repo": "stellar/stellar-cli",
+      "reason": "The published manual is generated from Stellar CLI command descriptions. The placeholder-language correction belongs in the CLI source."
     },
     "sk-004": {
       "repo": "lumenloop/lumenloop-skills"
@@ -172,31 +180,20 @@
     "sk-005": {
       "repo": "lumenloop/lumenloop-skills"
     },
-    "sk-006": {
-      "repo": "stellar/stellar-dev-skill"
-    },
     "sk-007": {
       "repo": "lumenloop/lumenloop-skills"
     },
-    "sk-009": {
-      "repo": "Stellar-Light/stellar-scout",
-      "reason": "The finding concerns the upstream Scout skill API reference, not the live service implementation."
+    "sk-014": {
+      "repo": "OpenZeppelin/openzeppelin-skills",
+      "reason": "The develop-secure-contracts description is owned by the OpenZeppelin skills repository."
     },
-    "sk-011": {
-      "repo": "stellar/stellar-dev-skill",
-      "reason": "The served upstream zk-proofs skill needs Protocol 25 status correction."
+    "sk-015": {
+      "repo": "OpenZeppelin/openzeppelin-skills",
+      "reason": "The setup-stellar-contracts and upgrade-stellar-contracts descriptions are owned by the OpenZeppelin skills repository."
     },
-    "sk-012": {
-      "repo": "stellar/stellar-dev-skill",
-      "reason": "The served upstream agentic-payments skill needs current MPP Session terminology."
-    },
-    "sk-013": {
-      "repo": "stellar/stellar-dev-skill",
-      "reason": "The upstream assets skill's trustline-removal example omits balance, liability, offer, and liquidity-pool deletion preconditions."
-    },
-    "sls-023": {
-      "repo": "Stellar-Light/stellarlight",
-      "reason": "Broad RWA discovery exposes entity-level status without product-level Stellar deployment state, allowing planned DTCC work and unverified/tooling rows to be presented as live tokenized products."
+    "sk-022": {
+      "repo": "OpenZeppelin/openzeppelin-skills",
+      "reason": "The stale upgrade-stellar-contracts API guidance is owned by the OpenZeppelin skills repository."
     },
     "sls-024": {
       "repo": "Stellar-Light/stellarlight",
@@ -214,13 +211,17 @@
       "repo": "Stellar-Light/stellarlight",
       "reason": "Project TVL rows expose a point but no history/method URL or metric decomposition for current-versus-trend/peak/record questions."
     },
-    "sls-055": {
-      "repo": "Stellar-Light/stellarlight",
-      "reason": "Scout research omits canonical non-blog SDF organizational pages, leaving current legal-structure, fund-scope, mandate, leadership, and report claims without quotable coverage."
+    "sk-025": {
+      "repo": "Trustless-Work/trustlesswork-skill",
+      "reason": "The upstream beta skill owns its authentication guidance and shares the existing version-profile issue."
     },
-    "sls-060": {
-      "repo": "Stellar-Light/stellarlight",
-      "reason": "Closed RFP detail pages should suppress or replace funding-application calls to action."
+    "cs-001": {
+      "repo": "cloudflare/agents",
+      "reason": "The @cloudflare/codemode package metadata names cloudflare/agents as its issue owner; searchConnectors lives in packages/codemode."
+    },
+    "cs-002": {
+      "repo": "soroswap/docs",
+      "reason": "soroswap/docs publishes docs.soroswap.finance and owns concepts/aggregator.mdx and aggregator/supported-amms.mdx."
     }
   }
 }

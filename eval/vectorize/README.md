@@ -187,3 +187,147 @@ semantic arm: frontier legacy 95/211/269, extended strict 42/88/109, extended ac
 50/100/116, and mined replay deltas −15.4 points top-1 / −8.8 points top-5. The command exits 1
 by design when `triggerCleared:false`; this remains a measured no-ship experiment, not a failing
 production gate.
+
+## Clause-fit measurement attempt (2026-08-31)
+
+The `clause-fit-hysteresis-v1` harness builds 683 mechanical routing clauses across 79 searchable entries.
+It excludes all keyword fields and keeps the production scorer unchanged.
+The membership gate includes `scout.searchResearch` for all 19 frozen positive questions.
+
+The first free model fetch built the pinned artifact successfully.
+Its SHA-256 is `e5f86644af89158c3ac4d61ee7f651e2a062c9d292f194cb94872c7eee4e71f4`.
+All 21 offline tests pass against that artifact.
+
+The first referee stopped before scoring because a new process lacked local tokenizer metadata.
+A reviewed finish copied the pinned model files into a machine-local snapshot. It then added a
+local-only loader and preflight. The preflight probe-vector SHA-256 is
+`d32aabf37d5aaeda98bd2c817cc7d38c6b746f82c89d874f982d8016fbaf4b4b`.
+
+The one authorized finish referee completed all five readings. The result stamp is
+`2026-08-31T16-58-42-389Z-clause-fit-hysteresis-v1`. The query-cache SHA-256 is
+`65ca5052c5258aeb1f5a30e93a1b9c1fde61aace80c8b3fdd4d044346385b8c2`, and the result
+SHA-256 is `17e75f0d1b13848aa2e0841624e8496c558624493d156c3cb2115301a6a9cda0`.
+
+| Reading | Original top-five / controls | Blind top-five / controls | Routing gate | Outcome |
+| --- | --- | --- | --- | --- |
+| identity | 4/8, 1/4 | 3/11, 6/9 | pass | calibration only |
+| pure fit | 0/8, 2/4 | 2/11, 1/9 | fail | diagnostic only |
+| `m = 0.03` | 4/8, 1/4 | 4/11, 2/9 | fail | fail |
+| `m = 0.06` | 4/8, 1/4 | 4/11, 6/9 | fail | fail |
+| `m = 0.10` | 4/8, 1/4 | 3/11, 6/9 | fail | fail |
+
+The `m = 0.03` and `m = 0.06` grids increased blind top-five from 3 to 4.
+Original top-five stayed 4, and every grid failed the routing gate and both control bars.
+The measured outcome is `FAIL` with `selected: null`. No production search code changed.
+The harness and artifact remain as the frozen instrument.
+
+See `.agents/rounds/2026-08-31-eval-routing-next/finish-result-sol.md` for the full command record.
+
+## Cross-encoder measurement attempt (2026-08-31)
+
+The `cross-encoder-fit-v1` experiment is attempt two of the protocol-history routing box.
+It reuses the frozen 683-clause set from the clause-fit attempt
+(`clauseSetSha256` `cc5df2e4d89522c580626cfc21727b927494f5f528f42acfa035187a211d89e5`, artifact
+`e5f86644af89158c3ac4d61ee7f651e2a062c9d292f194cb94872c7eee4e71f4`) and swaps only the model
+class. The pinned model is `Xenova/bge-reranker-base` at commit
+`280bcc27a84e0b898c251e06fddb25171bd9b101` (base `BAAI/bge-reranker-base`), q8 ONNX, loaded
+directly through `AutoTokenizer` plus `AutoModelForSequenceClassification` with `text_pair`
+encoding, `max_length` 512, and one sigmoid over the raw logit. The snapshot parent is
+`~/.cache/stellar-raven/bge-reranker-base-q8-280bcc2`, local-only with no runtime fetch path.
+
+The single fetch and referee each ran once under review gates. The preflight ran twice.
+Its first run recorded the probe-score SHA-256. Its second run confirmed the same value after
+the implementation commit: `e2bc86efb15f5232993b0bf5f63b5ce55cc7241abaec6a7e54364a13b664331b`.
+The implementation commit is `2763fb0afd4e6811f449cb6b1f56f2baf85e3734`, on Node `v24.13.0`
+with `onnxruntime-node` `1.24.3` on `darwin`. The five byte-hash file pins live in the round
+ledger, `.agents/rounds/2026-08-31-protocol-history-cross-encoder-v1.md`.
+
+The one authorized referee scored all 383,273 pinned pairs and wrote its result. The stamp is
+`2026-08-31T23-36-38-660Z-cross-encoder-fit-v1`. The score-cache SHA-256 is
+`fa1252fc8bfbf62b6f69bb8ca431cf603d2b512e4d0299b2ca0de0d7c2cec0bc`, and the result SHA-256 is
+`529351b1562b14f68d18ef94b584ca37ae61290f68cfff7a5a1489e8b601ae0d`.
+
+| Reading | Original top-five / controls | Blind top-five / controls | Routing gate | Changed rankings | Outcome |
+| --- | --- | --- | --- | ---: | --- |
+| identity | 4/8, 1/4 | 3/11, 6/9 | pass | 0 | calibration only |
+| pure fit | 5/8, 2/4 | 3/11, 4/9 | fail | 495 | diagnostic only |
+| `m = 0.05` | 4/8, 1/4 | 3/11, 6/9 | fail | 338 | fail |
+| `m = 0.10` | 4/8, 1/4 | 3/11, 6/9 | fail | 276 | fail |
+| `m = 0.20` | 4/8, 1/4 | 3/11, 6/9 | fail | 215 | fail |
+
+Every registered grid kept both frozen contracts at the lexical baseline while failing the
+routing gate. Among the grids, `m = 0.20` had the fewest gate failures (four) and the fewest
+changed rankings (215). The measured outcome is `FAIL` with `selected: null`, and the
+independent Terra verification recomputed all five readings from the stored cache and passed.
+No production search code changed. No `improvements/` finding applies: the result measures
+this repository's ranking. Attempt two is spent. Attempt three is also spent.
+
+See `.agents/rounds/2026-08-31-protocol-history-cross-encoder-v1.md` for the full record.
+
+## Clause-support measurement attempt (2026-09-01)
+
+`clause-support-fit-v1` is attempt three of the protocol-history routing box.
+It reads the retained attempt-two pair-score cache only.
+The file SHA-256 is `fa1252fc8bfbf62b6f69bb8ca431cf603d2b512e4d0299b2ca0de0d7c2cec0bc`.
+The score SHA-256 is `44c274680cd324d00aa16d240e21d3260005766d507a430e93c423e9c16fcd55`.
+The record SHA-256 is `ecea4c6981eb22a59d59b4b9434cad57732309e28504574e7ed483a01512fca1`.
+
+The mechanism replaces max-clause fit with noisy-OR over each entry's positive and negative clauses.
+The negative rule stays unchanged. A stable descending sort orders the attempt-two candidate union.
+The mechanism has no margin and no grid. The referee loads no model and scores no pair.
+
+Run the instrument with `npm run eval:vectorize:support:run`.
+It needs `RAVEN_SUPPORT_CACHE_PATH` and `RAVEN_SUPPORT_IMPLEMENTATION_COMMIT`.
+
+The one authorized referee ran at commit
+`24de12200c459ac0ce9ae91e7a4f39988429bf20`.
+The stamp is `2026-09-01T14-22-28-993Z-clause-support-fit-v1`.
+The result SHA-256 is
+`a522bfa28ef4b06146c5f247ba64c08bfd6edaa4a81a0642c4010da2d6de479c`.
+Both calibrations passed. Identity reproduced the lexical baseline.
+Max-clause reproduced the attempt-two pure reading.
+
+| Reading | Original top-five / controls | Blind top-five / controls | Routing gate | Changed rankings | Outcome |
+| --- | --- | --- | --- | ---: | --- |
+| identity | 4/8, 1/4 | 3/11, 6/9 | pass | 0 | calibration only |
+| max-clause | 5/8, 2/4 | 3/11, 4/9 | fail | 495 | calibration only |
+| support-fit | 7/8, 2/4 | 10/11, 7/9 | fail | 495 | fail |
+
+Support-fit raised blind top-five from 3 to 10. It raised original top-five from 4 to 7.
+It also raised control captures to 2/4 and 7/9.
+Legacy fell to 220/266/276. Holdout reached 19 forbidden captures.
+Extended fell to 55/89/96, with 118 accept-either top-five results.
+The protocol-version top result became `scout.searchResearch`.
+
+The measured outcome is `FAIL`.
+Independent Terra verification recomputed all three readings from the same cache and passed.
+No production search code changed. No `improvements/` finding applies.
+Attempt three is spent, so the three-attempt box is spent.
+See `.agents/rounds/2026-09-01-protocol-history-attempt-three.md` for the full record.
+
+On 2026-09-02, the A/V catalog correction changed `catalog/manifest.json` to
+`4cd28f4b…fe8b`. The clause artifact was rebuilt from the pinned local model cache.
+Artifact `d9de7007…002b`, clause set `bed60846…1ff2`, and vectors `c6acd8b8…121f` now satisfy
+`requireCatalogMatch`. `rerank-config.mjs` pins these values. The dated sections above retain the
+attempt-era artifact `e5f86644…71f4` by hash. It is no longer the committed artifact.
+No referee was rerun. The decision record is
+`.agents/rounds/2026-09-02-av-created-at-semantics.md`.
+
+The protocol-history clause, reranker, and support artifacts are now banked evidence.
+Normal catalog drift does not require an artifact rebuild.
+
+`loadBankedRerankClauseArtifact()` validates the pinned file, metadata, clause identities, and
+vector payload. It does not reconstruct text from the current catalog.
+
+An intentional referee run still requires the current source to match the artifact.
+The loader reports `surface-expired` before scoring when any source hash changes.
+
+The clause artifact builder applies the same source-epoch check before embedding or writing.
+It cannot replace the banked artifact after source drift.
+
+The leakage test reads `frozen/protocol-history-leakage-source-v1.json`.
+That projection contains only the accepted 2026-09-02 target clauses.
+Its file SHA-256 is `61f1bf7c20ae6491bcc9a5cecb6d7ddb772e44e511624b7e1028063d310ab259`.
+The test links all 27 clause hashes to the banked artifact.
+It checks every frozen v2 question with normalized punctuation and letter case.
+It never reads current production text for the leakage assertion.

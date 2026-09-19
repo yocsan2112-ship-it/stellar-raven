@@ -14,6 +14,12 @@ evidence:
   - original combined review context: https://github.com/stellar/stellar-docs/pull/2367#issuecomment-4971409358
   - issue-tracker follow-up context: https://github.com/stellar/stellar-docs/pull/2367#issuecomment-5091971087
 recurrences:
+  - date: 2026-09-08
+    evidence: Live smart-wallet guidance still names only Passkey Kit and links the archived kalepail/passkey-kit move pointer; response SHA-256 a31347abd00f32d9558c3ceeaa543acb81ab5a38996e3c4fc3deb9132ece111b. PR #2367 restarted at head bdc081d9c25d2e2db6f674b8b61421a4f2bf32cd with passing checks and canonical kit links on its branch, but the combined six-page tutorial remains at bot:needs-decision after its author selected the current ElliotFriend companion: https://github.com/stellar/stellar-docs/pull/2367#issuecomment-5587369224. Issue #2700 remains open.
+  - date: 2026-08-14
+    evidence: "Live recheck of https://developers.stellar.org/docs/build/guides/contract-accounts/smart-wallets. The page still omits Smart Account Kit and still links 'Code: github.com/kalepail/passkey-kit', which is archived and titled '[MOVED -> github.com/stellar/passkey-kit]'. The served skill defect was repaired and retired as sk-017 in improvements/resolved.json. The Docs defect remains independent."
+  - date: 2026-08-11
+    evidence: live smart-wallet and Guestbook source recheck still links archived kalepail/passkey-kit and omits Smart Account Kit, while Guestbook still requires LaunchTube. Issue #2700 remains open; its only recorded comment is Raven's 2026-08-05 premise correction, so no maintainer response exists.
   - date: 2026-08-04
     evidence: eval/qa/results/2026-08-04T22-41-34-variantA.json q-soroban-add-signer-smart-wallet-howto repeated stale filed framing while current canonical READMEs describe sibling authorization models
   - date: 2026-08-06

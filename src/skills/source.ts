@@ -9,7 +9,7 @@
  * same pinned tree, and `sha256` is a SHA-256 over the raw bytes recorded by
  * the catalog build. This module turns that into text.
  *
- * Three properties the vendored copy used to give us, kept:
+ * The source enforces three properties:
  *
  * 1. **Immutability.** The URL names a commit, never a branch, so upstream
  *    edits cannot change what this server serves. Re-pinning stays a reviewed,
@@ -22,11 +22,11 @@
  *    chosen-prefix collisions, so it is provenance (it ties bytes to the git
  *    object the reviewer saw), not an adversarial boundary. Both must match;
  *    bytes that fail either are refused, not served.
- * 3. **Exposure hygiene.** The retired-skill scrub that used to run at bundle
- *    time now runs on every served body (same implementation the builders
- *    use), so a leak cannot ride in on live content.
+ * 3. **Exposure hygiene.** Every served body uses the same non-exposed
+ *    reference scrub as the builders. Live content cannot introduce a hidden
+ *    reference to a retired skill or excluded Scout operation.
  *
- * Standing rule (owner decision 2026-07-30): **serve, do not store.** Raven
+ * Policy: **serve, do not store.** Raven
  * forwards this content and must never become its source of record. The caches
  * below are transport on a forwarding path; a durable owned mirror (R2, a
  * committed copy, a bundled copy) is out of scope by decision. Responses carry
@@ -38,7 +38,7 @@
  * transport, not a trust boundary — and cache WRITES are best-effort, so a
  * cache outage can never turn an already-verified body into a failed read.
  */
-import { scrubRetiredSkillRefs } from "./scrub.ts";
+import { scrubNonExposedRefs } from "./scrub.ts";
 
 /** The pinned identity of one file. `sha` is the git blob hash (provenance);
  *  `sha256` is the security digest over the same raw bytes. */
@@ -195,7 +195,7 @@ export function createSkillSource(deps: SkillSourceDeps = {}): SkillSource {
           const bytes = await cached.arrayBuffer();
           await verify(bytes, pin);
           from = "cache";
-          return scrubRetiredSkillRefs(new TextDecoder().decode(bytes), pin.url);
+          return scrubNonExposedRefs(new TextDecoder().decode(bytes), pin.url);
         }
       } catch {
         // fall through to upstream
@@ -216,7 +216,7 @@ export function createSkillSource(deps: SkillSourceDeps = {}): SkillSource {
       } catch {
         // best-effort
       }
-      return scrubRetiredSkillRefs(text, pin.url);
+      return scrubNonExposedRefs(text, pin.url);
     })();
     // A failed fetch must not poison the isolate for the rest of its life.
     const wrapped: Promise<string> = pending.catch((e: unknown) => {

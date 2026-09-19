@@ -1,16 +1,16 @@
 /**
- * Modern-wire smoke (Solo todos 904/1234): a real 2026-07-28-era MCP client
- * (@modelcontextprotocol/client 2.0) connects to the ASSEMBLED worker over
+ * Modern-wire smoke: a real MCP 2026 client
+ * (@modelcontextprotocol/client 2.0) connects to the assembled worker over
  * streamable HTTP through the named-API-key bypass. Under the pre-2.0 stack
  * the client's `server/discover` negotiation probe was answered 400 and the
- * client silently fell back to the 2025 lifecycle (observed in production,
- * todo 904); this test pins the probe answering 2xx so a regression to
- * legacy-only serving fails here instead of shipping green.
+ * client silently fell back to the 2025 lifecycle. This test pins the probe
+ * response to 2xx. A regression to legacy-only serving must fail this test.
  */
 import { env, SELF } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { Client } from "@modelcontextprotocol/client";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import { EXPECTED_TOOL_METADATA } from "../helpers/mcp-tool-metadata";
 
 const PUBLIC = "https://raven.stellar.org";
 const TOKEN = "m".repeat(43);
@@ -58,14 +58,37 @@ describe("modern (2026-07-28) client end-to-end", () => {
 
       const tools = await client.listTools();
       expect(tools.tools.map((t) => t.name).sort()).toEqual(["execute", "search"]);
+      expect(tools.tools.find((tool) => tool.name === "search")).toMatchObject(
+        EXPECTED_TOOL_METADATA.search
+      );
+      const execute = tools.tools.find((tool) => tool.name === "execute");
+      expect(execute).toMatchObject(EXPECTED_TOOL_METADATA.execute);
+      expect(execute).not.toHaveProperty("outputSchema");
 
       const result = await client.callTool({
         name: "search",
         arguments: { query: "soroban contract storage", limit: 3 }
       });
-      const structured = result.structuredContent as { hits: { id: string }[]; nextSteps: string };
+      const structured = result.structuredContent as {
+        hits: { id: string }[];
+        confidence: { hitCount: number; topScoreGap: number | null };
+        recoveryMetadata: { serviceFilterExcludedSkills: unknown[] };
+        nextSteps: string;
+      };
       expect(structured.hits.length).toBeGreaterThan(0);
+      expect(structured.confidence.hitCount).toBe(structured.hits.length);
+      expect(structured.confidence.topScoreGap === null || structured.confidence.topScoreGap >= 0).toBe(true);
+      expect(structured.recoveryMetadata.serviceFilterExcludedSkills).toEqual([]);
       expect(structured.nextSteps.length).toBeGreaterThan(0);
+
+      const executeResult = await client.callTool({
+        name: "execute",
+        arguments: { code: "async (codemode) => 1 + 1" }
+      });
+      expect(executeResult.isError).toBeFalsy();
+      expect(executeResult.content).toHaveLength(1);
+      expect(executeResult.content[0]).toMatchObject({ type: "text", text: "2" });
+      expect(executeResult).not.toHaveProperty("structuredContent");
     } finally {
       await client.close();
     }

@@ -8,16 +8,88 @@ import { pathToFileURL } from "node:url";
 import { mintDemoCookie } from "../src/demo/auth.ts";
 import { demoReasoningEffortOverride } from "../src/demo/model-config.ts";
 
+/**
+ * DO NOT EDIT ANYTHING UNDER `src/` WHILE A RUN IS IN FLIGHT, and keep heavy
+ * concurrent work (agent CLIs, `npm test`) off the machine. Each model gets its
+ * own `wrangler dev`, which watches the worker's module graph: one save
+ * hot-reloads the isolate and kills the turn that is streaming, which lands in
+ * the artifact as a bare `http:200` with no terminal frame — indistinguishable
+ * from a product bug by eye. Demonstrated 2026-08-06 by touching a watched file
+ * mid-turn (run id `2026-08-06-reload-repro`): both perturbed turns died,
+ * the one between the two reloads passed. Six turns of the same day's
+ * `2026-08-06-cache-off` run were lost this way and briefly read as an Anthropic
+ * regression; a clean re-probe of the same prompts went 6/6.
+ *
+ * A failing turn now carries `workerLog` in the JSON artifact. Read it before
+ * diagnosing anything: `⎔ Reloading local server...` as the last line means the
+ * turn was killed by a reload, not by the model.
+ *
+ * AND THE ARTIFACT IS NOT THE ONLY RECORD. `wrangler dev` persists spans and app
+ * logs to `.wrangler/state/v3/observability/miniflare-wobs-trace-store/*.sqlite`,
+ * which outlives a deleted JSON artifact — it is how the 2026-08-06 post-routing
+ * failures were resolved after theirs was gone. Copy the file before querying it.
+ * A killed turn is a root `POST` span with NULL `duration_ms`/`outcome` (the span
+ * never closed) and NO `demo-chat` log line. That pair is conclusive: `demo-chat`
+ * is emitted from runTurn's own `finally`, so any invocation that ran to any
+ * conclusion — including a gateway cache replay — logs it. No log plus no closed
+ * span means the invocation was destroyed, which no model behavior can cause.
+ *
+ * Frontier model per family, so the matrix measures the edge rather than
+ * whatever was current when it was written. Every slug below was verified to
+ * ROUTE on 2026-08-06 (run ids 2026-08-06-latest-matrix / -route-probe) — a
+ * slug that has not been probed does not belong here, because a wrong one does
+ * not look like a typo. Anthropic versions with DASHES (`claude-sonnet-4-6`,
+ * not `4.6`); a dotted id authenticates and returns "model … was not found",
+ * which reads like a provider outage.
+ *
+ * Every entry is GREEN as of 2026-08-06. Two were unblocked by routing changes,
+ * not by credentials — see src/demo/model-config.ts:
+ *   - claude-fable-5 was failing `x-api-key header is required` because
+ *     `transport: "gateway"` selects provider PASSTHROUGH, whose Unified Billing
+ *     catalog is narrower than the run catalog. Omitting `transport` for
+ *     anthropic/ fixed it with no key.
+ *   - moonshotai/kimi-k3 was failing `Unknown gateway provider "moonshotai"`
+ *     because workers-ai-provider's registry has no such vendor. It routes
+ *     through a providers-less binding instance instead, and needs
+ *     `temperature: 1` — it rejects anything else.
+ *
+ * Deliberately ABSENT, with the reason so nobody re-adds them on a hunch:
+ *
+ *  - `google/gemini-*` — do not re-add without a library change. Entitled and
+ *    reachable, but unusable HERE: passthrough is off its Unified Billing list
+ *    (401), and the run path has no google `runWireFormat`, so it resolves to
+ *    the OpenAI wire and drops `thought_signature` when a tool result is
+ *    replayed. Measured `tools=1/0` and `2/0` — tool STARTS, zero tool RESULTS,
+ *    then `Bad Request`. A tool-using gauntlet cannot pass a model that cannot
+ *    return a tool result.
+ *  - `@cf/zai-org/glm-*` — routed fine after the `reasoning_effort` fix and
+ *    answered, but each dropped a tool call (`toolFailures=1`). Dropped on
+ *    quality, not plumbing; re-probe before re-adding.
+ *
+ * NOTE: no `@cf/`-hosted model remains in this matrix, so the `model.startsWith("@")`
+ * branch in demoModelSettings (the reasoning_effort omission that GLM forced) is
+ * no longer exercised by a LIVE run. It stays unit-covered via
+ * DEMO_KIMI_CONTROL_MODEL in test/demo-model-config.test.ts — keep that test.
+ *
+ * `Payment Required` IS NOT A BROKEN MODEL. The stellar-raven-demo gateway
+ * carries a $100 / 24h SLIDING cost limit (spend_limits rule 70415088). Near the
+ * cap a cost-based limiter refuses the most EXPENSIVE request while cheaper ones
+ * still fit, so it presents as one model failing every prompt in ~180ms while
+ * the rest of the matrix stays green — which looks exactly like a dead model.
+ * Seen 2026-08-06: claude-fable-5 0/8 with `Payment Required`, then green again
+ * on re-probe once the window slid. A full run of this matrix is 64 turns on
+ * frontier models; back-to-back runs will hit it. Check the gateway's spend
+ * window before debugging the model.
+ */
 export const DEFAULT_MODELS = [
-  "openai/gpt-5.4",
-  "anthropic/claude-sonnet-4.6",
-  "openai/gpt-5.4-mini",
-  "anthropic/claude-haiku-4.5",
-  "google/gemini-3.5-flash",
-  "xai/grok-4.5",
-  "@cf/moonshotai/kimi-k2.7-code",
+  "openai/gpt-5.6-sol",
+  "openai/gpt-5.6-terra",
+  "openai/gpt-5.6-luna",
   "anthropic/claude-fable-5",
-  "@cf/openai/gpt-oss-120b"
+  "anthropic/claude-opus-5",
+  "anthropic/claude-sonnet-5",
+  "xai/grok-4.6",
+  "moonshotai/kimi-k3"
 ];
 
 export const PROMPTS = [
@@ -101,6 +173,12 @@ export async function main(argv = process.argv.slice(2)) {
           for (const prompt of prompts) {
             const label = `${model} :: reasoning=${reasoningEffortLabel(reasoningEffort)} :: ${prompt.id} :: ${repeat}/${repeats}`;
             console.log(`[gauntlet] ${label}`);
+            // Mark the Wrangler log position so a failing turn can carry its own
+            // worker output. Without this the harness records the CLIENT's view
+            // only, and a turn that dies without a terminal frame is unexplainable
+            // from the artifact — exactly the 2026-08-06 claude-fable-5/open-rfps
+            // case (`ready` + two empty thinking frames, then silence).
+            const workerLogMark = server.output.join("").length;
             const result = await runPrompt({
               runId,
               url: `http://localhost:${port}/playground/chat`,
@@ -111,6 +189,9 @@ export async function main(argv = process.argv.slice(2)) {
               repeat,
               timeoutMs
             });
+            if (!result.pass.overall) {
+              result.workerLog = server.output.join("").slice(workerLogMark).slice(-8000);
+            }
             results.push(result);
             await writeArtifacts({ runId, outDir, prompts, results });
             console.log(
@@ -334,12 +415,22 @@ function renderSummary({ runId, results }) {
     .filter((result) => !result.pass.overall)
     .map(
       (result) =>
-        `- \`${result.model}\` / reasoning=\`${result.reasoningEffort ?? "default"}\` / \`${result.promptId}\` / repeat ${result.repeat}: ${result.terminal}, ${result.durationMs}ms, tools ${result.searchCalls}/${result.executeCalls}, errors=${JSON.stringify(result.errors.concat(result.parseError ? [result.parseError] : []))}`
+        `- \`${result.model}\` / reasoning=\`${result.reasoningEffort ?? "default"}\` / \`${result.promptId}\` / repeat ${result.repeat}: ${result.terminal}, ${result.durationMs}ms, tools ${result.searchCalls}/${result.executeCalls}, errors=${JSON.stringify(result.errors.concat(result.parseError ? [result.parseError] : []))}${killedByReload(result) ? " — **KILLED BY A WRANGLER RELOAD, not the model**" : ""}`
     );
+  // A reload-killed turn is indistinguishable from a model failure in the table,
+  // and reads as a regression. Say so where the number is read, not only in the
+  // JSON: the 2026-08-06 cache-off run lost six turns this way and they were
+  // briefly reported as an Anthropic regression.
+  const reloadKills = results.filter(killedByReload).length;
+  const reloadWarning = reloadKills
+    ? `\n> **${reloadKills} turn(s) were killed by a \`wrangler dev\` hot reload, not by the model.**\n` +
+      "> Something edited a watched file under `src/` while the run was in flight.\n" +
+      "> Those rows are void — rerun them on a quiet tree before drawing any conclusion.\n"
+    : "";
   return `# Demo Model Gauntlet ${runId}
 
 Generated by \`scripts/run-demo-model-gauntlet.mjs\`.
-
+${reloadWarning}
 ## Summary
 
 | Model | Reasoning | Overall Pass | Clean Terminal | p50 ms | p95 ms | p50 first meaningful ms | Tool Failures |
@@ -397,6 +488,11 @@ async function readDevVars(file) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Wrangler prints this as it swaps the isolate, taking any in-flight SSE with it. */
+export function killedByReload(result) {
+  return (result.workerLog ?? "").includes("Reloading local server");
 }
 
 export function usage() {

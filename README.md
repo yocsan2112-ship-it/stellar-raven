@@ -22,8 +22,7 @@ worker/service name deliberately keeps the `codemode` suffix even though the rep
 ```
 Server URL:   https://raven.stellar.org         (canonical since 2026-08-04; service live since 2026-07-02)
 MCP endpoint: POST https://raven.stellar.org/mcp    (streamable HTTP)
-Aliases:      https://raven.stellar.buzz and https://agents.stellar.buzz still serve the same
-              worker (`/mcp` included) — kept for existing clients.
+Docs:         GET  https://raven.stellar.org/docs   # how search and execute work, and troubleshooting
 Health:       GET  /health          # service heartbeat
               GET  /health/skills   # last skill-retrieval canary verdict (503 = failing/never ran)
 ```
@@ -63,13 +62,30 @@ scope live in [SECURITY.md](./SECURITY.md).
 ```
 # use Node 24, matching CI
 npm ci
-npm run typecheck  # tsc
-npm test           # vitest (offline; auth suite in test/auth.test.ts)
-npm run typegen    # regenerate env.d.ts after wrangler.jsonc/.dev.vars changes
+# create .dev.vars with the variable names from .github/workflows/ci.yml
+npm run typegen     # regenerate env.d.ts after wrangler.jsonc/.dev.vars changes
+npm run typecheck   # tsc
+npm test            # vitest (offline; auth suite in test/auth.test.ts)
+npm run test:smoke  # assembled Worker and Dynamic Worker boundary
+npm run build       # dry-run the Worker bundle
 ```
 
 For local MCP testing, populate `.dev.vars`, run `npm run dev`, and point a client at
 `http://localhost:8787/mcp`. Restart `wrangler dev` after editing `.dev.vars`.
+
+`npm run deploy` needs Wrangler authenticated against the Cloudflare account that owns the
+worker, which is not the same account every contributor is logged into by default. Wrangler
+resolves credentials per directory, so bind the right profile once per clone:
+
+```
+wrangler auth list                 # profiles and their bound directories
+wrangler auth activate <name> .    # bind one to this repo
+```
+
+A stale or wrong-account credential surfaces as `Authentication error [code: 10000]`, then
+`Max auth failures reached [code: 9109]` once retries trip the limiter — not as a permissions
+message naming the account, so check the active profile before assuming the token expired.
+The binding lives in `~/.wrangler`, never in the repo.
 
 ## Observability
 
@@ -87,7 +103,15 @@ Raven's structured logs contain operational metadata only: counts, status, timin
 IDs, and pseudonymous subject/client joins. They exclude queries, execute code, tool results, answers,
 provider error messages, and content-derived hashes. Existing Cloudflare platform logs age out on
 Cloudflare's fixed retention schedule (at most seven days). Playground model requests also set
-Cloudflare AI Gateway's per-request logging override to off.
+Cloudflare AI Gateway's per-request payload collection to off. Gateway request metadata can still persist.
+
+The separate usage archive retains response metadata for thirteen UTC calendar months, including
+the current month. It counts logged, handler-completed search and execute responses, including errors and refusals.
+It excludes authentication rejection, input validation errors, and failures before a response log.
+It does not confirm network delivery or judge answer correctness.
+It counts distinct WorkOS-derived account hashes only when those accounts receive tool responses.
+API-key traffic remains separate. The archive excludes queries, answers, email addresses, and IPs.
+See [usage/README.md](usage/README.md) for monthly reports, coverage checks, retention, and deployment.
 
 ### Account-data deletion runbook
 
@@ -106,11 +130,16 @@ the production consoles as follows:
    `stellar-raven-artifacts`, delete every object under `art/<ownerHash>/` and verify the prefix is empty.
 4. If the request includes deleting the identity account, delete the user in the WorkOS production
    environment after the Raven cleanup. Otherwise leave the WorkOS account in place.
+5. In the private `stellar-raven-usage` D1 database, delete `usage_responses` rows whose
+   `subject_hash` equals the `ownerHash` from step 3. Use a bound query through the Cloudflare
+   API or the production console. Verify that no matching rows remain. D1 Time Travel can retain
+   recovery copies for its configured recovery window; repeat deletion after any database restore.
 
 The unscoped `login:<state>` records expire within ten minutes. Demo throttle records expire within two
 hours and R2 artifacts within seven days even without manual deletion. Already-ingested Workers Logs and
 Cloudflare platform request metadata cannot be selectively removed with this repository's tools; they
-expire on Cloudflare's fixed retention schedule, no later than seven days. See the official
+expire on Cloudflare's fixed retention schedule, no later than seven days. The separate usage archive
+follows the thirteen-month policy above. See the official
 [WorkOS user API](https://workos.com/docs/reference/authkit/user),
 [Cloudflare KV commands](https://developers.cloudflare.com/kv/reference/kv-commands/), and
 [R2 object deletion](https://developers.cloudflare.com/r2/objects/delete-objects/).

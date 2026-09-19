@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * self-test.mjs — standalone fixture test of the grader math in eval/lib/grade.mjs.
- * No dependency on src/ or catalog/ — runnable before Lane C lands:
+ * self-test.mjs — standalone checks for grader math and committed eval evidence.
+ * No server is required:
  *   node eval/self-test.mjs
  *
  * Fixture: a fake 3-entry catalog (as ranked hit lists) + 3 fake cases + 1 skip,
@@ -10,8 +10,14 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { aggregate, cardMatches, canonToken, gradeCase, tableRows } from "./lib/grade.mjs";
-import { deriveExpectedAny, frontmatterRouting, parseFrontmatterList } from "./lib/labels.mjs";
+import { aggregate, cardMatches, cardMatchesExact, canonToken, gradeCase, isServiceLevelCard, tableRows } from "./lib/grade.mjs";
+import {
+  deriveExpectedAny,
+  frontmatterRouting,
+  overlayExpectedAnyById,
+  parseFrontmatterList,
+  unionExpectedAny,
+} from "./lib/labels.mjs";
 
 // --- fake catalog: 3 entries across our namespaces --------------------------------
 const E = {
@@ -35,12 +41,64 @@ const check = (name, fn) => {
   }
 };
 
+const GATE_EVIDENCE_INPUTS = [
+  "catalog/manifest.json",
+  "eval/routing-cases.json",
+  "eval/skills-cases.json",
+  "eval/holdout-cases.json",
+];
+
+check("routing gate evidence resolves from committed files", () => {
+  const repoRoot = new URL("../", import.meta.url);
+  const gates = JSON.parse(readFileSync(new URL("./gates.json", import.meta.url), "utf8"));
+  assert.ok(gates.evidence && typeof gates.evidence === "object" && !Array.isArray(gates.evidence));
+  assert.ok(Array.isArray(gates.evidence.inputs));
+  assert.deepEqual(gates.evidence.inputs.map((input) => input.path), GATE_EVIDENCE_INPUTS);
+  for (const input of gates.evidence.inputs) {
+    assert.match(input.sha256, /^[a-f0-9]{64}$/);
+    const actual = createHash("sha256").update(readFileSync(new URL(input.path, repoRoot))).digest("hex");
+    assert.equal(actual, input.sha256, `${input.path} must match its committed gate fingerprint`);
+  }
+  if (gates.evidence.localTrace !== undefined) {
+    assert.equal(typeof gates.evidence.localTrace, "string");
+    assert.ok(gates.evidence.localTrace.length > 0);
+  }
+});
+
+check("routing gate evidence commits accepted totals", () => {
+  const gates = JSON.parse(readFileSync(new URL("./gates.json", import.meta.url), "utf8"));
+  const totals = gates.evidence.acceptedTotals;
+  const assertCounts = (lane, required) => {
+    assert.ok(totals[lane] && typeof totals[lane] === "object" && !Array.isArray(totals[lane]));
+    for (const key of required) assert.ok(Number.isInteger(totals[lane][key]) && totals[lane][key] >= 0, `${lane}.${key} must be a non-negative integer`);
+  };
+  assertCounts("legacy", ["n", "top1", "top3", "top5", "cardN", "cardHit5"]);
+  assertCounts("skills", ["n", "top1", "top3", "top5", "cardN", "cardHit5"]);
+  assertCounts("holdout", ["n", "top1", "top3", "top5", "cardN", "cardHit5", "forbiddenCaptures", "passed"]);
+  assert.deepEqual(
+    { n: totals.legacy.n, top1: totals.legacy.top1, top3: totals.legacy.top3, top5: totals.legacy.top5 },
+    { n: gates.legacy.n, top1: gates.legacy.top1, top3: gates.legacy.top3, top5: gates.legacy.top5 },
+  );
+  assert.equal(totals.skills.n, gates.skills.n);
+  assert.ok(totals.skills.top1 >= gates.skills.minTop1);
+  assert.equal(totals.holdout.n, gates.holdout.n);
+  assert.ok(totals.holdout.top1 >= gates.holdout.minTop1);
+  assert.ok(totals.holdout.top3 >= gates.holdout.minTop3);
+  assert.ok(totals.holdout.top5 >= gates.holdout.minTop5);
+  assert.ok(totals.holdout.forbiddenCaptures <= gates.holdout.maxForbiddenCaptures);
+});
+
 // --- canonToken / cardMatches ------------------------------------------------------
 check("canonToken unifies separators + case", () => {
   assert.equal(canonToken("Lumenloop.Search-Directory"), "lumenloop_search_directory");
 });
 check("cardMatches: exact canonical id match", () => {
   assert.equal(cardMatches("lumenloop_search_directory", E.llDirectory), true);
+});
+check("cardMatchesExact: uses mapped service + exact operation only", () => {
+  assert.equal(cardMatchesExact("stellar_docs_search_docs", E.docsSearch), true);
+  assert.equal(cardMatchesExact("scout_projects", E.scoutProjects), false);
+  assert.equal(cardMatchesExact("skills_smart_contracts", E.skillContracts), true);
 });
 check("cardMatches: stellar_docs_ prefix maps to stellarDocs service, tolerant op containment", () => {
   // expected op "search_docs" vs hit op "search_docs" via stellar_docs_ prefix
@@ -86,7 +144,7 @@ check("empty hits -> all false", () => {
   assert.deepEqual(g, { top1: false, top3: false, top5: false, cardHit5: null });
 });
 
-// --- expected_any (accept-either, todo 809) ----------------------------------------
+// --- expected_any (accept-either) --------------------------------------------------
 check("expected_any: skills hit at rank 1 fails strict but passes accept-either", () => {
   const g = gradeCase(
     rank(E.skillContracts, E.docsSearch, E.scoutProjects),
@@ -138,6 +196,45 @@ check("skills-lane case: strict grading with skills as expected_service + skills
   assert.deepEqual(g2, { top1: true, top3: true, top5: true, cardHit5: false });
 });
 
+// --- service-level cards retired from card@5 (todo 1632) ---------------------------
+check("isServiceLevelCard: <service>_mcp cards are service-level, operation cards are not", () => {
+  assert.equal(isServiceLevelCard("stellar_docs_mcp"), true);
+  assert.equal(isServiceLevelCard("scout_mcp"), true); // same family, any known service prefix
+  assert.equal(isServiceLevelCard("scout_research"), false);
+  assert.equal(isServiceLevelCard("lumenloop_search_directory"), false);
+  // a skill whose terminal name merely contains "mcp" is an operation-level card
+  assert.equal(isServiceLevelCard("skills_lumenloop_mcp_connect"), false);
+});
+check("card@5: a case carrying only service-level cards is not card-graded", () => {
+  // stellarDocs hit at rank 1 satisfies top-1/3/5, but the service-level card is
+  // neither a hit nor a miss — card@5 does not apply (service routing is top-k's job)
+  const g = gradeCase(rank(E.docsSearch, E.scoutProjects), "stellarDocs", ["stellar_docs_mcp"]);
+  assert.deepEqual(g, { top1: true, top3: true, top5: true, cardHit5: null });
+  // total miss with only a service card: still not card-graded (never a structural false)
+  const g2 = gradeCase(rank(E.scoutProjects), "stellarDocs", ["stellar_docs_mcp"]);
+  assert.deepEqual(g2, { top1: false, top3: false, top5: false, cardHit5: null });
+});
+check("card@5: service-level cards are ignored when operation-level cards are present", () => {
+  // mixed list: matching runs against scout_projects only; docs_mcp contributes nothing
+  const g = gradeCase(rank(E.scoutProjects, E.docsSearch), "scout", ["stellar_docs_mcp", "scout_projects"]);
+  assert.deepEqual(g, { top1: true, top3: true, top5: true, cardHit5: true });
+  // the operation-level card still matches past rank 1
+  const g2 = gradeCase(rank(E.docsSearch, E.scoutProjects), "scout", ["stellar_docs_mcp", "scout_projects"]);
+  assert.deepEqual(g2, { top1: false, top3: true, top5: true, cardHit5: true });
+  // and still misses when no operation-level hit is present
+  const g3 = gradeCase(rank(E.docsSearch), "scout", ["stellar_docs_mcp", "scout_projects"]);
+  assert.deepEqual(g3, { top1: false, top3: false, top5: false, cardHit5: false });
+});
+check("aggregate: service-card-only cases leave the card@5 denominator", () => {
+  const results = [
+    { expected_service: "stellarDocs", top1: true, top3: true, top5: true, cardHit5: null }, // docs_mcp-only
+    { expected_service: "stellarDocs", top1: true, top3: true, top5: true, cardHit5: true }, // mixed, op card hit
+  ];
+  const { overall, perService } = aggregate(results);
+  assert.deepEqual(overall, { n: 2, top1: 2, top3: 2, top5: 2, cardN: 1, cardHit5: 1 });
+  assert.deepEqual(perService.stellarDocs, { n: 2, top1: 2, top3: 2, top5: 2, cardN: 1, cardHit5: 1 });
+});
+
 // --- aggregation over the 3 graded cases (the skip never reaches the grader:
 // compile-routing.mjs routes unmappable labels to the skipped list, which run-routing
 // only counts — mimic that by grading exactly the 3 usable cases). ------------------
@@ -184,7 +281,7 @@ check("gradeCase v3: cross-service tolerance is expected_any only", () => {
   assert.equal(g.top1, false); // strict vs stellarDocs unaffected
 });
 
-// --- labels.mjs: corpus-label helpers (todo 817) ------------------------------------
+// --- labels.mjs: corpus-label helpers ----------------------------------------------
 check("deriveExpectedAny: cross-service acceptable_cards produce a sorted accept set", () => {
   assert.deepEqual(
     deriveExpectedAny("stellarDocs", ["scout_research", "lumenloop_search_directory", "scout_repos"]),
@@ -198,6 +295,35 @@ check("deriveExpectedAny: same-service and out-of-catalog cards contribute nothi
   assert.equal(deriveExpectedAny("stellarDocs", ["perplexity_search", "parallel_extract"]), null);
   assert.equal(deriveExpectedAny("stellarDocs", []), null);
   assert.equal(deriveExpectedAny("stellarDocs", undefined), null);
+});
+check("per-case overlay applies to legacy and extended labels", () => {
+  const overlay = JSON.parse(readFileSync(new URL("./build-question-overlay.json", import.meta.url), "utf8"));
+  const byId = overlayExpectedAnyById(overlay, new Set([
+    "q-tool-cctp-stellar-integration",
+    "q-defi-bridge-evm-to-stellar-axelar",
+  ]));
+  assert.deepEqual(
+    unionExpectedAny("stellarDocs", undefined, byId.get("q-tool-cctp-stellar-integration")),
+    ["stellarDocs", "skills"],
+  );
+  assert.deepEqual(
+    unionExpectedAny("scout", ["scout", "lumenloop"], byId.get("q-defi-bridge-evm-to-stellar-axelar")),
+    ["scout", "lumenloop", "skills"],
+  );
+});
+check("per-case overlay rejects malformed and duplicate records", () => {
+  const known = new Set(["q-x"]);
+  assert.throws(
+    () => overlayExpectedAnyById({ cases: [{ id: "q-x", expected_any: "skills" }] }, known),
+    /non-empty expected_any string array/,
+  );
+  assert.throws(
+    () => overlayExpectedAnyById({ cases: [
+      { id: "q-unknown", expected_any: ["skills"] },
+      { id: "q-unknown", expected_any: ["skills"] },
+    ] }, known),
+    /duplicate overlay case id/,
+  );
 });
 check("parseFrontmatterList: inline style with comments", () => {
   const txt = "id: q-x\nexpected_cards: [stellar_docs_mcp]  # the docs card\nacceptable_cards: [scout_research, scout_repos]\n";
@@ -230,8 +356,148 @@ check("frontmatterRouting: extracts service, fire flag, and both card lists", ()
   });
 });
 
-// --- content-pinned hand-authored QA lane contracts (todo 913) --------------------
+// --- content-pinned hand-authored QA lane contracts -------------------------------
 const caseContentDigest = (cases) => createHash("sha256").update(JSON.stringify(cases)).digest("hex");
+const routingDiagnosticDigest = (diagnostic) =>
+  createHash("sha256")
+    .update(JSON.stringify({
+      positiveCases: diagnostic.positiveCases,
+      controlCases: diagnostic.controlCases,
+    }))
+    .digest("hex");
+const routingDiagnosticV2Digest = (diagnostic) =>
+  createHash("sha256")
+    .update(JSON.stringify({
+      requiredCases: diagnostic.requiredCases,
+      forbiddenCases: diagnostic.forbiddenCases,
+      neutralCases: diagnostic.neutralCases,
+    }))
+    .digest("hex");
+
+check("protocol-history diagnostics pin frozen membership and case content", () => {
+  const contracts = [
+    {
+      path: "./protocol-history-cases.json",
+      name: "protocol-history-routing-v1",
+      positives: 8,
+      controls: 4,
+      digest: "5b8ee40f89c846c4e69fa91f5a483f9d224dd79628afa7f9ac45b522f9aaa8a8",
+    },
+    {
+      path: "./protocol-history-blind-cases.json",
+      name: "protocol-history-blind-v1",
+      positives: 11,
+      controls: 9,
+      digest: "b63cfb605bd98aeba6981535be7bd5ee968e1e8b48ee92a1d55e4d5b07521f53",
+    },
+  ];
+  const allIds = new Set();
+  for (const expected of contracts) {
+    const diagnostic = JSON.parse(
+      readFileSync(new URL(expected.path, import.meta.url), "utf8")
+    );
+    assert.equal(diagnostic.contract, expected.name);
+    assert.equal(diagnostic.frozen, true);
+    assert.equal(diagnostic.targetOperation, "scout.searchResearch");
+    assert.equal(diagnostic.positiveCases.length, expected.positives);
+    assert.equal(diagnostic.controlCases.length, expected.controls);
+    assert.equal(routingDiagnosticDigest(diagnostic), expected.digest);
+    assert.equal(
+      diagnostic.contractProvenance.caseContentDigest,
+      `sha256(JSON.stringify({positiveCases,controlCases}))=${expected.digest}`
+    );
+    for (const testCase of [...diagnostic.positiveCases, ...diagnostic.controlCases]) {
+      assert.equal(typeof testCase.id, "string");
+      assert.equal(typeof testCase.question, "string");
+      assert.equal(allIds.has(testCase.id), false, `duplicate diagnostic id ${testCase.id}`);
+      allIds.add(testCase.id);
+    }
+  }
+  const v1RequiredPairs = [
+    ["./protocol-history-cases.json", "./protocol-history-cases-v2.json"],
+    ["./protocol-history-blind-cases.json", "./protocol-history-blind-cases-v2.json"],
+  ];
+  for (const [v1Path, v2Path] of v1RequiredPairs) {
+    const v1 = JSON.parse(readFileSync(new URL(v1Path, import.meta.url), "utf8"));
+    const v2 = JSON.parse(readFileSync(new URL(v2Path, import.meta.url), "utf8"));
+    assert.deepEqual(v2.requiredCases, v1.positiveCases);
+    const v2BoundaryCases = [...v2.forbiddenCases, ...v2.neutralCases];
+    const v2BoundaryById = new Map(v2BoundaryCases.map((testCase) => [testCase.id, testCase]));
+    assert.equal(v2BoundaryCases.length, v1.controlCases.length);
+    for (const testCase of v1.controlCases) {
+      assert.deepEqual(v2BoundaryById.get(testCase.id), testCase);
+    }
+  }
+});
+
+check("protocol-history v2 diagnostics pin roles, membership, and case content", () => {
+  const sourceEpoch = {
+    frozenAt: "2026-09-02T17:27:40.000Z",
+    manifestSha256: "4cd28f4bdfe8c73950e0a6d4dfa1a09dd2f82674859e93990fdd62daef24fe8b",
+    targetScoringSha256: "c3956d225eba75f0543a9aa0d7cf42dc3f6169189e1e3f995f028a6252a42752",
+    targetRoutingSha256: "468a9d9834e8cb50cb905f80ccc42f9d3daa7a3d0ff2d8c5194d566812ba716b",
+    caseAuthoringReceipt: ".agents/rounds/2026-09-02-protocol-history-free-evidence/label-review-grok.md",
+  };
+  const contracts = [
+    {
+      path: "./protocol-history-cases-v2.json",
+      name: "protocol-history-routing-v2",
+      required: 8,
+      forbidden: 2,
+      neutral: ["ph-control-validator-vote", "ph-control-clawback-cap"],
+      predecessor: "eval/protocol-history-cases.json (protocol-history-routing-v1)",
+      digest: "66fa06ac2990c3591fb279955f7ce61fa8fffd616650f642877424f45b108077",
+    },
+    {
+      path: "./protocol-history-blind-cases-v2.json",
+      name: "protocol-history-blind-v2",
+      required: 11,
+      forbidden: 7,
+      neutral: ["phb-control-sdk-version-history", "phb-control-cap-history-sep-support"],
+      predecessor: "eval/protocol-history-blind-cases.json (protocol-history-blind-v1)",
+      digest: "afd4ccb8ee777c9b81de824c5bc4878497ad383ffe8488c77ff32b6ae7820827",
+    },
+  ];
+  const allIds = new Set();
+  for (const expected of contracts) {
+    const diagnostic = JSON.parse(
+      readFileSync(new URL(expected.path, import.meta.url), "utf8")
+    );
+    assert.equal(diagnostic.contract, expected.name);
+    assert.equal(diagnostic.frozen, true);
+    assert.equal(diagnostic.version, 2);
+    assert.equal(diagnostic.authoredAt, "2026-09-03");
+    assert.equal(diagnostic.targetOperation, "scout.searchResearch");
+    assert.deepEqual(diagnostic.sourceEpoch, sourceEpoch);
+    assert.equal(diagnostic.contractProvenance.predecessor, expected.predecessor);
+    assert.equal(
+      diagnostic.contractProvenance.labelReview,
+      ".agents/rounds/2026-09-02-protocol-history-free-evidence/label-review-grok.md"
+    );
+    assert.equal(
+      diagnostic.contractProvenance.ownerDecision,
+      ".agents/rounds/2026-09-03-owner-decisions.md"
+    );
+    assert.equal(diagnostic.requiredCases.length, expected.required);
+    assert.equal(diagnostic.forbiddenCases.length, expected.forbidden);
+    assert.deepEqual(diagnostic.neutralCases.map((testCase) => testCase.id), expected.neutral);
+    assert.equal(routingDiagnosticV2Digest(diagnostic), expected.digest);
+    assert.equal(
+      diagnostic.contractProvenance.caseContentDigest,
+      `sha256(JSON.stringify({requiredCases,forbiddenCases,neutralCases}))=${expected.digest}`
+    );
+    for (const testCase of [
+      ...diagnostic.requiredCases,
+      ...diagnostic.forbiddenCases,
+      ...diagnostic.neutralCases,
+    ]) {
+      assert.equal(typeof testCase.id, "string");
+      assert.equal(typeof testCase.question, "string");
+      assert.equal(allIds.has(testCase.id), false, `duplicate diagnostic id ${testCase.id}`);
+      allIds.add(testCase.id);
+    }
+  }
+});
 
 check("live-data-canonical-v3 pins carried-v2 identity, ordered membership, and full case content", () => {
   const canonical = JSON.parse(readFileSync(new URL("./qa/corpus/live/live-cases.json", import.meta.url), "utf8"));

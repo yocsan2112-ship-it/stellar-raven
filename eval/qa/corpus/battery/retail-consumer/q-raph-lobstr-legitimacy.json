@@ -5,11 +5,13 @@
     "stellarDocs.search_wallet_dapp_docs"
   ],
   "golden": {
-    "answer": "LOBSTR is a real, currently maintained third-party wallet operated under the Ultra Stellar identity, with a current official Apple app listing as of 2026-07-11; that establishes the provider/publisher, not risk-free safety or SDF endorsement. Current LOBSTR documentation says keys for current or migrated accounts are encrypted with user-password participation and stored locally/on-device, while accounts created before 2020-09-01 that were never migrated are a documented exception. Its 12-word Recovery Phrase (or older wallet-specific 10-word Recovery Code) must be kept private/offline; LOBSTR says it cannot reconstruct users’ phrase, code, secret, or password. Install only from links reached through `lobstr.co`, verify the app publisher, and use 2FA plus multisig or hardware signing when the threat model warrants it.",
+    "answer": "LOBSTR is a real, currently maintained third-party wallet operated under the Ultra Stellar identity, with a current official Apple app listing as of 2026-08-31; that establishes the provider/publisher, not risk-free safety or SDF endorsement. Current LOBSTR documentation says keys for current or migrated accounts are generated and encrypted on-device with user-password participation, are stored locally on-device for decryption and signing, and also exist as an encrypted copy on LOBSTR servers that LOBSTR says it cannot decrypt; accounts created before 2020-09-01 that were never migrated are a documented exception. Its 12-word Recovery Phrase (or older wallet-specific 10-word Recovery Code) must be kept private/offline; LOBSTR says it cannot reconstruct users’ phrase, code, secret, or password. Install only from links reached through `lobstr.co`, verify the app publisher, and use 2FA plus multisig or hardware signing when the threat model warrants it.",
     "keyFacts": [
-      "Identifies LOBSTR as an active Ultra Stellar third-party wallet as of 2026-07-11 without treating that as a security guarantee or SDF endorsement.",
-      "Attributes local/on-device storage to current LOBSTR documentation and preserves the pre-2020 unmigrated-account exception.",
-      "States that recovery credentials must never be shared and cannot be reconstructed by support according to current documentation."
+      "Identifies LOBSTR as an active Ultra Stellar third-party wallet.",
+      "Dates the LOBSTR activity assessment to an observation date.",
+      "Attributes local/on-device storage to current LOBSTR documentation.",
+      "Preserves the pre-2020 unmigrated-account exception.",
+      "Requires credentials to remain unshared and support-unrecoverable per current LOBSTR docs."
     ],
     "avoid": [
       "Do NOT say a wallet provider or SDF can recover a secret phrase you lost.",
@@ -26,10 +28,14 @@
     "trap": "scam-check"
   },
   "truth": {
+    "lifecycle": {
+      "state": "active",
+      "reviewState": "none"
+    },
     "domain": "mixed",
     "status": "confirmed",
-    "asOf": "2026-07-11",
-    "reverifyBy": "2026-11-19",
+    "asOf": "2026-08-31",
+    "reverifyBy": "2026-11-30",
     "sources": [
       {
         "class": "A",
@@ -46,6 +52,10 @@
       {
         "class": "D",
         "ref": "https://apps.apple.com/us/app/lobstr-wallet-buy-xlm-xrp/id1404357892"
+      },
+      {
+        "class": "A",
+        "ref": "https://lobstr.freshdesk.com/support/solutions/articles/151000169419-security-of-your-wallet-on-lobstr"
       }
     ],
     "corroboration": [
@@ -81,23 +91,116 @@
             "note": "Owner documentation only; no independent reproducible binary audit was found, so this is not encoded as an audited implementation claim."
           }
         ]
+      },
+      {
+        "claim": "LOBSTR is an active Ultra Stellar third-party wallet, unaffiliated with SDF, with a current official app listing as of 2026-08-31.",
+        "verdict": "confirmed-as-of",
+        "evidence": [
+          {
+            "class": "A",
+            "ref": "https://lobstr.co/terms/",
+            "observedAt": "2026-08-31",
+            "note": "'LOBSTR wallet is provided to you by Ultra Stellar OÜ, an independent commercial entity unaffiliated with the Stellar Development Foundation.' ultrastellar.com lists LOBSTR as its web and mobile wallet."
+          },
+          {
+            "class": "D",
+            "ref": "https://itunes.apple.com/lookup?id=1404357892&country=us",
+            "observedAt": "2026-08-31",
+            "note": "sellerName 'ULTRA STELLAR, LLC', version 15.6.0, currentVersionReleaseDate 2026-08-19T12:06:08Z; Play listing com.lobstr.client names Ultra Stellar OU (Tallinn). Legal-entity suffixes differ (OÜ/OU on web and Play, LLC on Apple); the brand owner is the same."
+          }
+        ]
+      },
+      {
+        "claim": "Current LOBSTR documentation says current or migrated keys are generated and decrypted on-device with password participation, and that an encrypted copy of the Recovery phrase/Secret key is also stored on LOBSTR servers.",
+        "verdict": "confirmed-as-of",
+        "evidence": [
+          {
+            "class": "A",
+            "ref": "https://lobstr.freshdesk.com/support/solutions/articles/151000169419-security-of-your-wallet-on-lobstr",
+            "observedAt": "2026-08-31",
+            "note": "'The keys themselves can only be decrypted and accessed by users on-device'; 'We store the encrypted version of the Recovery phrase/Secret key on our server'; 'The transaction signing also happens locally on-device'. Owner documentation only; no class F audit, so the storage claim stays source-relative and the avoid item forbids an era-independent local-only or server-only claim."
+          },
+          {
+            "class": "A",
+            "ref": "https://lobstr.freshdesk.com/support/solutions/articles/151000001273",
+            "observedAt": "2026-08-31",
+            "note": "Migration overview: pre-September 1, 2020 wallets kept keys on the platform in encrypted form; stated migration deadline July 10, 2026 has passed, and the documented exception remains for unmigrated wallets."
+          },
+          {
+            "class": "A",
+            "ref": "https://lobstr.freshdesk.com/support/solutions/articles/151000169419-security-of-your-wallet-on-lobstr",
+            "observedAt": "2026-09-04",
+            "note": "Re-observed (post-drift current truth): 'securely stored on your device and uploaded to our server in encrypted form'; 'We store the encrypted version of the Recovery phrase/Secret key on our server'; on another device the app 'downloads the encrypted version of the key from the server and stores it locally'; 'The keys themselves can only be decrypted and accessed by users on-device'; 'The transaction signing also happens locally on-device'."
+          }
+        ]
+      },
+      {
+        "claim": "Current LOBSTR documentation requires credentials to stay unshared and states that support cannot reconstruct a lost Recovery phrase, code, secret, or password.",
+        "verdict": "confirmed-as-of",
+        "evidence": [
+          {
+            "class": "A",
+            "ref": "https://lobstr.freshdesk.com/support/solutions/articles/151000001289-how-can-i-back-up-my-stellar-wallet-",
+            "observedAt": "2026-08-31",
+            "note": "'Do not share your Recovery Phrase and Secret key with anyone'; 'We (the LOBSTR team) do not have access to users' Recovery phrases, Secret keys, Recovery codes, or Account passwords.'"
+          },
+          {
+            "class": "A",
+            "ref": "https://recovery.lobstr.co/",
+            "observedAt": "2026-08-31",
+            "note": "The recovery tool requires the user's Recovery code or Recovery Phrase plus the account email; staff approval is a process gate, not reconstruction. The restore article's 'Only share your Recovery Phrase with trusted services' is ordinary English for services the user elects to trust (blind lane: no product or docs-index hit for a named 'trusted services' product), so it does not contradict the unshared-credential rule."
+          },
+          {
+            "class": "D",
+            "ref": "https://apps.apple.com/us/app/lobstr-wallet-buy-xlm-xrp/id1404357892",
+            "observedAt": "2026-08-31",
+            "note": "Independent sweep (lane A D6) found an active publisher and current app; user allegations found in the sweep did not establish provider fraud or cryptographic safety."
+          }
+        ]
       }
     ],
     "verified": {
-      "date": "2026-07-11",
-      "by": "P4 H3 primary+blind (Solo 3415/3419) with Fable voice review",
+      "date": "2026-09-04",
+      "by": "golden follow-up review 2026-09-04 (Fable 5.1 xhigh; .agents/rounds/2026-09-03-truth-maintenance/golden-followup-fable.md)",
       "evidence": [
         "solo://proj/49/process/3415",
         "solo://proj/49/process/3419",
-        "scratchpad/p4/h3-raph/fable-voice-review.md",
-        "scratchpad/p4/h3-raph-blind/reconciliation.md",
+        "Independent Lane A review (temporary path, unrecoverable); its claims were re-verified live on 2026-08-31 — see the Live re-check lines.",
         "https://lobstr.freshdesk.com/support/solutions/articles/151000001271-where-can-i-find-my-secret-key-",
         "https://lobstr.freshdesk.com/support/solutions/articles/151000001291-how-to-restore-my-secret-key-",
         "https://ultrastellar.com/",
-        "https://apps.apple.com/us/app/lobstr-wallet-buy-xlm-xrp/id1404357892"
+        "https://apps.apple.com/us/app/lobstr-wallet-buy-xlm-xrp/id1404357892",
+        "Structural re-form (snapshot-date): Split the wallet identity from its snapshot date; truth is unchanged.",
+        "Live re-check 2026-08-27: https://ultrastellar.com/ — Ultra Stellar listed LOBSTR as its web and mobile wallet product.",
+        "Live re-check 2026-08-27: https://apps.apple.com/us/app/lobstr-wallet-buy-xlm-xrp/id1404357892 — Apple listed the active LOBSTR app and ULTRA STELLAR, LLC as developer.",
+        "Sibling sweep 2026-08-27: grep LOBSTR|Ultra Stellar → q-defi-aquarius-what-is, q-defi-soroswap-vs-stellarx, q-eco-dex-saturation, q-eco-freighter-wallet, q-eco-lobstr-wallet, q-eco-xbull-wallet, q-raph-lobstr-legitimacy; no contradiction",
+        "Structural re-form (compound-predicate): Split current storage documentation, the pre-2020 exception, and recovery-credential handling into atomic facts; truth is unchanged.",
+        "Live re-check 2026-08-27: https://lobstr.freshdesk.com/support/solutions/articles/151000169419-security-of-your-wallet-on-lobstr — described on-device access and local storage of downloaded encrypted keys.",
+        "Live re-check 2026-08-27: https://lobstr.freshdesk.com/support/solutions/articles/151000001273 — preserved the pre-2020 unmigrated wallet-key storage exception.",
+        "Live re-check 2026-08-27: https://lobstr.freshdesk.com/support/solutions/articles/151000001289-how-can-i-back-up-my-stellar-wallet- — required credentials to stay unshared and stated LOBSTR lacks access to them.",
+        "Sibling sweep 2026-08-27: grep LOBSTR|Ultra Stellar|recovery phrase → q-eco-lobstr-wallet, q-defi-aquarius-what-is, q-raph-lobstr-legitimacy; no contradiction",
+        "Gospel change 2026-08-31: the answer's dated activity observation moved from 'as of 2026-07-11' to 'as of 2026-08-31'; storage language stays source-relative ('Current LOBSTR documentation says … stored locally/on-device') with the era-independent avoid item unchanged; no other judge-facing text changed.",
+        "Live re-check 2026-08-31: https://lobstr.co/terms/ — Ultra Stellar OÜ, 'an independent commercial entity unaffiliated with the Stellar Development Foundation'; class D Apple lookup: ULTRA STELLAR, LLC, version 15.6.0 (2026-08-19).",
+        "Live re-check 2026-08-31: https://itunes.apple.com/lookup?id=1404357892&country=us — version 15.6.0 released 2026-08-19T12:06:08Z; class A ultrastellar.com lists LOBSTR; observation dated 2026-08-31 in the answer.",
+        "Live re-check 2026-08-31: https://lobstr.freshdesk.com/support/solutions/articles/151000169419-security-of-your-wallet-on-lobstr — 'decrypted and accessed by users on-device' and an encrypted server copy; owner docs only (no class F audit), so the fact stays source-relative.",
+        "Live re-check 2026-08-31: https://lobstr.freshdesk.com/support/solutions/articles/151000001271-where-can-i-find-my-secret-key- — 'before September 1, 2020' unmigrated accounts reveal the key only on the website; article 151000001273 keeps the exception after the July 10, 2026 deadline.",
+        "Live re-check 2026-08-31: https://lobstr.freshdesk.com/support/solutions/articles/151000001289-how-can-i-back-up-my-stellar-wallet- — do not share; LOBSTR team has no access; class A recovery.lobstr.co needs the user's phrase or code; 'trusted services' is generic wording.",
+        "Lane reconciliation 2026-08-31: lane A marked keyFact 5 disputed on the restore article's 'trusted services' sentence; the blind lane resolved that phrase as ordinary English (no named product, no docs-index hit) and confirmed every source-relative keyFact; the blind lane's extra metadata-control claim is not a keyFact and was not added.",
+        "Sibling sweep 2026-08-31: grep LOBSTR|Ultra Stellar|Recovery code|September 1, 2020 → 15 other cases; read q-eco-lobstr-wallet, q-eco-stellar-wallets-list, q-tool-wallets-comparison, q-raph-restore-wallet, q-raph-withdraw-exchange-self-custody; no contradiction",
+        "Gospel change 2026-09-04: the answer's storage sentence now states both halves of LOBSTR's own security article — on-device generation, encryption, storage, decryption, and signing with password participation, plus an encrypted server copy that LOBSTR says it cannot decrypt. The 2026-08-31 corroboration row already verified the server copy, but the answer omitted it. The parent answer was era-bounded and did not say `only`. keyFacts, avoid, notes, and the dated activity observation are unchanged.",
+        "Live re-check 2026-09-04 (post-drift current truth): https://lobstr.freshdesk.com/support/solutions/articles/151000169419-security-of-your-wallet-on-lobstr — 'We store the encrypted version of the Recovery phrase/Secret key on our server'; 'The keys themselves can only be decrypted and accessed by users on-device'; 'The transaction signing also happens locally on-device'.",
+        "Live re-check 2026-09-04: https://lobstr.freshdesk.com/support/solutions/articles/151000001271-where-can-i-find-my-secret-key- — 'before September 1, 2020' unmigrated accounts reveal the key only on the website; https://lobstr.freshdesk.com/support/solutions/articles/151000001273 — pre-September 1, 2020 keys 'stored inside our platform in encrypted form', migration deadline July 10, 2026, unmigrated wallets stop working until migrated.",
+        "Live re-check 2026-09-04: https://lobstr.freshdesk.com/support/solutions/articles/151000001289-how-can-i-back-up-my-stellar-wallet- — 'We (the LOBSTR team) do not have access to users' Recovery phrases, Secret keys, Recovery codes, or Account passwords'; 'Do not share your Recovery Phrase and Secret key with anyone'.",
+        "Sibling sweep 2026-09-04: grep LOBSTR|on-device|server-side|Recovery Phrase over eval/qa/corpus/battery → only q-raph-lobstr-legitimacy states a LOBSTR key-storage location; q-eco-lobstr-wallet says non-custodial only; no contradiction.",
+        "Re-judge 2026-09-04: not run (this lane makes no paid calls). The 2026-09-04T05-40-51-variantA row failed on an era-independent local-only claim and the missing pre-2020 exception; the corrected answer contradicts that claim more directly, so the expected direction is unchanged."
       ],
       "rootCause": [
-        "eval-authoring"
+        "eval-authoring",
+        ".agents/TODO.md — Golden authoring lint warnings burn-down (snapshot-date class)",
+        ".agents/TODO.md — Golden authoring lint warnings burn-down (compound-predicate class)",
+        "freshness-drift",
+        ".agents/TODO.md — Replace expired temporary evidence in golden truth metadata",
+        "eval-authoring — the 2026-08-31 answer omitted the encrypted server copy that its own corroboration row verified; corrected 2026-09-04 (.agents/rounds/2026-09-03-truth-maintenance/golden-followup-fable.md)"
       ]
     },
     "origin": "raph wallet-lobstr-legitimacy-recovery-storage"

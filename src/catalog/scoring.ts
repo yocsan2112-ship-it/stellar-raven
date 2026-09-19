@@ -2,8 +2,8 @@
  * Routing-aware scoring layer on top of the vendored lexical scorer
  * (src/catalog/vendor/search-scoring.ts — untouched upstream math).
  *
- * This module is OURS (round 2, todo 793) and is deliberately structural —
- * every lever below is query-independent and applies uniformly to the whole
+ * This module adds structural adjustments to the vendored scorer.
+ * Every lever below is query-independent and applies uniformly to the whole
  * catalog. No per-question special cases, no query→service maps.
  *
  * Seven levers (numbered 1–7 below; lever 6 is query-side alias
@@ -38,7 +38,7 @@
  *     displaced, and a service's FIRST in-page hit always survives (quotas
  *     only trim a service's third-and-later appearances).
  *
- *  4. Low-weight keyword field (round 3, todo 810) — skill-section entries
+ *  4. Low-weight keyword field — skill-section entries
  *     carry build-time `keywords` distilled from the section BODY
  *     (src/catalog/extract-keywords.ts); descriptions are heading + first
  *     paragraph truncated to 200 chars, so mid-section content (error codes,
@@ -53,7 +53,7 @@
  *     gates + skills lane, eval/run-routing.mjs) is the guard against that
  *     trade going bad; changing the blend requires re-running it.
  *
- *  5. Ungated scoring path (round 4, M1 tiered gate-rescue backfill) — the
+ *  5. Ungated scoring path for tiered gate-rescue backfill — the
  *     vendor coverage gate (search-scoring.ts:130, <60% token coverage and
  *     no exact phrase → null) is structurally unreachable for long
  *     multi-clause questions: at 20+ query tokens NO single entry covers 60%
@@ -69,7 +69,7 @@
  *     test/scoring.test.ts proves the two scorers share a scale wherever the
  *     gate passes (see search.ts).
  *
- *  7. Routing-keyword field (Scout 1.7.16 x-routing absorb, issue #21) —
+ *  7. Routing-keyword field (Scout 1.7.16 x-routing) —
  *     operation entries may carry `routingKeywords`: vocabulary the upstream
  *     service curates specifically for routing and publishes separately from
  *     its prose description (Scout's `x-routing` extension: purpose, useWhen,
@@ -87,6 +87,7 @@ import {
   tokenize,
   type ScorableEntry
 } from "./vendor/search-scoring.ts";
+import type { RoutingPhrase } from "./types.ts";
 
 export type { ScorableEntry } from "./vendor/search-scoring.ts";
 
@@ -97,6 +98,20 @@ export type { ScorableEntry } from "./vendor/search-scoring.ts";
 export type WeightedScorableEntry = ScorableEntry & {
   keywords?: readonly string[];
   routingKeywords?: readonly string[];
+  routingPhrases?: readonly RoutingPhrase[];
+};
+
+export type PreparedQueryForm = {
+  query: string;
+  tokens: readonly string[];
+  contentTokens: readonly string[];
+};
+
+type ScoringQueryForm = PreparedQueryForm & { effective: PreparedQueryForm };
+
+export type PreparedScoringQuery = {
+  original: ScoringQueryForm;
+  canonical: ScoringQueryForm | null;
 };
 
 /**
@@ -122,6 +137,29 @@ export const STOPWORDS: ReadonlySet<string> = new Set([
 export function effectiveQuery(query: string): string {
   const kept = tokenize(query).filter((t) => !STOPWORDS.has(t));
   return kept.length > 0 ? kept.join(" ") : query;
+}
+
+function prepareQueryForm(query: string): ScoringQueryForm {
+  const tokens = tokenize(query);
+  const kept = tokens.filter((token) => !STOPWORDS.has(token));
+  const effectiveQuery = kept.length > 0 ? kept.join(" ") : query;
+  const contentTokens = [...new Set(
+    tokens.filter((token) => token.length >= 2 && !STOPWORDS.has(token))
+  )];
+  if (effectiveQuery === query) {
+    const prepared = { query, tokens, contentTokens };
+    return Object.assign(prepared, { effective: prepared });
+  }
+  return {
+    query,
+    tokens,
+    contentTokens,
+    effective: {
+      query: effectiveQuery,
+      tokens: kept,
+      contentTokens: [...new Set(kept.filter((token) => token.length >= 2))]
+    }
+  };
 }
 
 /**
@@ -162,31 +200,74 @@ function joinedKeywords(keywords: readonly string[]): string {
   return joined;
 }
 
+export function canonicalRoutingToken(token: string): string {
+  if (token === "people") return "person";
+  if (token.endsWith("ies") && token.length > 4) return `${token.slice(0, -3)}y`;
+  if (token.endsWith("xes") && token.length > 4) return token.slice(0, -2);
+  if (token.endsWith("s") && token.length > 3) return token.slice(0, -1);
+  return token;
+}
+
+export function tokensOverlap(left: string, right: string): boolean {
+  const canonicalLeft = canonicalRoutingToken(left);
+  const canonicalRight = canonicalRoutingToken(right);
+  if (canonicalLeft === canonicalRight) return true;
+  const shorter = Math.min(canonicalLeft.length, canonicalRight.length);
+  const longer = Math.max(canonicalLeft.length, canonicalRight.length);
+  if (shorter < 4 || shorter / longer < 0.75) return false;
+  return canonicalLeft.startsWith(canonicalRight) || canonicalRight.startsWith(canonicalLeft);
+}
+
+function matchingTokens(tokens: readonly string[], queryTokens: readonly string[]): string[] {
+  return tokens.filter((token) => queryTokens.some((queryToken) =>
+    tokensOverlap(token, queryToken)
+  ));
+}
+
+function hasCoherentRoutingWitness(
+  phrases: readonly RoutingPhrase[] | undefined,
+  queryTokens: readonly string[]
+): boolean {
+  if (!phrases || phrases.length === 0) return false;
+  if (queryTokens.length < 3) return false;
+  return phrases.some((phrase) => queryTokens.filter((queryToken) =>
+    phrase.tokens.some((token) => tokensOverlap(token, queryToken))
+  ).length >= 2);
+}
+
 /** The base lexical scorer a pipeline pass runs on: vendor (gated) or the lever-5 replica. */
-type EntryScorer = (entry: ScorableEntry, query: string) => number | null;
+type EntryScorer = (entry: ScorableEntry, query: PreparedQueryForm) => number | null;
+
+const gatedEntryScorer: EntryScorer = (entry, query) => scoreEntry(entry, query.query);
+const ungatedEntryScorer: EntryScorer = (entry, query) => scoreEntryUngatedPrepared(entry, query);
 
 /**
  * Base score with the build-time keyword fields blended in (levers 4 + 7).
- * Entries without either field take the base scorer untouched. Each field
- * is scored as its own augmented pass against the SAME base, so the two
- * deltas are independent and additive; on the rescue path (base gated to
- * null) the entry re-enters at the best single field's damped score —
- * additive rescue would let two weak fields fake one strong match.
- * Build-time dedup (scripts/build-catalog.mjs) keeps `keywords` disjoint
- * from `routingKeywords`, so a token never rides both blends.
+ * A keyword field needs a whole-token witness. Routing-only admission also
+ * needs two query tokens from one source phrase. Once admitted, each field
+ * contributes one deduplicated delta. Repeated phrases cannot add weight.
  */
 function scoreWithKeywords(
   entry: WeightedScorableEntry,
-  query: string,
+  query: PreparedQueryForm,
   score: EntryScorer
 ): number | null {
   const base = score(entry, query);
   const fields: { tokens: readonly string[]; blend: number }[] = [];
-  if (entry.keywords && entry.keywords.length > 0) {
-    fields.push({ tokens: entry.keywords, blend: KEYWORD_BLEND });
+  const schemaMatches = entry.keywords ? matchingTokens(entry.keywords, query.tokens) : [];
+  const hasSchemaEvidence = schemaMatches.length >= 2 ||
+    (base !== null && schemaMatches.some((token) => canonicalRoutingToken(token).length >= 4));
+  if (entry.keywords && hasSchemaEvidence) {
+    fields.push({ tokens: [...new Set(entry.keywords)], blend: KEYWORD_BLEND });
   }
-  if (entry.routingKeywords && entry.routingKeywords.length > 0) {
-    fields.push({ tokens: entry.routingKeywords, blend: ROUTING_KEYWORD_BLEND });
+  if (
+    entry.routingKeywords &&
+    (base !== null || hasCoherentRoutingWitness(entry.routingPhrases, query.contentTokens))
+  ) {
+    fields.push({
+      tokens: [...new Set(entry.routingKeywords)],
+      blend: ROUTING_KEYWORD_BLEND
+    });
   }
   if (fields.length === 0) return base;
   let blended = base ?? 0;
@@ -213,20 +294,19 @@ function scoreWithKeywords(
  */
 function weightedScore(
   entry: WeightedScorableEntry,
-  query: string,
+  query: ScoringQueryForm,
   score: EntryScorer
 ): number | null {
   const kindWeight = entry.kind === "skill-section" ? 0.75 : 1;
   const base = scoreWithKeywords(entry, query, score);
   if (base !== null) return Math.round(base * kindWeight);
-  const filtered = effectiveQuery(query);
-  if (filtered === query) return null;
-  const rescued = scoreWithKeywords(entry, filtered, score);
+  if (query.effective === query) return null;
+  const rescued = scoreWithKeywords(entry, query.effective, score);
   return rescued === null ? null : Math.round(rescued * kindWeight);
 }
 
 /**
- * Lever 6 (todo 844): domain alias canonicalization, query side. Real users
+ * Lever 6: domain alias canonicalization on the query side. Real users
  * abbreviate ("tx history", "acct balance"); the catalog spells vocabulary
  * out, and the vendor's prefix match cannot bridge "tx"→"transaction"
  * ("transaction" does not start with "tx"). The table maps abbreviation →
@@ -237,11 +317,8 @@ function weightedScore(
  * dapp/wasm/cli/sdk all ARE catalog vocabulary and are deliberately absent;
  * the catalog's own 21 tx/txs tokens all MEAN transaction, so no shadowing).
  *
- * Measurement history: byte-identical on the offline routing corpus (round
- * 5e — only 10/483 questions contain any alias token; eval/README.md), so it
- * ships on the REAL-USER lane (eval/local-lanes/jutsu-real-user, todo 844):
- * 213 alias-register questions mined from genuine pre-round-5 user traffic,
- * dual-pass consensus labels. Numbers recorded in eval/README.md round 844.
+ * The offline corpus stays byte-identical because few cases contain these
+ * aliases. The real-user lane validates the change. See eval/README.md.
  */
 export const QUERY_TOKEN_ALIASES: ReadonlyMap<string, string> = new Map([
   ["tx", "transaction"],
@@ -272,6 +349,14 @@ export function canonicalizeQuery(query: string): string | null {
   return cached;
 }
 
+export function prepareScoringQuery(query: string): PreparedScoringQuery {
+  const canonical = canonicalizeQuery(query);
+  return {
+    original: prepareQueryForm(query),
+    canonical: canonical === null ? null : prepareQueryForm(canonical)
+  };
+}
+
 /**
  * Max of the full pipeline over the original and the alias-canonicalized
  * query (lever 6). The max is taken ABOVE weightedScore so both variants
@@ -284,13 +369,12 @@ export function canonicalizeQuery(query: string): string | null {
  */
 function aliasMaxScore(
   entry: WeightedScorableEntry,
-  query: string,
+  query: PreparedScoringQuery,
   score: EntryScorer
 ): number | null {
-  const base = weightedScore(entry, query, score);
-  const canonical = canonicalizeQuery(query);
-  if (canonical === null) return base;
-  const alt = weightedScore(entry, canonical, score);
+  const base = weightedScore(entry, query.original, score);
+  if (query.canonical === null) return base;
+  const alt = weightedScore(entry, query.canonical, score);
   if (alt === null) return base;
   return base === null ? alt : Math.max(base, alt);
 }
@@ -306,8 +390,12 @@ function aliasMaxScore(
  * Alias-bearing queries additionally score under their canonicalized form
  * and take the max (lever 6 above).
  */
-export function scoreEntryWeighted(entry: WeightedScorableEntry, query: string): number | null {
-  return aliasMaxScore(entry, query, scoreEntry);
+export function scoreEntryWeighted(
+  entry: WeightedScorableEntry,
+  query: string,
+  prepared = prepareScoringQuery(query)
+): number | null {
+  return aliasMaxScore(entry, prepared, gatedEntryScorer);
 }
 
 /**
@@ -319,9 +407,10 @@ export function scoreEntryWeighted(entry: WeightedScorableEntry, query: string):
  */
 export function scoreEntryWeightedUngated(
   entry: WeightedScorableEntry,
-  query: string
+  query: string,
+  prepared = prepareScoringQuery(query)
 ): number | null {
-  return aliasMaxScore(entry, query, scoreEntryUngated);
+  return aliasMaxScore(entry, prepared, ungatedEntryScorer);
 }
 
 /**
@@ -339,7 +428,7 @@ export function scoreEntryWeightedUngated(
  * A re-vendor that changes upstream math fails that suite loudly instead of
  * silently desyncing tier 2.
  *
- * RE-VENDOR CHECKLIST (todo 845; run when bumping @cloudflare/codemode):
+ * Re-vendor checklist for an @cloudflare/codemode upgrade:
  *  1. Field weights + tokenization/normalization (vendor FIELD_WEIGHTS,
  *     normalizeSearchText, tokenize) — mirror any change into this replica,
  *     then make the drift suite green again.
@@ -361,7 +450,7 @@ type UngatedFieldScore = { score: number; matchedTokens: Set<string>; exactPhras
 
 function scoreFieldUngated(
   query: string,
-  queryTokens: string[],
+  queryTokens: readonly string[],
   value: string | undefined,
   weight: number
 ): UngatedFieldScore {
@@ -396,8 +485,15 @@ function scoreFieldUngated(
 // Exported for the drift-guard suite (test/scoring.test.ts) ONLY — product
 // code must go through scoreEntryWeightedUngated, which layers the levers.
 export function scoreEntryUngated(entry: ScorableEntry, query: string): number | null {
-  const normalizedQuery = normalizeSearchText(query);
-  const queryTokens = tokenize(query);
+  return scoreEntryUngatedPrepared(entry, prepareQueryForm(query));
+}
+
+function scoreEntryUngatedPrepared(
+  entry: ScorableEntry,
+  prepared: PreparedQueryForm
+): number | null {
+  const normalizedQuery = normalizeSearchText(prepared.query);
+  const queryTokens = prepared.tokens;
   if (normalizedQuery.length === 0 || queryTokens.length === 0) return null;
 
   const fields: UngatedFieldScore[] = [

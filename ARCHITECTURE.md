@@ -1,10 +1,8 @@
 # Architecture — how `search` and `execute` actually work
 
-The end-to-end mechanics of the two tools, verified against the code as of 2026-07-03
-(`codemode.skill.run` surface added and code-verified 2026-07-06). Read
-[`PLAN.md`](./PLAN.md) first for *why* the design is shaped this way; this doc is the *how*,
-with file paths for every claim. Nothing here is aspirational — if the code moves, this doc
-is wrong until refreshed.
+This document describes the implemented request paths and their source files.
+Read [PLAN.md](PLAN.md) for product scope and [README.md](README.md) for connection and operation.
+The source code owns current behavior; dated research records explain earlier decisions and experiments.
 
 Two tools, one Worker: `search` is a host-side ranked query over a generated catalog;
 `execute` runs LLM-authored JavaScript in a network-less Dynamic Worker isolate whose only
@@ -23,8 +21,8 @@ For `/mcp` paths the auth gate runs in this order:
 2. **Local-dev bypass** — `allowDevUnauthenticated`: requires `DEV_ALLOW_UNAUTHENTICATED`
    to be the exact string `"true"` **and** the request hostname to be loopback
    (`localhost` / `127.0.0.1` / `::1`). The hostname gate is a hard second factor: a var
-   mistakenly deployed to production is inert, because the public hosts (`raven.stellar.org`,
-   its `raven.stellar.buzz` / `agents.stellar.buzz` aliases) are not local hosts. The var itself
+   mistakenly deployed to production is inert, because no production host — `raven.stellar.org`
+   or any retired hostname still routed to it — is a local host. The var itself
    is only ever set in
    `.dev.vars`.
 3. **OAuth** — everything else goes through `@cloudflare/workers-oauth-provider`
@@ -34,11 +32,24 @@ For `/mcp` paths the auth gate runs in this order:
    (`src/auth/workos.ts`). `src/server.ts` also aliases the path-suffixed RFC 8414 and OIDC
    discovery paths onto the lib's exact-path metadata endpoint.
 
+The OAuth provider owns client and redirect matching, permitted URI schemes, and native loopback port matching.
+Raven additionally rejects non-loopback HTTP redirects during client registration and authorization.
+The same transport check covers typed authorization errors before their redirects leave the Worker.
+An insecure target produces a local 400 response without a `Location` header.
+HTTPS, loopback HTTP, and provider-permitted native application schemes remain supported.
+
+The script-free consent page labels the client name as unverified.
+It shows the complete validated return address as plain text, using the browser's URL serialization.
+Approval requires the form's CSRF token and Terms acknowledgement before Raven starts the WorkOS login.
+Cancel requires CSRF validation but no Terms acknowledgement. It returns a 303 `access_denied` response to the validated client address.
+Cancellation preserves the OAuth state and issuer, clears the consent cookie, and creates no login state or grant.
+Technical sources and design evidence live in [the OAuth completion record](.agents/rounds/2026-09-10-oauth-consent.md).
+
 **Non-`/mcp` requests are the public site.** Everything the OAuth provider doesn't claim falls
 through to its `defaultHandler` (`src/auth/workos.ts`), which — besides `/authorize` /
 `/callback` / the consent page — serves the public site from `src/site.ts`: the landing page,
-`robots.txt`, `sitemap.xml`, JSON-LD, and `/og.png`. The OG image and the site/OG fonts are
-**generated code** (`src/og.ts`, `src/fonts.ts`, rebuilt via `npm run site:og` /
+`/docs`, `/terms`, `robots.txt`, `sitemap.xml`, JSON-LD, and `/og.png`. The OG image and the
+site/OG fonts are **generated code** (`src/og.ts`, `src/fonts.ts`, rebuilt via `npm run site:og` /
 `npm run site:fonts`), embedded in the Worker bundle. Repository presentation images live under
 `assets/repo/`; there is no Wrangler static-assets directory.
 
@@ -61,7 +72,7 @@ in-script discovery helpers (`codemode.search/describe/catalog/spec`) as `/mcp`;
 boundary is enforced by the outer step, tool-call, output, code-size, timeout, auth, and rate caps.
 A narrow AI SDK `prepareStep` policy reserves the final step for tool-free synthesis and asks for
 recovery only after structural navigation/failure/truncation signals or a host-observed execute
-ledger containing errors/soft-empty outcomes with no successful service operation. It also carries
+ledger containing no successful operation with structurally positive service data. It also carries
 forward a conditional evidence checkpoint when the latest successful execute used only narrow,
 operation-scoped lookups. The checkpoint names exact catalog recovery candidates but preserves the
 closed-world stopping rule; a later search cannot erase already-grounded execute evidence.
@@ -74,17 +85,19 @@ the 2026-07-28 revision (`server/discover` negotiation, pinned end-to-end by
 `test/smoke/mcp-modern-client.test.ts`) and the 2025 `initialize` lifecycle via its built-in
 stateless legacy fallback. Custom domains skip the SDK's Host allowlist (Cloudflare routing
 is the Host authority). Browser Origins are explicitly allowlisted for the production hostnames
-(`raven.stellar.org` plus its two stellar.buzz aliases) and the localhost class; foreign
+(`raven.stellar.org` plus the retired hostnames still routed to it) and the localhost class; foreign
 Origins are rejected. Requests without an Origin header — ordinary
 non-browser MCP clients — still pass Origin validation. Tool
 registration and all model-facing prose live in `src/mcp/tools.ts`; the initialize-time
 `SERVER_INSTRUCTIONS` (workflow + envelope contract + generated source-family micro-map)
 ride along because clients surface them in the system prompt, where they outlive per-tool
-descriptions. Claude Code truncates injected server instructions at 2,048 characters
-(measured in production, todo 971), so `BASE_SERVER_INSTRUCTIONS` — everything before the
+descriptions. Claude Code truncates tool descriptions and injected server instructions at 2KB.
+The server-instructions boundary measures 2,048 characters in production (todo 971), so
+`BASE_SERVER_INSTRUCTIONS` — everything before the
 micro-map — must stay a complete, self-sufficient contract within a 2,000-character budget
 (guarded by `test/mcp-instructions.test.ts`); the micro-map after it is bonus for
-full-injection clients only. The micro-map is generated from
+full-injection clients only. The dated [execute output contract review](research/execute-output-contract-2026-08-20.md)
+records the client evidence. The micro-map is generated from
 `scripts/catalog-data/workflow-archetypes.mjs` by `scripts/build-micro-map.mjs`; it orients
 agents to the Lumenloop, Scout, Stellar Docs, and skills families without adding
 per-operation cards or changing the catalog shape.
@@ -101,27 +114,40 @@ OTel spans join through Cloudflare request/Ray metadata instead of repeating hig
 fields. Network/geo/TLS fields are never promoted into an app user fingerprint
 (`src/observability-request.ts`, `.agents/skills/cloudflare-observability-review/`).
 
-The `search` tool handler is a pure function call: `searchCatalogPage(getCatalog(), { query,
-kind?, service?, limit? })`. `getCatalog()` (`src/catalog/load.ts`) imports the generated
-`catalog/manifest.json` as a bundled JSON module and validates it once per isolate via
+Both primary search adapters use `prepareCatalogSearch(catalog, service)` from
+`src/catalog/search-resolution.ts`. The MCP adapter supplies `getCatalog()` and the sandbox adapter
+supplies its injected catalog. The neutral interface has three stages. The service stage calls
+`catalogServices` once and returns either an `unknown-service` issue or the recovery-ID stage. The
+recovery-ID stage builds one exposed-operation ID set and returns either an
+`unknown-recovery-ids` issue with the rejected exact IDs or the final resolution stage. The final
+resolution stage calls `searchCatalogPage` once and calls `recoveryCandidates` only when the caller
+supplied recovery IDs. It returns neutral page and recovery facts. The interface goes no deeper
+because prose, schemas, envelopes, limits, and telemetry do not belong in this module.
+
+The MCP tool keeps its Zod schemas, exact response text and shape, and telemetry. The sandbox
+adapter keeps its raw-input checks, error envelopes, exact messages, limit normalization, and
+telemetry. Its external order remains query, kind, service, `recoverFrom` shape, unknown recovery
+IDs, reason, then page and recovery resolution. An unknown reason therefore returns before
+`searchCatalogPage` or `recoveryCandidates` runs. `getCatalog()` (`src/catalog/load.ts`) imports the
+generated `catalog/manifest.json` as a bundled JSON module and validates it once per isolate via
 `loadManifest` — a malformed manifest throws loudly at first use, never softens. The
-response is `{ hits, total, truncated, recovery, nextSteps }` (as both `text` and
+response is `{ hits, total, truncated, recovery, widerCandidates, confidence, recoveryMetadata,
+nextSteps }` (as both `text` and
 `structuredContent`): `total` counts every distinct catalog entry the consulted scorer
 tiers matched (post-filter, pre-paging), `truncated` = `total > hits.length` (retry with a
 higher `limit`, the other candidate family, or varied vocabulary), and
 `nextSteps` is a server-authored hint that restates the compose-in-one-script workflow and
-the envelope rule on every call. The handler also validates the `service` filter against
-the catalog's real service set (`catalogServices`): an unknown value ("stellardocs",
-"stellar-docs") returns zero hits with a `nextSteps` naming the bad value and the valid
-ones instead of a silently-empty page — the frozen `searchCatalog` contract keeps filters
-silent, so validation lives at the tool boundary (and, for `codemode.search`, at the
-sandbox boundary in `src/executor/providers.ts`, where an unknown `kind`/`service` is an
-error envelope listing the valid values). A `search` telemetry event
-(`src/observability.ts` → Workers Logs) records only the query character count, requested/effective
-limits, consulted-pool omitted
-count, returned gated/backfill hit counts, hit/total/truncated counts, top-3 ids, and response size
-in chars (`responseChars` — the measurement that set
-`COMPACT_OUTPUT_THRESHOLD`, §2; it stays on to verify the compaction holds), and latency.
+the envelope rule on every call. `prepareCatalogSearch` validates the `service` filter against
+the catalog's real service set (`catalogServices`). An unknown value ("stellardocs",
+"stellar-docs") becomes a structured issue instead of a silently-empty page. The MCP adapter maps
+that issue to zero hits and a `nextSteps` value that names the valid services. The sandbox adapter
+maps the same issue to an error envelope that lists the valid services. The frozen
+`searchCatalog` contract keeps filters silent. Each adapter maps structured service and recovery-ID
+issues to its existing output. A `search` telemetry event (`src/observability.ts` → Workers Logs)
+records `source`, `queryChars`, `requestedLimit`, `effectiveLimit`, `omittedCount`, `gatedHits`,
+`backfillHits`, `hits`, `total`, `truncated`, `top`, `recovery`, `recoveryTop`, `widerCandidates`,
+`widerCandidateTop`, `responseChars`, and `ms`. `responseChars` is the measurement that set
+`COMPACT_OUTPUT_THRESHOLD`, §2. It stays on to verify that the compaction holds.
 
 ## 2. The scoring pipeline
 
@@ -147,7 +173,7 @@ untouched.
    their exact vendor score (filtering stopwords for all scoring was tried and regressed).
 2. *Kind weighting* — `skill-section` entries are scaled ×0.75 so near-duplicate
    fragments don't blanket-outrank the operations on shared topical vocabulary. (Since the
-   2026-07-13 skills-form A/B all 204 section entries also carry `searchable: false` and
+   2026-07-13 skills-form A/B all 173 section entries also carry `searchable: false` and
    never enter search at all — the weight only matters for experiment arms that re-enable
    them; see `eval/README.md` "Skills-form A/B".)
 3. *Service diversity* — the returned set is selected with a per-service quota
@@ -169,7 +195,7 @@ untouched.
    the vendor. `searchCatalog` uses it only to **backfill a short page** (below). Membership is
    gated-first, then the fixed page is interleaved on the shared score scale: a backfill hit may
    move above adjacent gated hits only when it dominates by at least 1.6×. A page the gated tier
-   fills remains byte-identical to the pre-lever-5 behavior.
+   fills remains unchanged by backfill.
 
 **Set shaping** — `src/catalog/search.ts`. `loadManifest` enforces structural invariants at
 load: globally unique entry ids, and unique operation terminal names per service (those
@@ -180,20 +206,30 @@ everything in the manifest is exposed by construction (ADR-0003,
 `lumenloop.skill.*` twin namespace and the retired onboarding skills, are never emitted by
 `scripts/build-catalog.mjs`). The page-shaping pipeline lives in `searchCatalogPage`
 (returns `{ hits, total, truncated }`; `searchCatalog` is its thin `.hits` wrapper — the
-frozen eval/vitest contract). It sorts score-desc then id-asc, and shapes the page in one
-way:
+frozen eval/vitest contract). It sorts score-desc then id-asc and applies these stages:
 
+- *Structured-intent preservation* — after service diversity fills the page, a gated overflow
+  operation can replace one later result within a full service quota. The first result for
+  that service stays selected. The operation must cover two query content tokens in its
+  description. One positive upstream routing phrase must cover two query tokens and add a
+  token absent from the description. Together, the description and that phrase must cover
+  every query content token. The displaced result must have weaker intent coverage.
+  Detail-lane operations cannot qualify. Scores, service counts, candidate totals, and gate
+  admission stay unchanged. The selector restores score-descending, id-ascending order.
+  The builder preserves separate positive `x-routing` strings in `routingPhrases`, including
+  individual multiword keyword items. It excludes `notFor` and keeps complete phrases within
+  a 256-token budget. Schema keywords and combined source phrases cannot supply this evidence.
 - *Tiered gate-rescue backfill* — tier 1 is the pipeline above (levers 1–4). Only when it leaves
   the page short (fewer than `limit` gate-passing candidates exist — measured on long
   extended-lane questions that gate to zero) does tier 2 re-run the same pipeline under the
-  ungated scorer (lever 5) and add its novel hits to complete membership. A full page is
-  byte-identical to the pre-tiering behavior; a mixed page is then stably interleaved: a tier-2
+  ungated scorer (lever 5) and add its novel hits to complete membership. Backfill leaves a full
+  gated page unchanged; a mixed page is then stably interleaved: a tier-2
   hit is promoted above adjacent tier-1 hits only while its score is at least
   `TIER_INTERLEAVE_MARGIN` (1.6×) times theirs, otherwise gated hits rank first. The drift guard
   in `test/scoring.test.ts` proves the ungated scorer equals the gated scorer wherever the gate
   passes, so `score` is one common scale across the seam. Every hit carries
-  `tier: "gated" | "backfill"`, and hit order is the ranking to trust. Behavior changes only for
-  long multi-clause queries that previously returned a short (or empty) page.
+  `tier: "gated" | "backfill"`, and hit order is the ranking to trust. Backfill changes only
+  queries that otherwise return a short or empty page.
 - `total` counts the distinct candidates the consulted tiers accepted (post kind/service
   filter, pre diversity/paging): tier-1 candidates alone when tier 1 filled the page, plus the
   novel ungated candidates when the backfill ran; `truncated` = `total > hits.length`.
@@ -203,10 +239,16 @@ way:
 carry a manifest-validated `retrievalProfile` whose exact-ID `recoverWith` edges name bounded wider,
 cross-family, cited-research, or different-medium contingencies for `empty | weak | adjacent |
 ambiguous | partial` outcomes. When an operation-search page has zero hits or only backfill hits,
-public `search`, in-sandbox `codemode.search`, and Playground search return up to three advisory
-`widerCandidates` separately from ranked hits. Page-resident broad operations lead on all-backfill
+public `search`, in-sandbox `codemode.search`, and Playground search return `confidence` and
+`recoveryMetadata` with the ranked page. `confidence.topScoreGap` is an absolute difference and
+includes both compared tiers because tier ordering can differ from score ordering.
+`recoveryMetadata.serviceFilterExcludedSkills` identifies matching skills excluded only by a
+non-skills service filter. These surfaces also return up to three advisory `widerCandidates`
+separately from ranked hits. Page-resident broad operations lead on all-backfill
 pages, then deterministic manifest anchors fill one slot per remaining broad lane; zero-hit pages
-use anchors only. Service filters constrain the advice and skill-only searches suppress it. Public
+use anchors only. A one-content-token query with no operation-name token match adds one directory anchor, including on gated pages.
+Recovery-graph centrality selects that anchor. Service filters constrain the advice, and
+skill-only searches suppress it. Public
 `search`, in-sandbox `codemode.search`, and Playground search also accept caller-reported exact
 prior operation ids in `recoverFrom` plus an optional `reason` and return `recovery` separately
 from both `hits` and `widerCandidates`; omitted or empty `recoverFrom` always returns no recovery,
@@ -216,7 +258,8 @@ clips only candidate prose/signatures, preserving identity, relation, lane, reas
 metadata. Normal hit membership, score, and order are therefore unchanged.
 
 The host does not inspect arbitrary payload semantics, automatically execute a recovery, or claim
-that a candidate is relevant. Model-facing instructions and adapter hints instead enforce the
+that a candidate is relevant. It only distinguishes positive rows or detail fields from empty
+collections and metadata. Model-facing instructions and adapter hints then enforce the
 answer-level rule: a closed-world directory/index miss can be reported only at that source's scope,
 while an open-world identity/history/topic miss gets one broad pass; semantic candidates need exact
 identity (or canonical slug), source, and date before attribution. A successful profiled
@@ -224,8 +267,9 @@ narrow operation may produce a `narrow-only` checkpoint, while a successful prof
 operation may produce a graph-derived `conditional-alternatives` checkpoint naming
 only uncalled exposed operations. Its standalone copy says the host observed operation classes, not
 row relevance, and recommends one bounded alternative pass only if the question remains unresolved.
-Runs with no successful operation evidence use the independent no-host-evidence or all-error/soft-empty
-recovery paths instead. Playground exposes at most one hint-driven recovery cycle per turn; the latch
+Runs with no structurally positive successful operation use the independent empty-success,
+no-host-evidence, or all-error/soft-empty recovery paths instead. The service envelope remains
+unchanged. Playground exposes at most one hint-driven recovery cycle per turn; the latch
 is consumed when its first standalone checkpoint is emitted, and a later execute supersedes any pending
 next-step restatement so independent structural failure recovery remains truthful. Separately, the operation ledger counts calls to a small exact-ID set of
 semantic, research, A/V, and fallback-directory surfaces and appends a candidate-evidence reminder
@@ -280,13 +324,14 @@ signatures in **compact mode**: the input type and callable line are always full
 output type block over `COMPACT_OUTPUT_THRESHOLD` (2,000 chars — originally measured to trim
 only the three Scout monsters, `searchProjects`/`searchRepos`/`explainRepo`, whose output
 types ran to ~12.7KB and made a limit-10 page ~26KB with the bloat usually attached to an
-off-target hit; upstream schema growth through Scout 1.8.28/1.8.30 has since carried 15 Scout
+off-target hit; upstream schema growth through Scout 1.9.1 has since carried 20 Scout
 operations over the same unchanged threshold, with the exact set pinned in `test/search.test.ts`)
 is replaced by a stub declaration keeping the type name and the output schema's
 top-level field names (so payload field selection like `r.data.projects` still works from
 the hit alone), pointing at `codemode.describe(id)` for the full shape. The compaction
-wraps *around* the vendored renderer — the vendor file is untouched — and applies to
-search hits only; `codemode.describe` always renders the full signature (§5).
+wraps *around* the vendored renderer, and the vendor file is untouched. Search hits use the
+stub in their signatures. The super-spec builder uses the same threshold for success-response
+schemas. Both compact forms point to `codemode.describe`, which always returns full detail (§5).
 
 ## 3. An `execute` call, end to end
 
@@ -311,7 +356,7 @@ Per call (`src/executor/run.ts`):
 3. **Sandbox globals** (`src/executor/providers.ts`, `buildSandbox`): one namespace global
    per service with one async fn per cataloged operation, named by the id's terminal
    segment (`lumenloop.search_directory(args)`, `scout.getStatus()`,
-   `stellarDocs.search_docs(args)`) — currently 18 + 24 + 12 fns — plus the `codemode`
+   `stellarDocs.search_docs(args)`) — currently 18 + 29 + 12 fns — plus the `codemode`
    discovery global (§5). Wrong names fail loudly through codemode's per-namespace Proxy
    ("Tool not found"); there is no fuzzy resolution. Providers are rebuilt per run so the
    skill-read advice flag is run-scoped; the expensive derivations (catalog view, resolved
@@ -335,6 +380,13 @@ Per call (`src/executor/run.ts`):
 6. **Output hygiene, three budgeted channels** — everything model-facing is capped at
    ~6k tokens by default (4 chars/token, `src/policy/truncate.ts`), with a bounded
    host-side override via `EXECUTE_MODEL_BOUNDARY_MAX_TOKENS` (1,000-32,000 tokens).
+   The `execute` MCP result keeps these channels in text `content` and intentionally omits
+   `outputSchema` and `structuredContent`. Anthropic's connector documents text results. Claude
+   Code 2.1.238, including its Agent SDK runtime, replaces text blocks when structured content
+   exists. The ChatGPT Apps SDK exposes both fields, so a full structured copy would duplicate
+   every capped result. The dated [execute output contract review](research/execute-output-contract-2026-08-20.md)
+   records the version-specific evidence. The bounded host-side `search` response keeps its
+   matching text and structured forms.
    Each channel is model-authored and would otherwise smuggle payloads past the others:
    - *result*: redacted again, then `truncateForModel` computes the fixed cut. If the
      result fits, the returned bytes are byte-identical to the pre-lane behavior. If it
@@ -416,8 +468,10 @@ two-way: `"error"` (call failed / bad args) or `"soft-empty"` (the service answe
 nothing — *not* evidence of absence) (`src/adapters/types.ts`). There is no `"denied"`:
 exposure is filtered at build time (ADR-0003), so nothing callable can be policy-refused.
 An `ok: true` envelope whose payload arrays are empty is data-shaped empty, not a `soft-empty`
-error; both are still inconclusive for a wider real-world claim unless the question is explicitly
-closed to that named corpus or directory.
+error. The host ledger classifies that success as inconclusive without changing the public envelope.
+Positive rows and meaningful detail fields remain service data. Both empty-success and soft-empty
+outcomes are inconclusive for a wider real-world claim unless the question names that corpus or
+directory as its closed scope.
 
 The observed LLM failure mode is reading payload fields one level too shallow
 (`r.projects` instead of `r.data.projects`), which yields `undefined` and — after a
@@ -451,7 +505,11 @@ The `codemode` provider (`buildCodemodeProvider`, `src/executor/providers.ts`) i
   (ADR-0003); design record and per-service
   mapping in [`research/services/stellar-docs-spec-design.md`](./research/services/stellar-docs-spec-design.md)
   for stellarDocs and [`research/super-spec-design.md`](./research/super-spec-design.md) for the
-  whole document), with `$refs` resolved inline
+  whole document). Oversized success-response schemas use the shared search-signature threshold.
+  Each compact schema keeps exact top-level field names. It points to the exact
+  `codemode.describe("<id>")` call for the full schema. Inputs and smaller responses stay full.
+  Full schemas remain in the manifest-backed `codemode.catalog()` and `codemode.describe()` views.
+  Retained `$refs` are resolved inline
   (`resolveSpecRefs` in `src/executor/spec-sandbox.ts` — the host-side twin of upstream's
   in-sandbox `__resolveRefs`, cached per spec object). Post-ADR-0001
   (`research/decisions/0001-search-tool-shape.md`) this is the super spec's role: the
@@ -462,7 +520,8 @@ The `codemode` provider (`buildCodemodeProvider`, `src/executor/providers.ts`) i
   `createSpecSearchRunner` (`src/executor/run.ts`) keeps the source-injection variant
   buildable for future A/Bs.
 - **`codemode.search(queryOrOpts)`** — the same host-side `searchCatalogPage`, mid-script:
-  resolves to `{ ok: true, hits, total, truncated, widerCandidates, recovery }` (tier-marked
+  resolves to `{ ok: true, hits, total, truncated, widerCandidates, recovery, confidence,
+  recoveryMetadata }` (tier-marked
   hits, pagination facts, structural wider advice, and explicit prior-attempt recovery, §1/§2),
   with the same kind/service/recoverFrom validation at the sandbox boundary — an unknown filter
   or recovery operation id returns `{ ok: false, error }` naming the valid scope (explicit `null`
@@ -542,7 +601,7 @@ The `codemode` provider (`buildCodemodeProvider`, `src/executor/providers.ts`) i
 
 ## 6. Skill splitting — pins → sections → reads
 
-**The pin set.** `ecosystem-skills/MANIFEST.json` pins 19 public skills from 4 upstreams: per
+**The pin set.** `ecosystem-skills/MANIFEST.json` pins 20 public skills from 4 upstreams: per
 source a full commit SHA, per file a path, size, and git blob hash. Bodies are **not vendored**
 in this repo and **not bundled into the Worker**: the pin is the artifact. The settled rule
 (owner, 2026-07-30) is **serve, do not store** — Raven forwards this content and must never become
@@ -569,8 +628,9 @@ mis-built catalog cannot point host-side fetches anywhere else.
 `src/skills/source.ts` resolves a pin: in-isolate memo keyed by **(url, sha256)** → colo Cache API
 → upstream fetch. Cached bytes are re-verified on every hit (the cache is a transport, not a trust
 boundary) and cache reads *and writes* are best-effort, so a cache outage can never fail a read it
-could not have served. `scrubRetiredSkillRefs` (`src/skills/scrub.ts`, shared with the builders)
-runs on every served body. Companion files for a multi-section read are fetched **concurrently**,
+could not have served. `scrubNonExposedRefs` (`src/skills/scrub.ts`, shared with the builders)
+runs on every served body. It removes retired skill references and complete Markdown blocks for
+excluded Scout paths. Companion files for a multi-section read are fetched **concurrently**,
 and the whole read is bounded by `SKILL_READ_DEADLINE_MS` (20s) — deliberately under the
 executor's 60s wall clock, so a slow upstream fails as a `skills` error envelope instead of
 killing the run. Transport, integrity, provenance, deadline, and scrub failures are all ordinary
@@ -685,7 +745,8 @@ drift:
 - **Section reads** accept slugs, exact heading text, or `file:` keys; an unknown section
   fails the whole read and lists what exists (never a silent partial answer); and a `##`
   section present in the body but **absent from the catalog** (sectioning drift) is
-  refused — default-deny, not default-allow.
+  refused — default-deny, not default-allow. Each returned section carries the exact pinned
+  `url` for its content. The top-level `url` remains the main `SKILL.md` address.
 - `availableSections` (returned on every ok read, and on search hits) advertises only
   cataloged keys.
 - Reads large enough that returning them whole would hit the model boundary carry an
@@ -735,15 +796,15 @@ before model/tool execution, so later model or tool failure still counts.
 | Rate-limit response | `429` with `Retry-After: 3600`. | `src/demo/chat.ts` |
 | Request body | 384 KiB max before JSON parse. Malformed/oversized requests do not burn throttle. | `src/demo/chat.ts` |
 | Replayed history | Newest 20 messages, then oldest messages dropped until total content is at most 24,000 chars when possible. | `src/demo/budget.ts` |
-| User-role message | 4,000 chars max per user-role message; overlong user content is truncated rather than rejected by the validation path. | `src/demo/budget.ts`, `src/demo/chat.ts` |
+| User-role message | 8,000 chars max per user-role message. The composer blocks overlong submissions. The server rejects a bypassed overlong message with `400 message_too_long` before the throttle or model call. | `src/demo/budget.ts`, `src/demo/chat.ts`, `src/demo/page.ts` |
 | Whole turn | 120s abort signal covering model stream plus tool calls. | `src/demo/chat.ts` |
 | Model steps | 7 total; the seventh/final step has no active tools and is reserved for synthesis. | `src/demo/budget.ts`, `src/demo/chat.ts`, `src/demo/steps.ts` |
 | Model output | 4,096 output tokens. | `src/demo/budget.ts`, `src/demo/chat.ts` |
 | Search calls | 3 per turn. Search hits are navigation metadata, not answer evidence. | `src/demo/budget.ts`, `src/demo/tools.ts`, `src/demo/prompt.ts` |
 | Demo search page | Default 5 hits, caller `limit` clamped to 6. | `src/demo/budget.ts`, `src/demo/tools.ts` |
 | Demo search hit text | Description clipped to 220 chars; signature clipped to 400 chars while preserving the callable line. | `src/demo/tools.ts` |
-| Execute calls | 3 per turn. The host aggregates operation outcomes (`ok` / `error` / `soft-empty`) without payload data so the loop can recover from evidence-poor runs. | `src/demo/budget.ts`, `src/demo/tools.ts`, `src/executor/run.ts` |
-| Recovery guidance | Structurally poor operation searches expose up to three `widerCandidates`; explicit caller-reported exact operation ids in `recoverFrom` expose separate bounded `recovery` candidates after ranking; execute exposes at most one hint-driven recovery cycle per turn. Independent structural failure recovery remains active. | `src/catalog/search.ts`, `src/demo/tools.ts`, `src/demo/steps.ts` |
+| Execute calls | 3 per turn. The host aggregates operation outcomes and a structural positive-data flag without retaining payload data, so the loop can recover from empty successes and failed calls. | `src/demo/budget.ts`, `src/demo/tools.ts`, `src/executor/run.ts` |
+| Recovery guidance | Unresolved one-content-token queries can add a directory recommendation, including on gated pages. Zero-hit and all-backfill pages can add broad recommendations. The combined `widerCandidates` list holds at most three entries. Explicit caller-reported exact operation ids in `recoverFrom` expose separate bounded `recovery` candidates after ranking. Execute exposes at most one hint-driven recovery cycle per turn. Independent structural failure recovery remains active. | `src/catalog/search.ts`, `src/demo/tools.ts`, `src/demo/steps.ts` |
 | Execute code length | 8,000 chars. | `src/demo/budget.ts`, `src/demo/tools.ts` |
 | Execute preflight | Known-bad `Promise.all({ ... })` fanout is refused before sandbox execution. | `src/demo/tools.ts` |
 | In-script discovery | Same as `/mcp`: `codemode.search`, `codemode.describe`, `codemode.catalog`, and `codemode.spec`, plus skill helpers. | `src/demo/tools.ts`, `src/demo/prompt.ts` |
@@ -781,6 +842,17 @@ auth gates, schemas, the shared sandbox, and artifact caps are the main limits.
 Observability to query: `mcp_request`, `search`, `execute`, `artifact_write`, `artifact_read`,
 `op`, `skill_run`, and `codemode.execute` spans.
 
+### Usage retention
+
+A separate Tail Worker, `stellar-raven-usage`, extracts response metadata from the producer's logs.
+It writes top-level MCP and playground tool-response records to a private D1 database.
+It excludes internal searches, protocol traffic, queries, answers, headers, and raw account identifiers.
+The existing WorkOS-derived subject hash supports distinct monthly account counts.
+API-key responses remain separate from user counts.
+The collector retains thirteen UTC calendar months, including the current month.
+It runs after the producer invocation and adds no database binding to the MCP runtime or sandbox.
+Monthly reporting, coverage limits, deployment, and deletion procedures are in [usage/README.md](usage/README.md).
+
 ## 8. Build & refresh chain — keeping the catalog honest
 
 Generated artifacts are rebuilt by scripts, never hand-edited
@@ -797,6 +869,11 @@ scripts/build-catalog.mjs       → catalog/manifest.json        (deterministic;
 scripts/build-micro-map.mjs     → src/mcp/micro-map.ts          (offline, deterministic)
 scripts/build-super-spec.mjs    → specs/super-spec.json        (npm run spec:build)
 ```
+
+The super-spec builder compacts only oversized success-response schemas. It uses the shared
+`COMPACT_OUTPUT_THRESHOLD` rule from `src/catalog/output-compaction.ts`. The builder preserves
+top-level output field names and exact `codemode.describe` pointers. It prunes components that
+become unreachable after compaction. The manifest and `codemode.describe` keep every full schema.
 
 `scripts/build-catalog.mjs` has five snapshot/metadata roots: `inventory/lumenloop.json`,
 `inventory/stellar-light.json`, `specs/stellar-docs.json`,
@@ -815,11 +892,12 @@ newest *input* snapshot (never wall clock) — consecutive runs are byte-identic
 `test/catalog.test.ts` additionally asserts the *checked-in* manifest matches a fresh
 rebuild (staleness check), and `test/micro-map.test.mjs` does the same for the generated
 orientation layer. The refresh script is idempotent and asserts no key material
-(including the Algolia app id) appears in any output. Exposure filtering is build-time data
-in `scripts/exposure.mjs` (ADR-0003: excluded Lumenloop ops + the account-op regex + the
-metered flag, excluded Scout ops, retired onboarding skills, and the never-emitted
-Lumenloop-served skill metadata), consumed by `scripts/build-catalog.mjs` and the other
-emitters. The super spec emits exactly the manifest's
+(including the Algolia app id) appears in any output. Shared exposure modules own build-time
+filter data. `src/policy/scout-exposure.ts` owns excluded Scout operations.
+`scripts/exposure.mjs` re-exports them and owns excluded Lumenloop operations, the account-op
+regex, the metered flag, retired onboarding skills, and the never-emitted Lumenloop skill
+metadata. `scripts/build-catalog.mjs` and the other emitters consume these modules. The super
+spec emits exactly the manifest's
 operations (a completeness assert catches a cataloged op the spec builders miss). Loud-
 failure guards keep refreshes from silently changing exposure: `assertRetirementNamesResolve`
 (a re-pin renaming/removing a retired skill would otherwise un-retire it),

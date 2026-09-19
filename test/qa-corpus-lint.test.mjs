@@ -8,12 +8,14 @@ import {
   isPullRequestCI,
   lintCorroboration,
   lintDateContingentTraps,
+  lintGoldenAuthoring,
   lintGospelChanges,
   runLint,
   lintStale,
   lintSurface
 } from "../eval/qa/lint-corpus.mjs";
 import { updateRegister } from "../eval/qa/register-helper.mjs";
+import { contentSha256 } from "../eval/qa/lifecycle.mjs";
 
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "qa-corpus");
 const LINT_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "eval", "qa", "lint-corpus.mjs");
@@ -108,10 +110,74 @@ describe("QA corpus lint lanes", () => {
     ]);
   });
 
+  it("warns on compound and overlong key facts but accepts atomic facts", () => {
+    const fixtures = load("authoring-warnings.json");
+    const positive = lintGoldenAuthoring(fixtures.keyFacts.positive);
+    expect(positive).toEqual(expect.arrayContaining([
+      expect.objectContaining({ level: "warn", lane: "key-fact", message: expect.stringContaining("exceeds 90") }),
+      expect.objectContaining({ level: "warn", lane: "key-fact", message: expect.stringContaining("multiple predicates") })
+    ]));
+    expect(lintGoldenAuthoring(fixtures.keyFacts.negative)).toEqual([]);
+  });
+
+  it("warns on non-content avoid items but accepts concrete false-content items", () => {
+    const fixtures = load("authoring-warnings.json");
+    const positive = lintGoldenAuthoring(fixtures.avoid.positive);
+    expect(positive).toHaveLength(2);
+    expect(positive).toEqual(expect.arrayContaining([
+      expect.objectContaining({ level: "warn", lane: "avoid", message: expect.stringContaining("presentation, omission, or phrasing") })
+    ]));
+    expect(lintGoldenAuthoring(fixtures.avoid.negative)).toEqual([]);
+  });
+
+  it("warns when a negative-predicate object is absent from the question", () => {
+    const fixtures = load("authoring-warnings.json");
+    expect(lintGoldenAuthoring(fixtures.negativePredicate.positive)).toEqual([
+      expect.objectContaining({ level: "warn", lane: "key-fact", message: expect.stringContaining("absent from the question") })
+    ]);
+    expect(lintGoldenAuthoring(fixtures.negativePredicate.negative)).toEqual([]);
+  });
+
+  it("warns on self-referential dates and missing symmetric cautions", () => {
+    const fixtures = load("authoring-warnings.json");
+    const positive = lintGoldenAuthoring(fixtures.provenance.positive);
+    expect(positive).toEqual(expect.arrayContaining([
+      expect.objectContaining({ level: "warn", lane: "snapshot-date", message: expect.stringContaining("snapshot date") }),
+      expect.objectContaining({ level: "warn", lane: "symmetric-caution", message: expect.stringContaining("no symmetric") })
+    ]));
+    expect(lintGoldenAuthoring(fixtures.provenance.negative)).toEqual([]);
+  });
+
   it("rejects non-manifest surfaces and reuses the emitted-text exclusion guard", () => {
     const findings = lintSurface([load("surface-hidden.json")], load("manifest.json"));
     expect(findings.map((item) => item.message).join("\n")).toMatch(/non-exposed surface id/);
     expect(findings.map((item) => item.message).join("\n")).toMatch(/ADR-0003 leak/);
+  });
+
+  it.each([
+    [["improvements/resolved.json entry sd-042"], false],
+    [["improvements/resolved.json"], false],
+    [["improvements/stellar-docs/sd-003.md"], true],
+    [["improvements/resolved.json entry sd-042", "improvements/stellar-docs/sd-003.md"], true],
+    [["improvements/resolved.json entry sd-042; improvements/stellar-docs/sd-003.md"], true],
+    [["improvements/resolved.json.md"], true],
+    [["`improvements/stellar-docs/sd-003.md`"], true],
+    [["(improvements/stellar-docs/sd-003.md)"], true],
+    [["improvements/resolved.json;improvements/stellar-docs/sd-003.md"], true],
+    [["improvements/resolved.json,improvements/stellar-docs/sd-003.md"], true],
+    [["`improvements/resolved.json`; `improvements/stellar-docs/sd-003.md`"], true],
+    [["`improvements/resolved.json`"], false],
+    [["(improvements/resolved.json)"], false],
+    [["improvements/resolved.json."], false],
+    [["improvements/resolved.json. improvements/stellar-docs/sd-003.md."], true],
+  ])("distinguishes resolved receipts from active caution references: %j", (rootCause, warns) => {
+    const findings = lintGoldenAuthoring([{
+      id: "q-resolved-caution",
+      question: "What does the source say?",
+      golden: { notes: "The former source conflict no longer applies." },
+      truth: { verified: { rootCause } },
+    }]);
+    expect(findings.some((item) => item.lane === "symmetric-caution")).toBe(warns);
   });
 
   it("seeds all register hashes without reopening, then reopens known changes", () => {
@@ -215,6 +281,19 @@ describe("QA corpus lint lanes", () => {
     ]));
   });
 
+  it("permits both the dated seven-row and attributed dated current eight-row archive rosters", () => {
+    const kase = JSON.parse(readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "..", "eval", "qa", "corpus", "battery", "tooling-infra", "q-infra-rpc-provider-archive-tier.json"),
+      "utf8"
+    ));
+    const rosterKeyFact = kase.golden.keyFacts.find((fact) => /archive/i.test(fact) && /row|roster|subset|provider/i.test(fact));
+    expect(rosterKeyFact).toBeDefined();
+    expect(rosterKeyFact).toMatch(/seven/i);
+    expect(rosterKeyFact).toMatch(/eight/i);
+    expect(rosterKeyFact).toMatch(/attribut|dated/i);
+    expect(rosterKeyFact).not.toMatch(/must name only|exactly seven|only the seven/i);
+  });
+
   // Regression: the gospel gate must fail-closed only for PRs. A push to a
   // branch (no PR base ref) resolves its base from the event `before` SHA and
   // must not be treated as a PR, or CI on every push to main errors out.
@@ -247,6 +326,23 @@ describe("QA corpus lint lanes", () => {
 
       kase.question = "How is persistent contract storage described?";
       writeFileSync(join(corpusDir, "case.json"), `${JSON.stringify(kase, null, 2)}\n`);
+      writeFileSync(join(repo, "eval", "qa", "lifecycle-registry.json"), `${JSON.stringify({
+        schema: "qa-lifecycle-registry-v1",
+        digestSchema: "canonical-json-sha256-v1",
+        counts: { proposed: 0, active: 1, quarantined: 0, retired: 0 },
+        reservedIds: [kase.id],
+        entries: [{
+          id: kase.id,
+          path: "eval/qa/corpus/battery/case.json",
+          state: "active",
+          reviewState: "none",
+          caseContentSha256: contentSha256(kase)
+        }]
+      }, null, 2)}\n`);
+      writeFileSync(join(repo, "eval", "qa", "corpus", "lifecycle-policy.json"), `${JSON.stringify({
+        schema: "qa-lifecycle-policy-v1",
+        massReview: { rules: "qa-mass-review-rules-v1", cadenceAnchorOn: "2026-08-29", state: "none" }
+      }, null, 2)}\n`);
       const args = [
         LINT_CLI,
         "--corpus", "eval/qa/corpus/battery",

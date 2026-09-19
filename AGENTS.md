@@ -14,8 +14,15 @@ in a networkless Dynamic Worker; host adapters own all service traffic, policy, 
   request, catalog, scoring, sandbox, and auth design.
 - Use `README.md` for connection and operator setup.
 - Use `research/` for dated evidence and design context; it is not an instruction layer.
+- This repo is self-contained, including usage collection and reporting under `usage/`. Two private
+  sibling directories are auxiliary only: `~/Desktop/stellar-raven-aux-priv-report` (the owner's Sites
+  publication checkout, refreshed by `scripts/sync-usage-site.mjs`) and
+  `~/Desktop/stellar-raven-aux-priv-evidence` (production snapshots and figures). Never commit
+  production counts here; never make this repo depend on either directory. See `usage/README.md`.
 - Use `.agents/skills/<name>/SKILL.md` for repeatable task workflows. `.claude/skills` is the
   committed symlink to the same canonical directory.
+- Use `.agents/TODO.md` for the own-repo work queue and `.agents/rounds/` for round ledgers.
+  `.agents/README.md` says which note belongs where.
 - `CLAUDE.md` imports this file. Do not duplicate shared rules there.
 
 ## Commands and verification
@@ -34,42 +41,58 @@ in a networkless Dynamic Worker; host adapters own all service traffic, policy, 
 - Run the narrowest relevant eval or maintenance command in addition to the baseline; the selected
   skill defines the exact gate for eval, drift, golden-truth, improvements, and observability work.
 - Scan before committing: `npm run secrets:scan -- --tree`.
-- Do not start a second Wrangler process. Use the existing Solo `dev` process for `npm run dev` and
-  obtain its bound URL through Solo.
+- Do not start a second Wrangler process. Find the pane already running `npm run dev`
+  (`herdr pane list`) and reuse it; read its bound URL from that pane's output.
 - Generated outputs are rebuilt by their `package.json` scripts, never edited by hand.
 
 ## Coordination
 
-- Use the global `fan-solo` skill to route every Solo/Solo Docs task to the fewest focused Solo
-  skills. Use `solo-orchestrate-agents` for cross-model fan-out; use the focused process, agent,
-  todo, and scratchpad skills it selects for those surfaces. The bound Solo project is currently
-  49; confirm scope with `whoami` and inspect `list_processes` before process action.
-- **Solo process ownership is recursive:** an agent may spawn processes only as its own
-  descendants and may stop, close, interrupt, restart, or otherwise lifecycle-manage only
-  itself or descendants it spawned. Never lifecycle-manage a parent, sibling, unrelated process,
-  or another agent's descendants. Apply the same rule to every sub-agent. Idleness, staleness, a
-  completed handoff, release cleanup, or a request to clean Solo state does not transfer ownership;
-  leave a process you do not own alone and ask its owning parent to reconcile it. If the owner is
-  unknown or unavailable, ask the user for an explicit exception naming the exact target; never
-  adopt it.
-- Apply the same ownership gate to `send_input`, rename, output clearing, UI selection, timer
-  delivery, and other target-process control. Solo reads do not expose reliable parentage: record
-  returned child IDs; unknown provenance means not owned. YAML-backed commands are shared project
-  processes, not descendants; control one only when the task or matching runbook authorizes it.
+- Agents, panes, and worktrees run under Herdr. Use the global `herdr` skill for the CLI contract;
+  it is the authority on command syntax, lifecycle states, and ID handling. Confirm
+  `HERDR_ENV=1` before any control command, and read IDs out of JSON responses rather than
+  predicting them.
+- Spawn a reviewer or a parallel lane by splitting a pane from your own —
+  `herdr pane split --current --direction <right|down> --cwd "$PWD" --no-focus`; `--direction` is
+  required — then `herdr agent start <name> --kind <codex|grok|claude> --pane <id> -- <cli args>`.
+  Name the model and effort explicitly after `--`. Wait with `herdr agent wait <name>` or
+  `herdr agent prompt … --wait`; do not poll.
+- **Pane and agent ownership is recursive:** control only the pane you occupy and panes you
+  split yourself. Never close, interrupt, restart, send input to, rename, move, focus, resize, or
+  take over a parent, a sibling, an unrelated pane, or another agent's descendants. Apply the same
+  rule to every sub-agent. Idleness, staleness, a completed handoff, or a request to clean up does
+  not transfer ownership: leave a pane you do not own alone and ask its owning agent to reconcile
+  it. Record the pane IDs you create; unknown provenance means not owned. If the owner is unknown
+  or unavailable, ask the user for an explicit exception naming the exact target; never adopt it.
+- `herdr agent read` cannot recover output that scrolled off an alternate screen. For any reviewer
+  whose findings matter, have the agent write them to a Markdown file and reply with only the path.
+- Durable working state lives in the repository, never in an external tracker. Own-repo work goes
+  to `.agents/TODO.md`; a multi-lane round keeps its ledger at
+  `.agents/rounds/<YYYY-MM-DD>-<slug>.md`. See `.agents/README.md` for the routing table.
 - Independent adversarial review is a completion gate when requested: reviewer must differ from
   author, run to completion, and have every finding reconciled before finalization.
 
 ## Model routing for repo-work fan-out
 
-Use `fan-solo` to select the focused workflow and `solo-orchestrate-agents` for multi-agent
-fan-out. State model and effort explicitly: Sol high for hard implementation/analysis, Terra high
-for routine implementation or bounded verification, Fable xhigh/high for product/API/taste or
-adversarial review, Opus high as the stable Claude fallback, and Grok high for vendor-diverse
-assumption attack. Reserve max for frontier work or a failed high-effort pass; treat ultra as a
-separate delegated topology. Callable-runtime evidence and launch mechanics live in
-`research/agent-model-roster.md`; dated policy evidence is in
-`research/solo-agent-orchestration-2026-07-15.md`. Eval answering and judge models remain separate
+Launch fan-out through Herdr panes, one agent per lane. State model and effort explicitly on the
+`herdr agent start` command line: Sol high for hard implementation/analysis, Terra high for routine
+implementation or bounded verification, Fable high for product/API/taste, Opus high as the stable
+Claude fallback, and Grok high for vendor-diverse assumption attack. Reserve max for frontier work
+or a failed high-effort pass; treat ultra as a separate delegated topology. Callable-runtime
+evidence lives in `research/agent-model-roster.md`. Eval answering and judge models remain separate
 measurement contracts controlled by `run-evals`.
+
+Choose the independent reviewer under "Coordination" by lane, not by a fixed model:
+
+- **Eligibility.** The reviewer differs from the author *and* from the orchestrator. An
+  orchestrator that is also a candidate reviewer drops out of the pool for that gate.
+- **Effort.** Run the gate at high. Escalate to xhigh only for a subtle change, or after a
+  high pass missed a real finding. Never make xhigh the standing default.
+- **Selection and fallback.** Match the lane to the change: Fable for product, API, and taste;
+  Sol for dense implementation or analysis; Grok for vendor-diverse assumption attack. When that
+  lane is the author, the orchestrator, or unavailable, take the next best match, then Opus high
+  as the last resort. Record the lane and effort used, and why the matched lane was skipped.
+
+`research/agent-model-roster.md` holds the callable-runtime evidence for these lanes.
 
 ## Hard rules
 
@@ -97,6 +120,10 @@ measurement contracts controlled by `run-evals`.
   `research/services/stellar-docs-algolia.md`.
 - Evals produce evidence-backed upstream findings in `improvements/`; scores are instruments, not
   the final product.
+- Solo is retired (2026-08-25). Never add a `solo://` reference, a Solo todo, or a Solo scratchpad
+  as a live path. Existing Solo references inside dated records — eval round notes, `improvements/`
+  evidence, `research/`, `ideas/` — are historical provenance for work that really happened there;
+  leave them, and do not rewrite evidence to match current tooling.
 - Retired sibling repos must not be referenced as live paths. Retained prior art is read-only under
   `eval/corpus/`; it is also the routing eval's committed label source. The QA battery is owned
   under `eval/qa/corpus/` and does not read it. Use `research/prior-art.md` for history.
@@ -105,14 +132,15 @@ measurement contracts controlled by `run-evals`.
 
 Use the matching skill when the task triggers it:
 
-- `fan-solo` — route broad or mixed Solo work to the fewest focused global Solo skills.
-- `solo-orchestrate-agents` — coordinate cross-model agents and integrate independent lanes.
+- `herdr` (global) — pane, agent, and worktree control; the authority on the `herdr` CLI contract.
 - `truth-maintenance` — coordinate a full live-drift/eval/golden/improvements maintenance pass.
 - `live-drift-resolution` — regenerate, classify, verify, and resolve live catalog drift.
 - `run-evals` — select instruments, review verdicts, triage causes, and file findings.
 - `improvements-pipeline` — maintain finding lifecycle, intake, probes, index, and upstream follow-up.
 - `golden-truth` — change golden answers with provenance and explicit uncertainty.
 - `cloudflare-observability-review` — investigate production logs, traces, telemetry, and Ray IDs.
+- `audit-reviewability` — audit or repair reviewability debt in code, comments, documentation,
+  tests, agent instructions, and generated changes.
 
 Add durable repo-wide rules here only after recurring friction. Put specialized instructions in the
 closest relevant skill or directory-level `AGENTS.md`.

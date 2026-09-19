@@ -1,10 +1,10 @@
 /**
- * Cost-control caps and clamp helpers for `/demo` (design Decision 5). The
+ * Cost-control caps and clamp helpers for `/playground`. The
  * real enforcement is in-request (caller wires DEMO_CAPS into `stepCountIs`,
  * the tool `execute:` closures, and the request-size checks); `demoThrottle`
  * is an HONEST best-effort cross-request bucket only — Workers KV has no
  * atomic consume, so concurrent requests can overrun it. That's acceptable
- * because the WorkOS gate already bounds the audience (review finding 3);
+ * because the WorkOS gate already bounds the audience;
  * do not upgrade this to a hard cap without a new design (DO or a
  * Cloudflare rate-limiting product).
  *
@@ -14,16 +14,17 @@
  */
 
 import type { EvidenceRecoveryHint } from "../policy/evidence-checkpoint.ts";
+// Throttle lifetime derives from the retention leaf that privacy disclosures
+// quote — one source, no independent two-hour literal.
+import { RETENTION } from "../auth/retention.ts";
 
 export const DEMO_CAPS = {
   /** stepCountIs(7) — bounded recovery room, with the final step reserved for synthesis. */
   maxSteps: 7,
   /**
    * streamText maxOutputTokens per request. Sized for a reasoning-capable
-   * model: GPT-5.4 is the primary demo model, and Kimi K2.7 Code remains a
-   * control whose hidden thinking can consume the same output budget before
-   * visible text. Worst case ~4096 x $4/M = ~1.6 cents per turn — the KV
-   * throttle and gateway rate limit are the aggregate guards.
+   * model. Hidden reasoning can consume the output budget before visible
+   * text. The KV throttle and gateway rate limit are the aggregate guards.
    */
   maxOutputTokens: 4096,
   /** clampHistory: max replayed messages, oldest dropped first. */
@@ -39,15 +40,22 @@ export const DEMO_CAPS = {
   /** execute tool: input.code length ceiling. */
   maxExecuteCodeChars: 8000,
   /**
-   * POST /playground/chat: max chars per user-role message (mirrors the composer's
-   * maxlength). Deliberately NOT applied to replayed assistant messages —
+   * POST /playground/chat: max chars per user-role message (mirrors the composer
+   * validation). Deliberately NOT applied to replayed assistant messages —
    * they can legitimately exceed it, and truncating them corrupts the
    * model's view of its own prior answers; clampHistory bounds the total.
    */
-  maxUserMessageChars: 4000,
-  /** demoThrottle: chats allowed per subject per rolling hour bucket. */
+  maxUserMessageChars: 8000,
+  /** demoThrottle: chats allowed per subject per fixed UTC-hour bucket. */
   chatsPerHour: 30
 } as const;
+
+export type DemoOperationSummary = {
+  total: number;
+  ok: number;
+  error: number;
+  softEmpty: number;
+};
 
 export type DemoToolBudget = {
   searchCalls: number;
@@ -59,20 +67,14 @@ export type DemoToolBudget = {
   unknownServiceSearches: number;
   executeFailures: number;
   executeResultTruncated: number;
-  operationTotal: number;
-  operationOk: number;
-  operationError: number;
-  operationSoftEmpty: number;
+  operations: DemoOperationSummary;
   /** Execute calls that produced narrow-only or conditional-alternative advice. */
   recoveryHintedExecutes: number;
   /** One host-prompted hint cycle is allowed per Playground turn. */
   recoveryAdviceDelivered: boolean;
   /** Later hint-bearing executes suppressed after the turn latch is delivered. */
   recoveryAdviceSuppressed: number;
-  latestOperationTotal: number;
-  latestOperationOk: number;
-  latestOperationError: number;
-  latestOperationSoftEmpty: number;
+  latestOperations: DemoOperationSummary;
   latestExecuteEvidence:
     | "service-data"
     | "service-inconclusive"
@@ -82,6 +84,10 @@ export type DemoToolBudget = {
     | null;
   latestRecoveryHint: EvidenceRecoveryHint | null;
 };
+
+function zeroOperationSummary(): DemoOperationSummary {
+  return { total: 0, ok: 0, error: 0, softEmpty: 0 };
+}
 
 export function createDemoToolBudget(): DemoToolBudget {
   return {
@@ -93,23 +99,17 @@ export function createDemoToolBudget(): DemoToolBudget {
     unknownServiceSearches: 0,
     executeFailures: 0,
     executeResultTruncated: 0,
-    operationTotal: 0,
-    operationOk: 0,
-    operationError: 0,
-    operationSoftEmpty: 0,
+    operations: zeroOperationSummary(),
     recoveryHintedExecutes: 0,
     recoveryAdviceDelivered: false,
     recoveryAdviceSuppressed: 0,
-    latestOperationTotal: 0,
-    latestOperationOk: 0,
-    latestOperationError: 0,
-    latestOperationSoftEmpty: 0,
+    latestOperations: zeroOperationSummary(),
     latestExecuteEvidence: null,
     latestRecoveryHint: null
   };
 }
 
-const THROTTLE_TTL_SECONDS = 2 * 60 * 60;
+export const THROTTLE_TTL_SECONDS = RETENTION.demoThrottleSeconds;
 const HOUR_MS = 60 * 60 * 1000;
 
 type ThrottleCounter = { count: number };
@@ -148,7 +148,7 @@ function totalChars(messages: { role: string; content: string }[]): number {
  * own hour plus slack for clock skew). Racy by design (read-then-write, no
  * CAS) — concurrent requests in the same hour can both read the same count
  * and both be allowed, overrunning `chatsPerHour` by a small margin. That
- * is an accepted tradeoff (design Decision 5), not a bug to fix here.
+ * is an accepted tradeoff, not a bug to fix here.
  */
 export async function demoThrottle(
   kv: KVNamespace,

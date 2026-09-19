@@ -1,0 +1,629 @@
+# TODO — own-repo work queue
+
+Own-repo fixes only: adapters, normalizers, catalog, executor, scoring, eval instruments, goldens,
+gates, and documentation. Upstream service defects go to `improvements/` instead — see
+`improvements/README.md` for the routing rule.
+
+Add an item when you find work you are not doing now. Delete it when it is done; git history is the
+archive. Each item states what is wrong, how it was found, and what "done" means.
+
+The latest maintenance work is [the September 16 ledger](rounds/2026-09-16-maintenance-execution.md).
+[NEXT.md](NEXT.md) ranks the work and holds open owner decisions.
+
+## Improvements follow-up
+
+### Complete the September 14 source-metadata follow-up before 2026-10-01
+
+The freshness audit found a dead CLI cookbook link in `q-ti-stellar-lab-usage-and-new-ui`.
+It also identified dated x402 board membership and builder-population facts in sibling cases.
+Use `research/audits/2026-09-14-golden-freshness-review.md` for the exact cases and replacement source.
+Apply the golden-truth workflow to source metadata and any factual changes.
+Preserve historical observations and scheduled dates unless new verification supports a change.
+
+Done when: the source link works, sibling claims have current evidence, and the corpus gates pass.
+
+### Re-check `sd-027` and `sd-034` after PR #2837 receives a maintainer decision
+
+PR https://github.com/stellar/stellar-docs/pull/2367 closed without merge on 2026-09-09.
+The maintainer named https://github.com/stellar/stellar-docs/pull/2837 as its replacement.
+The reviewed repair reached PR #2837 at `108ba24e0884f46e0c543996e4e94be754709840` on September 16.
+All nine checks passed. Required maintainer approval and the author’s explicit merge hold remain.
+The author must reconcile the hold with the updated template and remaining review concerns.
+
+Re-check the replacement PR on 2026-09-21, or earlier if its head changes or it closes.
+If it merges and deploys, run both original live page checks before changing either finding.
+Do not post a status comment while the maintainers are already working on the decision.
+Use `.agents/rounds/2026-09-16-maintenance-execution.md` for the current state.
+
+Done when: each finding records the resulting live state, and any fixed finding completes the resolver gates.
+
+### Decide the follow-up for stale-bot-closed `sd-037`
+
+Issue https://github.com/stellar/stellar-protocol/issues/1981 closed as `NOT_PLANNED` on 2026-09-14.
+The September 14 source check still reproduces the missing proposal index.
+The closure followed a stale-bot warning, not a maintainer scope decision.
+Keep the finding reported upstream. Do not post a keep-alive comment.
+At the next owner review, decide whether to reopen the issue or propose a successor.
+Evidence: `.agents/rounds/2026-09-14-truth-maintenance.md`.
+
+Done when: an owner decides the follow-up based on the original trigger and current upstream scope.
+
+## Recovery
+
+### Monitor the rejected repository-tooling recovery experiment
+
+The record-only closeout is in
+`.agents/rounds/2026-08-31-rejected-experiments-closeout.md`.
+The rejected `repository-tooling-recovery-v2` implementation does not ship.
+The v2 collection returned 9 of 12 positives and 0 of 8 premature detours.
+It had 18 of 20 correct answers and 20 of 20 grounded answers.
+
+`sls-080` is retired in `improvements/resolved.json`.
+The deployed API `1.9.16` reading returned `28` at `2026-09-01T20:08:07.092Z`.
+Its scanned ref was `82660510ecda7fd365a14d08badb9d85fa22bc32`, whose source value is also `28`.
+The 2026-09-03 reading returned `28` at `2026-09-03T18:20:47.059Z` with the same scanned ref and
+`answerSource: knowledge-note`. It passed. The record is
+`.agents/rounds/2026-09-03-truth-maintenance/sls-080-monitor-terra.md`.
+
+During each improvements or drift-maintenance round, run one free `scout.explainRepo` reading
+against the existing local Raven server. Ask: “Which Horizon ingestion constant pins the highest
+supported protocol version, and what is its value?” Use repository `stellar/stellar-horizon`.
+Record the returned value, `generatedAt`, `scannedRef`, and `answerSource` in the current round ledger.
+Use the `sls-080` receipt in `improvements/resolved.json` as the durable finding record.
+
+The freshness blocker clears only when the DeepWiki answer equals the source value at the
+response's own `scannedRef`. The current source value is `28`; the match rule is not a permanent
+literal-`28` rule.
+
+The selection trigger remains three qualifying positive operation-selection misses after recovery.
+The Docs-versus-repository conflict remains monitor-only until three successful-recovery
+recurrences. Each recurrence must be a dated re-execution of `sls-080`. It must use the required
+Docs-first, inspect, then one-later-`scout.explainRepo` sequence. Record the same finding identity,
+the case ID, the result stamp, and the transcript for every recurrence.
+The `stellar-cli` fallback candidate did not reproduce and has no active finding.
+G1 is a pre-registered v3 candidate only.
+
+A matching free reading does not authorize a paid collection. A new recovery plan must cite
+ADR-0008. It must retain the 10-of-12 positive and 0-of-8 premature-detour gate. Ranking remains
+blocked until three qualifying positive misses remain after recovery. Any paid collection needs
+an independent plan review and its own spend authorization.
+
+G1's detailed record is in closed PR #102 at commit `6baec0a4`. Fetch it with
+`git fetch origin pull/102/head` if this block reopens.
+
+Done when: a reviewed v3 plan later passes ADR-0008 and ships, or the owner retires this recovery
+program. Select each later Scout ID from the maximum active and resolved ID; `sls-081` is historical only.
+
+## Routing
+
+### `search` does not surface the research lane for protocol-history questions
+
+Eval case `q-protocol-24-whisk-incident` asks why Protocol 24 followed Protocol 23 so quickly. The
+answer needs the eviction-defect cause, the counts 478 / 84 / 77 / 394, `CAP-0076`, Hot Archive,
+and a 31,879,035-stroop fee-pool remediation.
+
+`scout.searchResearch` holds all of them. `source: "cap"` returns 478, 84, 77, 394, Hot Archive,
+and TTL; a broad call returns 478, 84, 77, 31879035, `CAP-0076`, and Hot Archive. The union is the
+complete fact set, so this question is fully answerable today.
+
+`search` does not point there. Measured 2026-08-25 with the case's own wording: ten hits, none of
+them `scout.searchResearch`. The top hits were `stellarDocs.*` operations, and no Stellar Docs
+lane carries a single required fact.
+
+This is not a description gap. `scout.searchResearch` already advertises "incident reports" and
+offers `source` values `cap` and `incident`. The lane says what it is; ranking does not find it.
+
+The 2026-08-31 `clause-fit-hysteresis-v1` measurement produced a reviewed `FAIL`.
+No grid passed both frozen contracts with the routing gates intact.
+Its result stamp is `2026-08-31T16-58-42-389Z-clause-fit-hysteresis-v1`, and its clause artifact
+SHA-256 is `e5f86644af89158c3ac4d61ee7f651e2a062c9d292f194cb94872c7eee4e71f4`.
+Attempt one is spent.
+
+The 2026-08-31 `cross-encoder-fit-v1` measurement also produced a verified `FAIL`.
+Every registered grid kept both frozen contracts at the lexical baseline and failed the routing
+gate. Its result stamp is `2026-08-31T23-36-38-660Z-cross-encoder-fit-v1`, and its result
+SHA-256 is `529351b1562b14f68d18ef94b584ca37ae61290f68cfff7a5a1489e8b601ae0d`. The full record
+is `.agents/rounds/2026-08-31-protocol-history-cross-encoder-v1.md`. Attempt two is spent.
+
+The 2026-09-01 `clause-support-fit-v1` measurement also produced a verified `FAIL`.
+It used cache-only multi-clause aggregation over the retained attempt-two pair scores.
+Its result stamp is `2026-09-01T14-22-28-993Z-clause-support-fit-v1`.
+Its result SHA-256 is
+`a522bfa28ef4b06146c5f247ba64c08bfd6edaa4a81a0642c4010da2d6de479c`.
+Blind top-five rose from 3/11 to 10/11. Control captures also rose to 2/4 and 7/9.
+The routing gate failed on legacy, holdout, extended, and protocol-version top-one.
+The full record is `.agents/rounds/2026-09-01-protocol-history-attempt-three.md`.
+Attempt three is spent, so the three-attempt box is spent. No fourth attempt is authorized.
+No production change shipped, and no `improvements/` finding applies.
+
+The free evidence is complete in `.agents/rounds/2026-09-02-protocol-history-free-evidence.md`.
+The blind label review disputes four of 13 frozen controls: `ph-control-validator-vote`,
+`ph-control-clawback-cap`, `phb-control-sdk-version-history`, and
+`phb-control-cap-history-sep-support`. All 19 positive labels hold. The product-exposure union
+contains 78 QA cases. It combines the 76-case
+`scout.searchResearch` inventory and four-case protocol-history family, with two shared cases.
+The attempt-one result file is absent locally, so its matrix column remains `NA`.
+On manifest `4cd28f4b…fe8b`, the original diagnostic reads 4/8 positives and 2/4 controls.
+`ph-control-validator-vote` reaches rank five without a new mechanism. The blind set reads 3/11
+positives and 6/9 controls. These results informed the PH2 owner decision. They do not authorize
+PH3.
+
+The owner resolved PH2 on 2026-09-03. The v2 contracts retain all 19 required cases, keep nine
+valid controls as forbidden, and mark the four disputed controls neutral. Neutral ranks remain
+visible but do not affect pass or fail. The v1 contracts remain byte-identical historical inputs.
+The decision record is `.agents/rounds/2026-09-03-owner-decisions.md`.
+
+The current v2 baseline reaches 7 of 19 required cases. It captures five of nine forbidden cases.
+Three of four neutral cases also surface the target. Both v2 contracts remain diagnostic `FAIL`.
+
+Since the accepted 2026-09-03 Docs-only title refresh, the committed manifest is
+`b613201846076e9fbaa70edfee4f506841c7cf690265e69c8d07afde567f6729`. Both v2 contracts pin the
+earlier epoch `4cd28f4b…fe8b`, so `npm run eval:protocol-history` now stops as `source-expired`
+before scoring and returns no counts. That stop is correct. Do not repin the v2 epoch to the
+current manifest. A new epoch needs a new independently authored contract after an accepted
+source freeze. That is an owner evidence box under PH3. The rejected Scout 1.9.23 candidate fired
+PH1 on 2026-09-03 and its counts are in the round ledger. The committed inventory did not change,
+so PH1 has not fired on the accepted surface.
+
+The rejected Scout 1.9.48 candidate also fired PH1 on 2026-09-08.
+Both v2 contracts stopped as `source-expired` before scoring.
+The result authorizes no new epoch, mechanism, or baseline change.
+That dated rejection retained Scout 1.9.1.
+The 2026-09-16 accepted source is Scout 1.9.52. Both v2 contracts still stop as `source-expired`.
+No question was scored and no contract was repinned. See `rounds/2026-09-16-scout-acceptance.md`.
+
+This queue calls the dated brief's T1 to T4 triggers `PH1` to `PH4`. This avoids collision with
+the five-track T1 to T5 contract.
+
+- **PH1 — dual upstream card change.** Both hashes must change together. The
+  `inventory/stellar-light.json` SHA-256 must differ from
+  `1a261c4a2e2172683e91a52ddc33b02ff41e74760c861dfacb29c60a8d8671b0`. The
+  `sha256(JSON.stringify(openapi.paths["/api/research"].get["x-routing"]))` value must differ from
+  `468a9d9834e8cb50cb905f80ccc42f9d3daa7a3d0ff2d8c5194d566812ba716b`. Routine inventory drift
+  alone does not fire PH1. The drift lane may run the free `npm run eval:protocol-history`
+  diagnostic and record both contract counts. PH1 does not authorize a new mechanism.
+- **PH2 — completed owner contract decision.** The versioned v2 contract uses 19 required, nine
+  forbidden, and four neutral cases. It preserves the 19-of-19 required bar and all v1 evidence.
+- **PH3 — new non-card evidence box.** The owner can open a box for corpus-derived route vocabulary
+  or another named non-card source. The brief must carry every pre-registration item from the
+  attempt-three brief, section 16. Independent review must pass before any fetch.
+- **PH4 — new live routing evidence.** Two cases must show the same absent-lane pattern. They must
+  use different question families and entities. Neither can paraphrase a frozen positive. Each case
+  needs a dated transcript. PH4 opens a TODO note and a token-reachability audit. The owner then
+  decides whether the new evidence opens PH3. PH4 does not open a mechanism box by itself.
+
+Run `npm run eval:protocol-history` as a free diagnostic after changes to `src/catalog/**`,
+`catalog/manifest.json`, `scripts/build-catalog.mjs`, or
+`src/catalog/vendor/search-scoring.ts`. Record the counts when the contracts are eligible. Record
+`source-expired` when they are not. Keep this lane diagnostic-only.
+
+Done when: a later reviewed mechanism passes both v2 contracts and all routing gates. That requires
+19 of 19 required top-five hits and zero captures among nine forbidden cases. Neutral cases remain
+diagnostic. The attempt-three section 8 table remains historical and is not the current ship gate.
+One new target capture or one-case improvement does not close this item.
+
+Filed here and not in `improvements/`: the data is reachable, so there is no upstream gap. This is
+our ranking.
+
+### Preserve structured routing intent across extraction caps and gate tiers
+
+The rejected search and Scout candidates are retired, not pending implementations.
+Their disposition is recorded in `rounds/2026-09-09-outstanding-closeout.md#rejected-candidate-retirement--2026-09-10`.
+PR #148 supplied the accepted bounded search repair. This item retains the broader source-acceptance requirements for #141.
+Use current accepted main and a fresh source snapshot for any later authorized repair.
+
+Trigger only after the current truth-maintenance round closes and the owner authorizes a general
+Raven scoring repair. The 2026-09-03 Scout routing attribution found eight real regressions from
+phrase flattening, first-token truncation, generic schema-word coverage, substring coverage, and
+five weak gated rows. It also found valid leaderboard and RFP gains. This item does not authorize
+the rejected Scout surface, a routing-baseline change, operation-specific exceptions, or
+question-specific exceptions. Keep the protocol-history measurement source-expired for the rejected
+Scout surface.
+
+Keep phrase and field boundaries from `x-routing` during scoring. Replace first-token truncation
+with deterministic fair allocation. Retain specific older intent when a source adds long sections.
+Stop generic response-property names and unrelated substrings inside schema words from satisfying
+the coverage gate. Let strong ungated cross-service evidence compete with five weak gated rows.
+The 2026-09-04 category check is another instance. A controlled-vocabulary operation did not reach
+the top five for two general directory-taxonomy queries. The existing compiled category case also
+missed its expected operation. Do not add query wording or an operation exception. Include this
+family in the next reviewed general scoring design.
+The rejected Scout 1.9.30 surface changed 15 `x-routing` blocks and 22 direct schemas. Its routing
+diagnostic met the numeric floors without an accepted intent decision. The record is
+`.agents/rounds/2026-09-03-truth-maintenance/scout-1.9.30-drift-terra.md`. It adds no new
+acceptance check.
+The rejected Scout 1.9.48 surface added `GET /api/rwa`.
+Its new card captured 52 of 495 ranked cases, including Friendbot, RPC, WASM, simulation, and
+balance questions. The operation also lacked accepted intent coverage.
+Keep `GET /api/rwa` excluded until the general scoring repair passes the added check below.
+The upstream request and response state enums must also match the live handler.
+Scout 1.9.49 fixes those upstream enums, but the full source candidate still fails the intent checks.
+It introduces 61 RWA top-five captures across the routing and holdout cases, including unrelated implementation questions.
+The independent rejection is `rounds/2026-09-09-scout-drift-terra.md`.
+That dated rejection retained Scout 1.9.1. The 2026-09-16 acceptance advances to Scout 1.9.52.
+Issue #167 owns the remaining RWA routing work. No new upstream enum correction is established.
+The 2026-09-16 experimental Scout 1.9.52 candidate keeps `GET /api/rwa` excluded from the
+release manifest. Its direct discovery checks pass, but three added controls remain open. The
+operation captures a tokenized-bond RPC simulation, a tokenized-treasury wallet-balance question,
+and the existing issuer fee, supply-cap, and holder-freeze question. These are Raven structured
+routing defects. They are not established upstream schema defects. Keep the controls in the round
+evidence and require a reviewed general intent mechanism before any RWA exposure decision.
+The same round repaired stablecoin discovery, Soroswap lookup, and dated Blend research routing.
+Independent semantic and code reviews accepted the final existing-operation candidate.
+The runtime repair improves all 13 query medians in both measurements against the accepted control.
+The pooled median improves about 10%, and the pooled p95 improves about 38%.
+These are local search measurements, not network or model response times.
+See `rounds/2026-09-16-scout-acceptance.md` for source, gate, and review evidence.
+[Issue #167](https://github.com/stellar-experimental/stellar-raven/issues/167) tracks the three deferred RWA controls.
+The original eleven-check program remains incomplete while RWA exposure stays deferred.
+This item also owns the `sls-078` residual. Scout fixed its quality `x-routing`
+contract in 1.9.13. The reviewed 1.9.23 candidate still caused 90 unrelated
+`scout.getQualityReport` captures through Raven response-schema keywords. Keep
+`GET /api/quality` excluded until this general repair passes. Do not create a
+separate routing TODO or upstream successor.
+
+Acceptance checks:
+
+1. Protocol-history additions do not remove `yieldblox` or `reflector` intent.
+2. `through`, `network`, `each`, and `walk through` cannot route alone.
+3. `contract` cannot route `explainRepo` without a repository or code anchor.
+4. Added `use` cannot promote `hackathonBrief` above account-merge Docs.
+5. `has` cannot match inside the schema keyword `phase`.
+6. Strong Docs evidence remains eligible after five weak gated Scout candidates.
+7. All eight regression rows meet their clean grades.
+8. A general RWA query reaches `scout.getRwaAssets`, while unrelated Friendbot, RPC, WASM,
+   simulation, and balance questions do not capture it.
+9. The leaderboard and RFP improvements remain.
+10. The full legacy, extended, skills, and holdout gates do not regress.
+11. A controlled-vocabulary operation reaches the top five for general directory-taxonomy queries.
+
+Done when: all eleven acceptance checks pass in a reviewed general scoring change. The existing
+protocol-history diagnostic stays source-expired until a separate accepted Scout source epoch exists.
+
+## Dependencies
+
+### Re-check the seven remaining dependency audit findings
+
+The 2026-09-17 toolchain update cleared the Hono finding and the root Wrangler finding.
+It pins Wrangler 4.133.0 and Hono 4.13.8, and it raises the `@cloudflare/workers-types` floor to Wrangler's peer requirement.
+Seven high findings remain. They come from two exact pins.
+
+`@cloudflare/vitest-pool-workers` 0.22.0 pins its own test tools:
+
+- `@cloudflare/vitest-pool-workers` 0.22.0;
+- nested `wrangler` 4.124.0;
+- `miniflare` 5.20260815.0-alpha;
+- `sharp` 0.35.2 under miniflare (GHSA-rgj7-g3m4-5g8c, also reported for root `sharp` 0.34.5).
+
+`@huggingface/transformers` stays at 4.2.0, which holds its runtime chain:
+
+- `@huggingface/transformers` 4.2.0;
+- `onnxruntime-node` 1.24.3;
+- `adm-zip` 0.5.18 (GHSA-xcpc-8h2w-3j85 and GHSA-vwc7-r8mq-g2x9);
+- root `sharp` 0.34.5 (GHSA-f88m-g3jw-g9cj and GHSA-rgj7-g3m4-5g8c).
+
+Both groups are development tools only. The pool serves the `test:smoke` lane. Transformers serves the eval Vectorize tools.
+npm offers only a pool downgrade to 0.8.30, which breaks the vitest 4 smoke config. Do not use it or an override.
+Transformers 4.3.0 clears its chain, but it waits for the Vectorize runtime migration below.
+
+Two local workerd runtimes coexist.
+`wrangler dev` and `npm run build` use `workerd` 1.20260916.1.
+The smoke pool and `@cloudflare/unenv-preset` use `workerd` 1.20260815.1.
+Evidence is in `research/audits/2026-09-17-dependency-audit/`.
+
+Done when: a pool release newer than 0.22.0 passes `npm run test:smoke`, and the runtime migration lands Transformers 4.3.0 or later.
+
+### Plan the Vectorize Transformers runtime migration
+
+The Vectorize models are registered on `@huggingface/transformers@4.2.0` (`eval/vectorize/frontier-config.mjs` and `eval/vectorize/rerank-config.mjs`).
+The loaders require each banked artifact's `model` to equal that registration exactly.
+
+The preflights cannot compare a candidate runtime today, for three reasons:
+
+- `preflight-clause-model.mjs` and `preflight-rerank-model.mjs` print a probe hash, but they compare it with no committed expected value.
+- Neither preflight output nor the score-cache environment records the Transformers version. They record `onnxruntimeNode` only.
+- One tree installs one Transformers version. A preflight therefore cannot run the registered runtime and a candidate runtime side by side.
+
+The accepted rerank probe hash exists only in a round ledger (`.agents/rounds/2026-08-31-protocol-history-cross-encoder-v1.md`).
+The run supplies it through `RAVEN_RERANK_PROBE_SCORE_SHA256`.
+
+Define a comparison before any upgrade.
+Record the Transformers version and the probe outputs in committed form.
+Run the preflights on 4.2.0 and on the candidate runtime in separate trees.
+Decide from the result whether to re-register the runtime and rebuild the artifacts.
+
+Done when: a reviewed comparison accepts or rejects the candidate runtime, and the registrations and artifacts match the installed runtime.
+
+## Eval instruments
+
+### Re-check the upstream codemode short-token repair
+
+The September 17 audit reproduced false routing across unrelated weather and billing operations.
+The defect exists in codemode 0.4.2, 0.5.1, 0.5.2, and the tested upstream main revision.
+[Cloudflare #2296](https://github.com/cloudflare/agents/issues/2296) owns the upstream repair.
+The source record is `improvements/canonical-source/cs-001-codemode-search-short-token-prefix.md`.
+Raven also has an ungated copy of the same prefix rule.
+
+Reverse-prefix deletion lost valid word-form matches and failed routing coverage.
+Standard Porter stemming also failed coverage and doubled local search time in the measured implementation.
+Neither experiment ships. Do not replace them with query exceptions or a tuned token-length threshold.
+
+Done when: an upstream or general local repair passes the original triggers, positive controls, and Raven routing gates.
+Keep the RWA exclusion until its three technical controls also pass.
+
+### Revisit general directory admission after the rejected D3 experiment
+
+The September 17 D3 deletion failed the predeclared answer gate and did not ship.
+The candidate omitted the no-transcript warning present in the baseline A/V answer.
+Both arms reached the same source. The experiment does not establish a causal routing regression.
+The current directory field-placement exception remains a known design risk.
+Do not repeat D3 or add entity-specific exceptions to make its examples pass.
+
+Done when: a general mechanism passes frozen routing controls and independently reviewed answer checks.
+Evidence: `research/audits/2026-09-17-routing-audit/m1-c1-passkeys-loss-review.md` and the September 17 round ledger.
+
+### Reconcile source-authority guidance for full-description clients
+
+The September 17 audit found conflicting instructions in `EXECUTE_DESCRIPTION` and `AUTHORITY_RULES`.
+The former says all factual questions use Docs first. The latter assigns ecosystem facts to Scout or Lumenloop.
+The conflicting clause falls beyond Claude's 2,048-character tool-description clip.
+A clipped-client QA run cannot measure its correction.
+
+Use the existing source-family rule when removing the contradictory clause.
+Measure a full-description client or Playground against protocol and ecosystem controls before release.
+Do not add operation lists, entity examples, or a new routing field.
+Evidence: `research/audits/2026-09-17-routing-audit/direction-review.md`, section 8.
+
+The existing Playground runner lacks answer-cost accounting and a judge dollar cap.
+Its call-count controls cannot certify the proposed $20 comparison limit.
+Keep that comparison unlaunched until existing budget enforcement covers both costs.
+Do not add a parallel evaluation runner or treat an estimated cost as an enforced limit.
+
+Done when: one consistent authority rule reaches the relevant client, with no verified answer regression.
+
+### Reconcile Soroswap API and contract scope in sibling grader notes
+
+The September 17 golden audit found ambiguous SDEX routing notes in two sibling cases.
+Review `q-eco-dex-saturation` and `q-defi-soroswap-vs-stellarx` through the golden-truth workflow.
+Soroswap API quotes can include SDEX. Its deployed aggregator currently lists three AMM adapters.
+Do not treat those surfaces as identical.
+
+Done when: independently verified notes preserve this distinction, and the corpus and sibling checks pass.
+
+### Monitor Raven capability-boundary offers
+
+Case `q-n3-missing-funds-account-support` offered a later Raven lookup by G-address or transaction
+hash. Raven exposes no account-scoped lookup. The answer was a no-tool answer. Control case
+`q-jutsu-check-account-history` asks for public lookup guidance that another service can perform.
+A valid mechanism must not suppress that guidance.
+
+The rejected capability-boundary Method 1 added prose to `eval/qa/run-qa.mjs:agentPrompt`. Its
+environment pin differed, so it is invalid as a measurement. Its five-track T3 safety failure is
+one observation. The prompt mechanism was withdrawn. The capability-boundary Method 2 was the
+deterministic sample-30 headline with an offline plan regrade. It did not run. Both
+capability-boundary authorizations are spent. The five-track Method 2 is separate and complete.
+
+The free evidence record is
+`.agents/rounds/2026-09-01-next-actionable-blocks/raven-free-evidence.md`. Its all-answer screen
+scanned 338 local result files, 4,891 rows, and 2,406 answers. It adjudicated 51 high-recall offer
+candidates. Six offers were unsupported, and no additional unsupported offer appeared. Its
+separate no-tool screen scanned 44 explicit no-tool answers and adjudicated 17 candidates. The
+same six offers remain unsupported. Five repeat this trap case. One appears in the Friendbot case.
+No direct shipped prose advertises an account or transaction lookup. The generated micro-map gives
+Data/RPC documentation and skill guidance, but does not expose an account query. The evidence
+shows repeated QA behavior, but it does not identify a shipped Raven cause.
+
+The `--expect-agent-environment-sha256` guard now fails before any answering-agent or judge call.
+Matching runs stamp the expected and observed identities. Its CLI tests cover a match and every
+rejected flag form. Rejected stored-judge and collection runs record zero paid-call attempts.
+
+The owner selected monitor-only on 2026-09-03. Muse Spark 1.3, Fable 5.1, and Kimi K3 independently
+supported that classification. No active diagnostic or product change remains.
+
+Reopen a free cause audit after any production occurrence, any transcript showing an attempted
+account-scoped operation, or any direct model-facing prose that advertises the capability. A third
+distinct QA case can also reopen the free audit. It does not authorize a product change.
+
+Candidate third case, recorded 2026-09-04 and not yet confirmed: in the stopped candidate artifact
+`2026-09-04T05-40-51-variantA.json`, row `q-n3-wallet-hacked-support-redirect` offered to trace
+funds through Horizon or Stellar Expert queries. Raven exposes no such operation. The row made no
+tool call. The evidence is
+`.agents/rounds/2026-09-03-truth-maintenance/candidate-row-review-skills-none-fable.md`. The same
+artifact repeats the known trap case and shows capability self-descriptions such as "network state"
+in five correct refusals. The owner decides whether this row is the third distinct case. A
+confirmed trigger allows a free cause audit only.
+
+Any later plan must name the surface owner and an observable product hypothesis. It must use a
+mechanism that reaches no-tool answers. Another QA-prompt wording layer is spent. Do not copy case
+facts, identifiers, or redirect lists into a prompt. Include the trap, the control, the environment
+pin, and a pre-registered product gate.
+
+The design record from closed PR #103 is at commit `fb9a35eb`. Fetch it with
+`git fetch origin pull/103/head` if needed. Its result artifact is not a durable baseline.
+
+Authorization boundary: a fired trigger allows free scans, inventory, plan writing, and independent
+plan review. A focused diagnostic needs its own bounded authorization. A headline sample needs a
+separate authorization after the focused diagnostic passes. Denominators never merge.
+
+Done when: the owner retires the monitor, or a fired trigger leads to a reviewed resolution.
+
+### Resolve paired-QA design before promotion
+
+`qa-paired-ordinal-ni-v1` is implemented, experimental, and not a ship gate. No same-tuple pinned
+pair exists. The 2026-08-30 artifact used rubric `v2.9`; the target rubric is `v2.10`. The
+2026-09-04 candidate arm is non-comparable and cannot serve as one side of a pair.
+
+The method requires 100 eligible IDs after five-track T4 and T5 exclusions. The validator reports a
+99.356% terminal `INDETERMINATE` rate under its selected-100 missingness assumptions. The real run
+lost one ID and returned `INDETERMINATE` at 99 eligible IDs. A candidate-only T4 also forces
+`INDETERMINATE`; the validator reports 64.079% blocking under its 1% assumption.
+
+Landed on 2026-09-04 with independent `PASS` reviews: the remote identity guard, the paired
+collection supervisor `npm run eval:qa:paired:collect`, distinct cross-arm port pairs, stored-judge
+identity stamps, and cumulative per-arm caps. The printer now requires one shared remote identity
+vector, one probe hash, and different exact server revisions across arms. Commit `1847ffd` then
+enforced the v2 launch contract. The plan schema is `qa-paired-collection-plan-v2`. The launch
+requires an external authorized canonical plan SHA-256. The plan freezes every paid command array
+and the flip Claude pins. It binds a fixed capacity contract with 24-hour freshness. It requires
+exactly 200 selected and 500 active corpus IDs. The final Opus confirmation grants `LAUNCH-OK`
+after the repairs at `352e517`. See
+`.agents/rounds/2026-09-03-truth-maintenance/final-launch-contract-review-opus.md`.
+The full contract is in `eval/qa/README.md` and `eval/EVALS.md` item 12.
+
+The free two-agent capacity check is complete. The authoritative v2 `PASS` artifact is recorded in
+`.agents/rounds/2026-09-03-truth-maintenance/paired-capacity-check-terra.md`. It expires at
+`2026-09-05T10:25:17.815Z`. A launch after that time needs a fresh artifact.
+
+Permitted now: free validator work on a pre-registered selected denominator above 100. Also
+permitted: a fresh free capacity artifact for the chosen launch window. Revision 3 has its
+independent confirmation. Review denominator and candidate-only rules before the first new look. Never
+change either rule after reading a paid look.
+
+The spend trigger is a signed authorization for the revised method in
+`.agents/rounds/2026-09-03-truth-maintenance/revised-impact-measurement-fable.md`, plus the
+recorded owner margin decision. Do not collect a pair for calibration alone under any other plan.
+The revised method caps a 200-ID supervised pair at `$273.50`. The earlier `$82` same-tuple
+estimate covered a 100-ID sequential pair and is superseded for planning.
+
+Before the next collection, decide whether the optional one-row rubric `v2.10` rejudge of
+`q-eco-stellar-wallets-list` is still useful. It is judge-contract evidence only and needs its own
+small authorization.
+
+Done when: two complete arms share the answering model, judge model, rubric, pack, pinned register,
+environment hash, agent binary, implementation hash, probe hash, and remote identity vector. At
+least 100 IDs remain eligible. Then
+`npm run eval:qa:paired:validate -- --recalibrate <baseline> <candidate>` passes, and a round ledger
+records the promotion decision.
+
+### Execute the supervised paired subset only after a signed authorization
+
+Trigger only when the round ledger carries the complete signed authorization block from
+`.agents/rounds/2026-09-03-truth-maintenance/revised-impact-measurement-fable.md` revision 3,
+an independent `LAUNCH-OK` review of that revision, the ten owner decisions including the
+concurrent-load acceptance, and one clean launch revision. The signed record lives outside the
+plan. It names the canonical plan SHA-256 from `npm run eval:qa:paired:plan-sha256`. The owner
+signature covers that hash and every command array in the plan. The owner's general approval of
+paid work for the round is not this authorization. Revision 1 and revision 2 received
+`CHANGES-REQUIRED`. The appended final Opus confirmation grants `LAUNCH-OK` for revision 3
+after repair. This verdict does not grant paid authority.
+
+The method is one supervised 200-ID answer-only pair, stored judging one arm after the other, one
+paired comparison, and two frozen flip rejudge commands with `--allow-empty` and Claude identity
+pins. Caps: P6 `$3.50`; collection `$80` per arm; stored judging cumulative `$120` per arm;
+two-arm cumulative `$240`; flip rejudges `$15` each; maximum `$273.50`. The plan uses
+`qa-paired-collection-plan-v2`. The launch command carries `--authorized-plan-sha256`. The
+capacity artifact must be at most 24 hours old at launch. The manifest stays uncommitted and is
+deleted after the run.
+
+Done when: the paired JSON, both flip batches, the recalibrated simulator output, and the all-row
+review are recorded in the round ledger and `eval/qa/README.md` as a labeled paired diagnostic, or
+the owner records `NOT AUTHORIZED`.
+
+### Select harness follow-ups from the 2026-09-04 candidate audit
+
+Owner judgment. These candidates are recorded, not scheduled. The owner selects or declines each.
+The evidence is `.agents/rounds/2026-09-03-truth-maintenance/post-candidate-measurement-fable.md`
+and `candidate-row-review-skills-none-fable.md`.
+
+- Store per-row start and end timestamps and a per-row identity vector in the result schema.
+- Record per-turn cost in `agent.usage.perTurn`.
+- Add a serialization hint to the sandbox error path.
+- Randomize row order or interleave categories in long live runs.
+- Give the judge source-basis evidence on stable rows, or state that stable-row specifics are
+  unverifiable.
+- Remove the stable-row gate that hides wrong-claim rows from `evidenceSupportCheck`.
+- Treat boundary rows skipped by the panel cap as low confidence in flip analysis.
+- Add a harness metric for planning text that leaks into final answers.
+- Record capability self-description drift in zero-tool refusals.
+
+Done when: each candidate has an owner decision, and each selected candidate has its own item.
+
+### Monitor Friendbot network-context synthesis
+
+Case `q-edge-send-me-free-xlm` called Friendbot Testnet-only. The transcript made no tool call.
+Stellar Docs expose Testnet, Futurenet, and local Quickstart distinctions. This is one answering
+failure, not an upstream finding or a prompt-repair decision.
+
+The same case was wrong again in the 2026-09-04 candidate artifact. The answer omitted Futurenet
+and local Quickstart. The skills shard disputes the avoid-1 match because the answer did not say
+"Testnet-only". A repeat of the same case does not fire this monitor.
+
+Done when: the same wording defect appears in a second unrelated case, a contract mismatch appears,
+or trace evidence shows the prompt requests the wrong behavior. An unrelated case uses a different
+question family and primary service. A paraphrase of the first case does not count. Record every
+recurrence with its case ID, result stamp, and transcript.
+
+### Monitor the Stellar Docs title-set size against the remote identity probe ceiling
+
+The remote identity probe `eval/qa/probe-remote-identities.mjs` enumerates the public Docs
+`lvl1` title set through Algolia. The public key clamps pages to 100 records and the index limits
+pagination to 1,000 records. The probe fails closed above ten pages. The live set held 650 records
+on 2026-09-04. The record is the R4 item in
+`.agents/rounds/2026-09-03-truth-maintenance/remote-identity-guard-review-opus.md`.
+
+During each drift round, record the current title count from `inventory/stellar-docs-titles.json`.
+Open a design item for a different enumeration strategy before the count reaches 1,000. A larger
+page count cannot help because the index limit is the same.
+
+Done when: a reviewed enumeration change removes the ceiling, or the owner retires the guard.
+
+## Deferred programs
+
+### Re-evaluate Scout exposure after a routing-contract change
+
+Trigger only when a new Scout inventory changes `GET /api/quality` or `GET /api/verify`
+`x-routing`, description, request schema, or response schema. A version-only change does not trigger
+this work.
+
+Before an exposure candidate, rebuild the catalog and generated surfaces. Run the focused exposure
+tests and `npm run eval:routing -- --gate` without changing `eval/gates.json`. Compare the candidate
+against the current accepted 1.9.52 surface. Record the manifest hash and all routing lane totals.
+
+Two candidates were rejected with records. Scout 1.9.23 on 2026-09-03:
+`.agents/rounds/2026-09-03-truth-maintenance/final-routing-review-terra.md`. Scout 1.9.30 on
+2026-09-04: `.agents/rounds/2026-09-03-truth-maintenance/scout-1.9.30-drift-terra.md`. The 1.9.23
+review found `scout.verifyClaim` causes no routing regression on its own, but it may ship only
+after the general Scout routing regressions receive an independent resolution.
+
+Done when: a changed routing contract passes the existing gate and an independent review accepts the
+exposure decision. Otherwise, keep both operations in `EXCLUDED_SCOUT_OPS`.
+
+### Keep `sources.locate` deferred
+
+The owner deferred the program on 2026-08-28. The design and reopen rule live in
+`ideas/source-delivery-ranked-references.md` section 8. Its twelve design questions are not current
+owner questions.
+
+Every verified incident must prove source coverage rather than routing, answer craft, judge error,
+or golden error. It must meet all four section 8 conditions. Condition 3 requires live
+repository-recovery steering. No such steering is live because recovery v2 was rejected.
+
+Log incidents that meet conditions 1, 2, and 4 in the recovery item. Do not count them until
+condition 3 is satisfied. No trigger authorizes implementation.
+
+Done when: the full section 8 trigger fires and the owner approves a phase-zero study, or the owner
+retires the program.
+
+## Owner decisions
+
+Owner decisions that block agent work are listed once, in `NEXT.md` under "Owner decisions".
+Record each answer there or in `eval/qa/README.md`, then delete the question.
+
+## Usage archive follow-up
+
+### Verify scheduled collection and cleanup
+
+After the collector release, verify the next scheduled canary and daily retention cleanup in private storage.
+The hourly usage-health workflow detects stale canaries and possible collection gaps.
+Keep production counts and request identifiers out of this public task queue.
+
+Done when: private operational checks confirm the scheduled canary and cleanup succeeded.
+
+### Public history rewrite: closed without rewriting
+
+Decided 2026-09-17: the public Git history is not rewritten. GitHub organization ruleset 13736865
+blocked the reviewed force-push, and the owner chose to move on with a clean current tree instead.
+Older commits and PRs #151 through #155 still show the removed files. The plan, ref maps, and
+reviewer verdicts are kept in the private `stellar-raven-aux-priv-evidence` directory under `history-rewrite/`.
+
+Done.

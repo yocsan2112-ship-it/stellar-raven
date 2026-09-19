@@ -33,6 +33,21 @@ export function splitCard(token) {
   return { service: null, op: t };
 }
 
+/** Exact card-id match after applying the repository's card-prefix mapping. */
+export function cardMatchesExact(expectedCard, hit) {
+  const expected = splitCard(expectedCard);
+  if (!expected.service || canonToken(expected.service) !== canonToken(hit.service)) return false;
+  if (hit.service === "skills") {
+    return expected.op === canonToken(hit.id.split("#", 1)[0].split(".").at(-1));
+  }
+  const hitCanon = canonToken(hit.id);
+  const hitService = canonToken(hit.service);
+  const hitOp = hitCanon.startsWith(hitService + "_")
+    ? hitCanon.slice(hitService.length + 1)
+    : splitCard(hit.id).op;
+  return expected.op === hitOp;
+}
+
 /**
  * Tolerant card match between an expected card label (raven-next naming, e.g.
  * "lumenloop_search_directory") and a catalog hit (id "lumenloop.search_directory",
@@ -44,6 +59,7 @@ export function splitCard(token) {
  *      trivial substrings like "get").
  */
 export function cardMatches(expectedCard, hit) {
+  if (cardMatchesExact(expectedCard, hit)) return true;
   const exp = canonToken(expectedCard);
   const hitCanon = canonToken(hit.id);
   if (exp === hitCanon) return true;
@@ -60,19 +76,24 @@ export function cardMatches(expectedCard, hit) {
   return shorter.length >= 4 && longer.includes(shorter);
 }
 
+/** Service-only cards are outside the operation-level card@5 metric. */
+export function isServiceLevelCard(card) {
+  return splitCard(card).op === "mcp";
+}
+
 /**
  * Grade one case given its search hits (already limited to 5).
  * Returns { top1, top3, top5, cardHit5 } — cardHit5 is null when the case has
- * no expected_cards (card metric not applicable).
+ * no operation-level expected_cards (card metric not applicable).
  *
- * Accept-either (todo 809): when `expectedAny` is a non-empty array of services,
+ * Accept-either: when `expectedAny` is a non-empty array of services,
  * the result ADDITIONALLY carries { any1, any3, any5 } — a hit from ANY listed
  * service counts. The strict top1/top3/top5 fields are always computed against
  * `expectedService` alone and are unaffected, so legacy strict aggregates stay
  * byte-identical whether or not an overlay is applied.
  *
  * Grading rule v3 (ADR-0003): the manifest contains no `lumenloop.skill.*`
- * twins any more, so the v2 twin-identity layer (todo 816) is gone — a hit's
+ * twins, so a hit's
  * service label is exactly its own. Cross-service tolerance is expressed only
  * via expected_any.
  */
@@ -83,7 +104,11 @@ export function gradeCase(hits, expectedService, expectedCards, expectedAny) {
   const top5 = hits.slice(0, 5).some(svc);
   let cardHit5 = null;
   if (Array.isArray(expectedCards) && expectedCards.length > 0) {
-    cardHit5 = hits.slice(0, 5).some((h) => expectedCards.some((c) => cardMatches(c, h)));
+    // Service-level cards name no operation. Top-k already measures their service.
+    const opCards = expectedCards.filter((c) => !isServiceLevelCard(c));
+    if (opCards.length > 0) {
+      cardHit5 = hits.slice(0, 5).some((h) => opCards.some((c) => cardMatches(c, h)));
+    }
   }
   const result = { top1, top3, top5, cardHit5 };
   if (Array.isArray(expectedAny) && expectedAny.length > 0) {

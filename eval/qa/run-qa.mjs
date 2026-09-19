@@ -2,7 +2,7 @@
 /**
  * run-qa.mjs — agentic golden Q→A runner (the A/B referee's driver).
  *
- * Contract (scratchpad 516): run(question, {searchVariant}) → {answer, transcript};
+ * Contract: run(question, {searchVariant}) → {answer, transcript};
  * then judge(question, goldenAnswer, answer) → verdict. This script does both
  * per case and writes eval/qa/results/<stamp>.json + a console summary.
  *
@@ -17,10 +17,9 @@
  * After a run: file service-level findings in improvements/ per eval/EVALS.md.
  *
  * Usage:
- *   npx wrangler dev --port 8788 --host localhost   # in another terminal
- *   (--host localhost is required: with custom-domain routes configured,
- *   wrangler dev rewrites request.url to the production host and the
- *   DEV_ALLOW_UNAUTHENTICATED loopback gate 401s every request)
+ *   npm run dev:eval -- --port 8788   # in another terminal
+ *   (the launcher requires a clean worktree and compiles its commit into the
+ *   Worker's MCP serverInfo)
  *   node eval/qa/run-qa.mjs --variant A --sample 30 [--port 8788]
  *
  * Flags:
@@ -35,18 +34,53 @@
  *                      compile-qa.mjs for the committed sample.json)
  *   --ids a,b,c        run only these case ids (smoke tests)
  *   --port N           wrangler dev port (default 8788)
+ *   --upstream-port N  private Wrangler port when --port is the eval-only
+ *                      exact-old-runtime adapter listener
+ *   --adapter-mode add-missing|verify-native
+ *                      add the attested revision only for an old runtime, or
+ *                      require and preserve the candidate's native revision
+ *   --adapter-revision SHA
+ *                      clean runner revision that owns the adapter listener
+ *   --expect-adapter-sha256 HEX
+ *                      exact adapter implementation bytes
  *   --cases path       battery file (default eval/qa/cases.json). Named
- *                      hand-authored contracts include live-data-canonical-v2
+ *                      hand-authored contracts include live-data-canonical-v3
  *                      (corpus/live/live-cases.json) and live-digest-supplement-v2
  *                      (corpus/live/live-digest-supplement-cases.json); run separately.
  *   --model name       answering-agent model (default claude-sonnet-5)
  *   --judge-model name judge model (default judge.mjs JUDGE_MODEL)
+ *   --judge-panel N    force a 2- or 3-call judge panel. The default tier
+ *                      starts with one call and can escalate to three.
+ *   --max-panel-cases N cap boundary-triggered panels. The default is one-
+ *                      third of the selected denominator, rounded up, with
+ *                      a floor of 10 and a ceiling of 34. This flag or
+ *                      QA_MAX_PANEL_CASES overrides that default.
+ *                      Stability-triggered panels do not consume this cap.
+ *   --stability-register path
+ *                      use one frozen judge-stability register without
+ *                      regenerating it. Paired runs must share this pin.
+ *                      A pinned --judge-stored resume must reuse this path.
+ *                      Unpinned resumes can refresh and cannot enter pairing.
  *   --surface name     search-execute (default) | per-operation. The latter
  *                      starts the isolated stdio proxy harness for the
- *                      manifest's 50 operations and still uses the existing
+ *                      manifest's 60 operations and still uses the existing
  *                      local Wrangler server for adapter/executor traffic.
  *   --server-revision  git revision of the checkout running the already-bound
  *                      Wrangler process (recorded for reproducibility)
+ *   --expect-sha256    required SHA-256 of the bound MCP surface
+ *   --expect-agent-binary-sha256
+ *                      required SHA-256 of the capped Claude executable
+ *   --expect-agent-environment-sha256
+ *                      required SHA-256 pin for the inherited Claude
+ *                      environment. It must match before any answering-agent
+ *                      or judge call.
+ *   --remote-identity-probe path
+ *                      required executable that prints one exact
+ *                      qa-remote-identity-vector-v1 JSON object.
+ *   --expect-remote-identity-probe-sha256
+ *                      required SHA-256 of the remote identity probe bytes.
+ *   --expect-remote-identity-sha256
+ *                      required SHA-256 from the stable pre-arm probe vector.
  *   --no-judge         collect answers only (judge later)
  *   --judge-stored F   two-phase mode, phase 2: judge a saved --no-judge
  *                      results file IN PLACE (no server, no agent). Judges
@@ -55,22 +89,126 @@
  *                      Refuses if the case snapshot or judge tuple no longer
  *                      matches the recorded one (re-collect instead; the
  *                      loudly-labeled escape hatch stays re-judge.mjs).
+ *
+ * `re-judge.mjs` does not use stability tiering. Its default remains one
+ * judge call, or the fixed panel selected by its own `--judge-panel` flag.
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, renameSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, mkdirSync, renameSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { QA_DIR, loadCases, stratifiedSample, summarize, formatSummaryTable } from "./lib.mjs";
-import { buildTranscriptEvidence, judgeCase, JUDGE_MODEL, JUDGE_RUBRIC } from "./judge.mjs";
+import {
+  QA_DIR,
+  formatSummaryTable,
+  lifecycleSnapshot,
+  lifecycleSnapshotSha256,
+  loadCases,
+  partitionLifecycleCases,
+  stratifiedSample,
+  summarize
+} from "./lib.mjs";
+import {
+  buildAgentErrorVerdict,
+  buildTranscriptEvidence,
+  hasSuccessfulAnswer,
+  isRetryableJudgeError,
+  judgeInputSha256,
+  judgeCase,
+  judgeCaseTiered,
+  createPanelCaseBudget,
+  DEFAULT_PANEL_CASE_CEILING,
+  DEFAULT_PANEL_CASE_DIVISOR,
+  DEFAULT_PANEL_CASE_FLOOR,
+  defaultMaxPanelCases,
+  JUDGE_MODEL,
+  JUDGE_RUBRIC
+} from "./judge.mjs";
+import {
+  DEFAULT_STABILITY_REGISTER_PATH,
+  DEFAULT_STABILITY_RESULTS_DIR,
+  generateStabilityRegister,
+  JUDGE_STABILITY_THRESHOLD,
+  loadJudgeStabilityRegister
+} from "./judge-stability.mjs";
 import { verifySourceCases } from "./re-judge.mjs";
 import { PACK_VERSION } from "./evidence-pack.mjs";
+import { AGENT_RESULT_SCHEMA, parseAgentResult } from "./agent-result.mjs";
+import {
+  CASE_INPUT_IDENTITY,
+  caseInputPayload,
+  caseInputSha256
+} from "./paired-verdict.mjs";
+import { makeSearchResultProjector } from "./search-projection.mjs";
+import {
+  MCP_PROTOCOL_VERSION,
+  assertExpectedSourceRevision,
+  assertExpectedSurface,
+  parseMcpHttpPayload,
+  surfaceMetrics
+} from "../lib/mcp-surface.mjs";
+import {
+  REQUIRED_MCP_SERVER_NAME,
+  answeringAgentIsolationArgs,
+  answeringAgentIsolationRecord,
+  assertFailClosedCliSyntax,
+  assertNeutralAgentCwd,
+  assertRunPlan,
+  formatCompletenessNotice,
+  runCompleteness
+} from "../lib/harness-guards.mjs";
+import {
+  agentEnvironmentIdentity,
+  assertExpectedAgentEnvironment,
+  assertExpectedExecutable,
+  executableIdentity
+} from "../lib/executable-identity.mjs";
+import {
+  assertStableDualBoundServerIdentity,
+  assertStableBoundServerIdentity,
+  boundServerIdentity,
+  dualBoundServerIdentity
+} from "../lib/bound-server-identity.mjs";
+import {
+  ADAPTER_MODES,
+  RUNTIME_ADAPTER_SCHEMA,
+  adapterImplementationSha256,
+  fetchAdapterAttestation
+} from "./exact-old-runtime-adapter.mjs";
 import {
   PLAIN_SERVER_INSTRUCTIONS,
   loadPlainOperationSurface,
   operationIdFromPlainTool
 } from "./plain-operation-harness.mjs";
+import {
+  QA_TRACK_SCHEMA,
+  agentAttempts,
+  buildFiveTrackSummary,
+  costCompleteness,
+  formatFiveTrackSummary,
+  judgeAttempts,
+  rowOutcomeClass,
+  sha256Text
+} from "./five-track.mjs";
+import {
+  BudgetAuthorizationExceededError,
+  BudgetExhaustedError,
+  MissingReportedCostError,
+  authorizeSpend,
+  createSpendLedger,
+  formatBudgetUsd,
+  parseMaxBudgetUsd,
+  recordSpend,
+  resumeSpendLedger,
+  spendLedgerRecord
+} from "./spend-budget.mjs";
+import {
+  createRemoteIdentityGuard,
+  remoteIdentityProbeIdentity,
+  runRemoteIdentityGuardedCall
+} from "./remote-identity-guard.mjs";
+import { createPairedCollectionChildControl } from "./paired-collection-control.mjs";
 
 // Variant→tool mapping post-ADR-0001: A (host-side ranked query) shipped as
 // `search` (the `search_ranked` A/B alias retired with the decision). B
@@ -82,17 +220,424 @@ const AGENT_MODEL = "claude-sonnet-5";
 const MAX_TURNS = 24;
 const AGENT_TIMEOUT_MS = 10 * 60_000;
 const SURFACES = new Set(["search-execute", "per-operation"]);
+/** Repository root — the directory an answering agent must NOT be spawned in. */
+const REPO_ROOT = path.resolve(QA_DIR, "..", "..");
+const RUN_QA_VALUE_FLAGS = [
+  "--cases",
+  "--adapter-mode",
+  "--adapter-revision",
+  "--expect-agent-binary-sha256",
+  "--expect-adapter-sha256",
+  "--expect-agent-environment-sha256",
+  "--expect-remote-identity-probe-sha256",
+  "--expect-remote-identity-sha256",
+  "--expect-sha256",
+  "--ids",
+  "--judge-model",
+  "--judge-panel",
+  "--judge-stored",
+  "--max-budget-usd",
+  "--max-panel-cases",
+  "--model",
+  "--paired-control-arm",
+  "--port",
+  "--remote-identity-probe",
+  "--sample",
+  "--search-tool",
+  "--server-revision",
+  "--stability-register",
+  "--surface",
+  "--upstream-port",
+  "--variant"
+];
+const RUN_QA_BOOLEAN_FLAGS = ["--no-judge"];
+
+export function assertRunQaCliSyntax(args) {
+  assertFailClosedCliSyntax(args, {
+    valueFlags: RUN_QA_VALUE_FLAGS,
+    booleanFlags: RUN_QA_BOOLEAN_FLAGS,
+    label: "run-qa"
+  });
+}
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function hasSuccessfulAnswer(answer, error) {
-  return Boolean(answer) && !error;
+/** Float-noise guard for money totals; mirrors eval/qa/re-judge.mjs. */
+function roundUsd(total) {
+  return Number(total.toFixed(12));
 }
 
-function agentErrorRationale(error) {
-  return error === "success" ? "agent returned a transport/API error despite CLI success subtype" : (error ?? "empty answer");
+function sumReported(values) {
+  return roundUsd(values.reduce((sum, value) => sum + value, 0));
+}
+
+function reportedCosts(rows, pick) {
+  return rows.map(pick).filter((cost) => Number.isFinite(cost));
+}
+
+/**
+ * Spend provenance for one artifact. `judgeCase` can return a verdict with NO
+ * costUsd when the provider omits cost data (eval/qa/judge.mjs), and the old
+ * `costUsd ?? 0` totals made that indistinguishable from a genuinely free call —
+ * understating real spend with no trace. Totals now sum ONLY reported costs, and
+ * these counts say how many were reported out of how many were expected.
+ *
+ * Expected judge calls counts rows that actually reached a judge (answerable AND
+ * verdicted), so an unjudged row reads as unjudged rather than as a lost cost.
+ */
+export function parseJudgePanel(value) {
+  if (value === undefined) return 1;
+  const panelSize = Number(value);
+  if (!Number.isInteger(panelSize) || (panelSize !== 2 && panelSize !== 3)) {
+    throw new Error(`--judge-panel must be 2 or 3, got ${value}`);
+  }
+  return panelSize;
+}
+
+function parseRequiredFlagValue(args, flag) {
+  if (args.some((arg) => arg.startsWith(`${flag}=`))) {
+    throw new Error(`${flag}=<value> is not supported; use ${flag} <value>`);
+  }
+  const indexes = args
+    .map((arg, index) => arg === flag ? index : -1)
+    .filter((index) => index !== -1);
+  if (indexes.length === 0) throw new Error(`run-qa requires ${flag} for every paid run`);
+  if (indexes.length > 1) throw new Error(`run-qa accepts ${flag} exactly once`);
+  const value = args[indexes[0] + 1];
+  if (value === undefined || value.startsWith("--")) {
+    throw new Error(`${flag} requires a value`);
+  }
+  return value;
+}
+
+export function parseRuntimeAdapterFlags(args, {
+  publicPort,
+  runnerRevision,
+  serverRevision,
+  localImplementationSha256 = adapterImplementationSha256()
+}) {
+  const flags = ["--adapter-mode", "--adapter-revision", "--expect-adapter-sha256", "--upstream-port"];
+  const present = flags.filter((flag) => args.includes(flag) || args.some((arg) => arg.startsWith(`${flag}=`)));
+  if (present.length === 0) return null;
+  if (present.length !== flags.length) {
+    throw new Error(`run-qa runtime adapter requires ${flags.join(", ")}`);
+  }
+  const mode = parseRequiredFlagValue(args, "--adapter-mode");
+  if (!ADAPTER_MODES.has(mode)) throw new Error(`--adapter-mode must be add-missing or verify-native, got ${mode}`);
+  const adapterRevision = parseRequiredFlagValue(args, "--adapter-revision").toLowerCase();
+  if (!/^[a-f0-9]{40}$/.test(adapterRevision)) {
+    throw new Error("--adapter-revision must be a 40-character lowercase commit");
+  }
+  if (adapterRevision !== String(runnerRevision).toLowerCase()) {
+    throw new Error("run-qa requires the runtime adapter from the clean runner revision");
+  }
+  const implementationSha256 = parseRequiredFlagValue(args, "--expect-adapter-sha256");
+  if (!/^[a-f0-9]{64}$/.test(implementationSha256)) {
+    throw new Error("--expect-adapter-sha256 must be a 64-character lowercase SHA-256");
+  }
+  if (implementationSha256 !== localImplementationSha256) {
+    throw new Error("run-qa runtime adapter file does not match --expect-adapter-sha256");
+  }
+  const upstreamPortText = parseRequiredFlagValue(args, "--upstream-port");
+  if (!/^\d+$/.test(upstreamPortText)) throw new Error("--upstream-port must contain decimal digits");
+  const upstreamPort = Number(upstreamPortText);
+  if (!Number.isInteger(upstreamPort) || upstreamPort < 1 || upstreamPort > 65_535) {
+    throw new Error(`--upstream-port is invalid: ${upstreamPortText}`);
+  }
+  if (upstreamPort === publicPort) throw new Error("--upstream-port must differ from --port");
+  return {
+    schema: RUNTIME_ADAPTER_SCHEMA,
+    mode,
+    adapterRevision,
+    implementationSha256,
+    publicPort,
+    upstreamPort,
+    sourceRevision: serverRevision
+  };
+}
+
+/** Reject ambiguous selectors before they can expand a paid run. */
+export function parseOptionalIdsFlag(args) {
+  const flag = "--ids";
+  if (args.some((arg) => arg.startsWith(`${flag}=`))) {
+    throw new Error(`${flag}=<value> is not supported; use ${flag} <value>`);
+  }
+  const indexes = args
+    .map((arg, index) => arg === flag ? index : -1)
+    .filter((index) => index !== -1);
+  if (indexes.length > 1) throw new Error(`run-qa accepts ${flag} at most once`);
+  if (indexes.length === 0) return undefined;
+  const value = args[indexes[0] + 1];
+  if (value === undefined || value === "" || value.startsWith("--")) {
+    throw new Error(`${flag} requires a value`);
+  }
+  return value;
+}
+
+export function parseRequiredBudgetFlag(args) {
+  return parseMaxBudgetUsd(parseRequiredFlagValue(args, "--max-budget-usd"));
+}
+
+function parseRequiredAgentEnvironmentFlag(args) {
+  const flag = "--expect-agent-environment-sha256";
+  return parseRequiredFlagValue(args, flag);
+}
+
+export function parseMaxPanelCases(value) {
+  if (value === undefined) return null;
+  const trimmed = String(value).trim();
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error(`--max-panel-cases must contain only decimal digits, got ${value}`);
+  }
+  const maxPanelCases = Number(trimmed);
+  if (!Number.isSafeInteger(maxPanelCases)) {
+    throw new Error(`--max-panel-cases exceeds the safe integer range, got ${value}`);
+  }
+  return maxPanelCases;
+}
+
+export function parsePanelCaseOverride({
+  cliValue,
+  cliPresent = cliValue !== undefined,
+  environmentValue
+}) {
+  if (cliPresent) {
+    if (cliValue === undefined) {
+      throw new Error("--max-panel-cases requires decimal digits");
+    }
+    return {
+      maxPanelCases: parseMaxPanelCases(cliValue),
+      maxPanelCasesSource: "cli-override"
+    };
+  }
+  if (environmentValue !== undefined) {
+    return {
+      maxPanelCases: parseMaxPanelCases(environmentValue),
+      maxPanelCasesSource: "environment-override"
+    };
+  }
+  return { maxPanelCases: null, maxPanelCasesSource: "bounded-scaled-default" };
+}
+
+export function resolvePanelCaseLimit(
+  selectedCaseCount,
+  maxPanelCasesOverride = null,
+  overrideSource = "explicit-override"
+) {
+  const scaled = defaultMaxPanelCases(selectedCaseCount);
+  if (maxPanelCasesOverride == null) {
+    return {
+      selectedCaseCount,
+      maxPanelCases: scaled,
+      maxPanelCasesSource: "bounded-scaled-default"
+    };
+  }
+  if (!Number.isInteger(maxPanelCasesOverride) || maxPanelCasesOverride < 0) {
+    throw new Error(
+      `max panel cases override must be a non-negative integer, got ${maxPanelCasesOverride}`
+    );
+  }
+  return {
+    selectedCaseCount,
+    maxPanelCases: maxPanelCasesOverride,
+    maxPanelCasesSource: overrideSource
+  };
+}
+
+export function resolveStoredPanelCaseLimit({
+  selectedCaseCount,
+  storedJudgeTiering,
+  maxPanelCasesOverride = null,
+  overrideSource = "explicit-override"
+}) {
+  const storedMaxPanelCases = storedJudgeTiering?.maxPanelCases;
+  if (storedMaxPanelCases === undefined) {
+    return resolvePanelCaseLimit(selectedCaseCount, maxPanelCasesOverride, overrideSource);
+  }
+  if (!Number.isInteger(storedMaxPanelCases) || storedMaxPanelCases < 0) {
+    throw new Error(`--judge-stored: stored panel cap is invalid: ${storedMaxPanelCases}`);
+  }
+  const storedSelectedCaseCount = storedJudgeTiering?.selectedCaseCount;
+  if (
+    storedSelectedCaseCount !== undefined &&
+    storedSelectedCaseCount !== selectedCaseCount
+  ) {
+    throw new Error(
+      `--judge-stored: stored selected denominator ${storedSelectedCaseCount}; ` +
+      `current artifact has ${selectedCaseCount}`
+    );
+  }
+  if (maxPanelCasesOverride !== null && maxPanelCasesOverride !== storedMaxPanelCases) {
+    throw new Error(
+      `--judge-stored: stored panel cap ${storedMaxPanelCases}; ` +
+      `refusing to mix in ${maxPanelCasesOverride}`
+    );
+  }
+  return {
+    selectedCaseCount,
+    maxPanelCases: storedMaxPanelCases,
+    maxPanelCasesSource: storedJudgeTiering.maxPanelCasesSource ?? "stored-artifact"
+  };
+}
+
+export function panelCaseCounts(rows) {
+  let boundaryEligibleCases = 0;
+  let panelUsedCases = 0;
+  let panelSkippedCases = 0;
+  let boundaryPanelCases = 0;
+  for (const row of rows ?? []) {
+    const tier = row.verdict?.meta;
+    const used = tier?.judgeTierUsed === "panel";
+    const skipped = tier?.panelEscalationSkipped === "max-panel-cases";
+    const boundaryEligible = String(tier?.escalationReason ?? "").startsWith("boundary-");
+    if (boundaryEligible) boundaryEligibleCases += 1;
+    if (used) panelUsedCases += 1;
+    if (skipped) panelSkippedCases += 1;
+    if (used && boundaryEligible) {
+      boundaryPanelCases += 1;
+    }
+  }
+  return { boundaryEligibleCases, panelUsedCases, panelSkippedCases, boundaryPanelCases };
+}
+
+export function formatPanelSummary(judgeTiering, phase = "after") {
+  return (
+    `judge panels ${phase}: cap ${judgeTiering.maxPanelCases} · ` +
+    `source ${judgeTiering.maxPanelCasesSource} · selected ${judgeTiering.selectedCaseCount} · ` +
+    `boundary-eligible ${judgeTiering.boundaryEligibleCases} · ` +
+    `used ${judgeTiering.panelUsedCases} · skipped ${judgeTiering.panelSkippedCases}`
+  );
+}
+
+export function prepareJudgeStabilityRegister({
+  resultsDir = DEFAULT_STABILITY_RESULTS_DIR,
+  registerPath = DEFAULT_STABILITY_REGISTER_PATH,
+  pinnedPath = null,
+  log = console.log,
+  warn = console.warn
+} = {}) {
+  const selectedPath = path.resolve(pinnedPath ?? registerPath);
+  if (pinnedPath) {
+    const loaded = loadJudgeStabilityRegister(selectedPath, { verifySources: false });
+    if (loaded.status !== "available") {
+      throw new Error(
+        `--stability-register is not an available register: ${loaded.reason ?? loaded.status}`
+      );
+    }
+    log(`judge-stability pin: ${selectedPath} · sha256 ${loaded.sha256}`);
+    return { ...loaded, source: "pinned", path: selectedPath };
+  }
+  if (existsSync(resultsDir)) {
+    try {
+      const generated = generateStabilityRegister({ resultsDir, outPath: selectedPath });
+      log(
+        `judge-stability refresh: ${generated.caseCount} case(s) from ` +
+        `${generated.sourceArtifactCount} artifact(s)`
+      );
+    } catch (error) {
+      warn(
+        `warning: judge-stability refresh failed; continuing without a hard dependency: ` +
+        `${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+  return {
+    ...loadJudgeStabilityRegister(selectedPath),
+    source: "regenerated",
+    path: selectedPath
+  };
+}
+
+export function judgeTieringMetadata({
+  judgePanel,
+  stabilityRegister,
+  panelLimit,
+  rows
+}) {
+  const counts = panelCaseCounts(rows);
+  return {
+    policy: judgePanel > 1 ? "forced-panel" : "stability-boundary-v1",
+    judgePanel,
+    stabilityThreshold: JUDGE_STABILITY_THRESHOLD,
+    stabilityRegisterStatus: stabilityRegister.status,
+    stabilityRegisterSource: stabilityRegister.source ?? "regenerated",
+    stabilityRegisterPath: stabilityRegister.path ?? null,
+    stabilityRegisterReason: stabilityRegister.reason ?? null,
+    stabilityRegisterSha256: stabilityRegister.sha256 ?? null,
+    stabilityRegisterGeneratedAt: stabilityRegister.generatedAt ?? null,
+    stabilityRegisterSourceArtifactCount: stabilityRegister.sourceArtifactCount ?? null,
+    stabilityRegisterCaseCount: stabilityRegister.caseCount ?? 0,
+    selectedCaseCount: panelLimit.selectedCaseCount,
+    maxPanelCases: panelLimit.maxPanelCases,
+    maxPanelCasesSource: panelLimit.maxPanelCasesSource,
+    defaultPanelPolicy: {
+      kind: "clamped-one-third",
+      numerator: 1,
+      denominator: DEFAULT_PANEL_CASE_DIVISOR,
+      rounding: "ceil",
+      floor: DEFAULT_PANEL_CASE_FLOOR,
+      ceiling: DEFAULT_PANEL_CASE_CEILING
+    },
+    ...counts
+  };
+}
+
+/**
+ * Ordinal and core-answer shares over the active rows. Every share is a
+ * count ratio over grades, so each value lies in [0, 1] or is null.
+ *
+ * There is deliberately no key-fact coverage share. `verdict.missingFacts`
+ * is judge prose, not an index into `golden.keyFacts`: one judge may write
+ * several entries for one fact or one entry for several facts, and a panel
+ * unions every vote's paraphrases. A count ratio over that list has no valid
+ * meaning and went negative on 49 panel rows of the 2026-09-04 500-case arm.
+ */
+export const RETIRED_MEASUREMENT_METRIC_KEYS = Object.freeze([
+  "meanContinuousCoverage",
+  "continuousCoverageRowCount"
+]);
+
+export function qaMeasurementMetrics(rows) {
+  const verdictRows = rows.filter((row) => typeof row.verdict?.score === "string");
+  const gradedRows = verdictRows.filter((row) => ["correct", "partial", "wrong"].includes(row.verdict.score));
+  const correctRows = rows.filter((row) => row.verdict?.score === "correct").length;
+  const partialRows = rows.filter((row) => row.verdict?.score === "partial").length;
+  const coreCorrectRows = gradedRows.filter((row) => row.verdict.coreAnswer === "correct").length;
+  const gradedCoreAnswerNullCount = gradedRows.filter((row) => row.verdict.coreAnswer == null).length;
+  return {
+    halfCreditShare: rows.length ? (correctRows + partialRows / 2) / rows.length : null,
+    strictCorrectShare: rows.length ? correctRows / rows.length : null,
+    coreAnswerCorrectShare: gradedRows.length ? coreCorrectRows / gradedRows.length : null,
+    gradedCoreAnswerNullCount,
+    coreAnswerVerdictCount: gradedRows.length
+  };
+}
+
+export function formatMeasurementMetrics(metrics) {
+  const share = (value) => value == null ? "n/a" : `${(value * 100).toFixed(1)}%`;
+  return [
+    `half-credit ${share(metrics.halfCreditShare)}`,
+    `strict-correct ${share(metrics.strictCorrectShare)}`,
+    `core-answer-correct ${share(metrics.coreAnswerCorrectShare)} (${metrics.gradedCoreAnswerNullCount} graded null)`
+  ].join(" · ");
+}
+
+/** Totals over REPORTED costs only, plus the counts that qualify them. */
+function costTotals(rows) {
+  const answerAttempts = rows.flatMap((row) => agentAttempts(row));
+  const storedJudgeAttempts = rows.flatMap((row) => judgeAttempts(row));
+  const agentCosts = reportedCosts(answerAttempts, (attempt) => attempt.costUsd);
+  const judgeCosts = storedJudgeAttempts.length
+    ? reportedCosts(storedJudgeAttempts, (attempt) => attempt.costUsd)
+    : reportedCosts(rows, (row) => row.verdict?.costUsd);
+  return {
+    totalAgentCostUsd: sumReported(agentCosts),
+    totalJudgeCostUsd: sumReported(judgeCosts),
+    totalCostUsd: sumReported([...agentCosts, ...judgeCosts]),
+    costAccounting: costCompleteness(rows)
+  };
 }
 
 function gitValue(args) {
@@ -100,16 +645,93 @@ function gitValue(args) {
   return result.status === 0 ? String(result.stdout).trim() : null;
 }
 
-function sourceIdentity(serverRevision) {
-  const status = gitValue(["status", "--porcelain=v1", "--untracked-files=all"]);
+export function assertPinnedServerRevision(serverRevision, repoRoot = path.resolve(QA_DIR, "..", "..")) {
+  const revision = typeof serverRevision === "string" ? serverRevision.trim() : "";
+  if (!revision) {
+    throw new Error("--server-revision is required before collection");
+  }
+  if (!/^[a-f0-9]{40}$/i.test(revision)) {
+    throw new Error("--server-revision must be an immutable 40-character Git commit SHA");
+  }
+  const resolved = spawnSync("git", ["rev-parse", "--verify", `${revision}^{commit}`], {
+    cwd: repoRoot,
+    encoding: "utf8"
+  });
+  if (resolved.status !== 0 || String(resolved.stdout).trim().toLowerCase() !== revision.toLowerCase()) {
+    throw new Error(`--server-revision ${revision} does not resolve to an exact local commit`);
+  }
+  return String(resolved.stdout).trim();
+}
+
+export function assertCollectionSourceIdentity(identity) {
+  if (!identity || identity.runnerDirty !== false) {
+    throw new Error("QA collection requires a clean runner working tree");
+  }
+  if (!/^[a-f0-9]{40}$/i.test(identity.runnerRevision ?? "")) {
+    throw new Error("QA collection requires an immutable runner revision");
+  }
+  if (!/^[a-f0-9]{40}$/i.test(identity.serverRevision ?? "")) {
+    throw new Error("QA collection requires an immutable server revision");
+  }
+  if (!/^[a-f0-9]{64}$/.test(identity.qaImplementationSha256 ?? "")) {
+    throw new Error("QA collection requires an exact QA implementation hash");
+  }
+  return identity;
+}
+
+export function sourceIdentityGuard(before, after) {
+  const changedKeys = [...new Set([...Object.keys(before ?? {}), ...Object.keys(after ?? {})])]
+    .sort()
+    .filter((key) => JSON.stringify(before?.[key]) !== JSON.stringify(after?.[key]));
+  return changedKeys.length ? { matches: false, changedKeys } : { matches: true };
+}
+
+export function collectionGitStatus(status) {
+  if (status === null) return null;
+  return status
+    .split("\n")
+    .filter((line) => line && line !== "?? eval/qa/judge-stability.json")
+    .join("\n");
+}
+
+export function sourceIdentity(serverRevision) {
+  const repoRoot = path.resolve(QA_DIR, "..", "..");
+  const statusResult = spawnSync(
+    "git",
+    ["status", "--porcelain=v1", "--untracked-files=all"],
+    { cwd: repoRoot, encoding: "utf8" }
+  );
+  const status = statusResult.status === 0
+    ? collectionGitStatus(String(statusResult.stdout))
+    : null;
+  const libraryDir = path.resolve(QA_DIR, "../lib");
+  const fileSha256 = (name) => sha256(readFileSync(path.join(QA_DIR, name), "utf8"));
+  const qaImplementationFiles = [
+    ...readdirSync(QA_DIR)
+      .filter((name) => name.endsWith(".mjs"))
+      .map((name) => ({ label: name, filePath: path.join(QA_DIR, name) })),
+    ...readdirSync(libraryDir)
+      .filter((name) => name.endsWith(".mjs"))
+      .map((name) => ({ label: `../lib/${name}`, filePath: path.join(libraryDir, name) }))
+  ];
+  const qaImplementationRecords = qaImplementationFiles
+    .sort((a, b) => a.label.localeCompare(b.label))
+    .map(({ label, filePath }) => `${label}\0${sha256(readFileSync(filePath, "utf8"))}`)
+    .join("\n");
   return {
     runnerRevision: gitValue(["rev-parse", "HEAD"]),
     runnerDirty: status === null ? null : status.length > 0,
     runnerStatusSha256: status === null ? null : sha256(status),
     serverRevision: serverRevision ?? null,
-    manifestFileSha256: sha256(readFileSync(path.join(path.resolve(QA_DIR, "..", ".."), "catalog", "manifest.json"), "utf8")),
-    runnerFileSha256: sha256(readFileSync(path.join(QA_DIR, "run-qa.mjs"), "utf8")),
-    plainHarnessFileSha256: sha256(readFileSync(path.join(QA_DIR, "plain-operation-harness.mjs"), "utf8"))
+    qaImplementationSha256: sha256(qaImplementationRecords),
+    manifestFileSha256: sha256(readFileSync(path.join(repoRoot, "catalog", "manifest.json"), "utf8")),
+    runnerFileSha256: fileSha256("run-qa.mjs"),
+    agentResultFileSha256: fileSha256("agent-result.mjs"),
+    evidencePackFileSha256: fileSha256("evidence-pack.mjs"),
+    judgeFileSha256: fileSha256("judge.mjs"),
+    plainHarnessFileSha256: fileSha256("plain-operation-harness.mjs"),
+    runtimeAdapterFileSha256: fileSha256("exact-old-runtime-adapter.mjs"),
+    p6SelfTestWrapperFileSha256: fileSha256("run-p6-judge-self-test.mjs")
   };
 }
 
@@ -122,6 +744,7 @@ The tools are named mcp__raven__<service>_<operation> for the lumenloop, scout, 
 
 Rules:
 - Ground every specific claim (names, numbers, SEP/CAP ids, commands, URLs) in tool results. Never invent them.
+- State an as-of date for each changeable roster, status, or value. Keep exact symbols, types, and formulas from tool results.
 - Tool results use { ok: true, data } | { ok: false, error }; read payload under data, and treat soft-empty as inconclusive.
 - If the tools cannot support an answer — the question is out of scope, the thing does not exist, or the request itself is something you should not do — say that plainly and briefly instead of guessing or playing along.
 - Do not use any tool outside the raven MCP operation set.
@@ -140,6 +763,7 @@ Workflow: call ${searchTool} first with a short intent phrase, read the hits, th
 
 Rules:
 - Ground every specific claim (names, numbers, SEP/CAP ids, commands, URLs) in tool results. Never invent them.
+- State an as-of date for each changeable roster, status, or value. Keep exact symbols, types, and formulas from tool results.
 - If the tools cannot support an answer — the question is out of scope, the thing does not exist, or the request itself is something you should not do — say that plainly and briefly instead of guessing or playing along.
 - Do not use any tool other than the two named above.
 - Your FINAL message must be the answer itself: concise, fact-dense, with source URLs from tool results where available. No preamble, no meta-commentary about tools.
@@ -149,12 +773,25 @@ QUESTION:
 ${question}`;
 }
 
-/** Run one answering agent; returns { answer, transcript, costUsd, turns, error? } */
-function runAgent(question, { surface, searchTool, allowedTools, mcpConfigPath, model }) {
-  const prompt = agentPrompt(question, { surface, searchTool });
-  const res = spawnSync(
-    "claude",
-    [
+/**
+ * Build the exact spawn for one answering agent. Exported so the neutral
+ * working directory is assertable without paying for a live agent call: the
+ * `cwd` is the whole of precondition P2 and it is invisible in the artifact.
+ */
+export function buildAgentSpawn({
+  prompt,
+  allowedTools,
+  mcpConfigPath,
+  model,
+  cwd,
+  command = "claude",
+  environment = process.env,
+  maxBudgetUsd = null
+}) {
+  assertNeutralAgentCwd(cwd, { repoRoot: REPO_ROOT, label: "run-qa answering agent" });
+  return {
+    command,
+    args: [
       "-p",
       "--model",
       model,
@@ -164,118 +801,330 @@ function runAgent(question, { surface, searchTool, allowedTools, mcpConfigPath, 
       "--mcp-config",
       mcpConfigPath,
       "--strict-mcp-config",
+      ...(maxBudgetUsd === null ? [] : ["--max-budget-usd", formatBudgetUsd(maxBudgetUsd)]),
+      ...answeringAgentIsolationArgs(environment),
       "--allowedTools",
       allowedTools.join(","),
       "--max-turns",
       String(MAX_TURNS)
     ],
-    {
+    options: {
       input: prompt,
       encoding: "utf8",
       timeout: AGENT_TIMEOUT_MS,
-      maxBuffer: 64 * 1024 * 1024
+      maxBuffer: 64 * 1024 * 1024,
+      // The agent under test must not read this repository's AGENTS.md and
+      // CLAUDE.md — they describe the measurement grading it.
+      cwd
     }
-  );
-  if (res.error) {
-    return { answer: "", transcript: [], promptChars: prompt.length, error: `agent spawn failed: ${res.error.message}` };
-  }
-  const transcript = [];
-  let answer = "";
-  let costUsd;
-  let turns;
-  let usage;
-  let resultError;
-  for (const line of String(res.stdout).split("\n")) {
-    if (!line.trim().startsWith("{")) continue;
-    let msg;
-    try {
-      msg = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (msg.type === "assistant" && Array.isArray(msg.message?.content)) {
-      for (const block of msg.message.content) {
-        if (block.type === "tool_use") {
-          const rawInput = JSON.stringify(block.input ?? {});
-          const isPlainOperation = operationIdFromPlainTool(String(block.name).replace(/^mcp__[^_]+__/, "")) !== null;
-          transcript.push({
-            toolUseId: block.id,
-            tool: block.name,
-            // execute inputs are kept whole — eval/plan/grade-plan.mjs parses
-            // the {code} for service-op extraction; other tools stay sliced.
-            input: block.name.endsWith("execute") || isPlainOperation ? rawInput : rawInput.slice(0, 600)
-          });
-        }
-      }
-    } else if (msg.type === "user" && Array.isArray(msg.message?.content)) {
-      for (const block of msg.message.content) {
-        if (block.type === "tool_result") {
-          const entry = transcript.find((t) => t.toolUseId === block.tool_use_id);
-          if (entry) {
-            const text = Array.isArray(block.content)
-              ? block.content.map((c) => c.text ?? "").join("")
-              : String(block.content ?? "");
-            entry.resultChars = text.length;
-            entry.isError = Boolean(block.is_error);
-            // execute RESULTS are kept whole (mirror of the execute-inputs-whole
-            // precedent above) — eval/qa/analyze-composition.mjs reads them for
-            // truncation footers and skill.run `calls` tallies. Bounded: the server
-            // already caps execute results at ~6k tokens via truncateForModel
-            // (src/policy/truncate.ts), so whole capture cannot balloon the file.
-            const bareToolName = String(entry.tool).replace(/^mcp__[^_]+__/, "");
-            if (entry.tool.endsWith("execute") || operationIdFromPlainTool(bareToolName)) entry.result = text;
-          }
-        }
-      }
-    } else if (msg.type === "result") {
-      answer = msg.result ?? "";
-      costUsd = msg.total_cost_usd;
-      turns = msg.num_turns;
-      usage = msg.usage;
-      if (msg.is_error) resultError = msg.subtype ?? "agent result is_error";
-    }
-  }
-  if (!answer && !resultError) {
-    resultError = `no result message (exit ${res.status}); stderr: ${String(res.stderr).slice(0, 400)}`;
-  }
-  return { answer, transcript, costUsd, turns, usage, promptChars: prompt.length, error: resultError };
-}
-
-function surfaceMetrics(tools, instructions) {
-  const serializedTools = JSON.stringify({ tools });
-  const instructionsChars = String(instructions ?? "").length;
-  const advertisedWireChars = serializedTools.length + instructionsChars;
-  return {
-    toolCount: tools.length,
-    descriptionsChars: tools.reduce((sum, tool) => sum + String(tool.description ?? "").length, 0),
-    inputSchemaChars: tools.reduce((sum, tool) => sum + JSON.stringify(tool.inputSchema ?? {}).length, 0),
-    serializedToolsChars: serializedTools.length,
-    instructionsChars,
-    advertisedWireChars,
-    estimatedAdvertisedWireTokens: Math.ceil(advertisedWireChars / 4),
-    metricMeaning: "serialized MCP tool definitions plus server instructions; not consumed model context",
-    surfaceSha256: sha256(`${instructions ?? ""}\n${serializedTools}`)
   };
 }
 
-async function preflight(port, { surface, searchTool, plainSurface }) {
+/**
+ * Run one answering agent once and hand the raw spawn to the pure parser.
+ * The caller owns the transport-only retry and its total budget ledger.
+ */
+export function runAgent(question, {
+  surface,
+  searchTool,
+  allowedTools,
+  mcpConfigPath,
+  model,
+  agentCwd,
+  agentCommand,
+  maxBudgetUsd = null
+}) {
+  const prompt = agentPrompt(question, { surface, searchTool });
+  const spawn = buildAgentSpawn({
+    prompt,
+    allowedTools,
+    mcpConfigPath,
+    model,
+    cwd: agentCwd,
+    command: agentCommand,
+    maxBudgetUsd
+  });
+  const res = spawnSync(spawn.command, spawn.args, spawn.options);
+  const searchToolNames =
+    surface === "search-execute" ? [`mcp__raven__${searchTool}`] : [];
+  const isSearchTool = (tool) => searchToolNames.includes(String(tool));
+  const keepWholeResult = (tool) =>
+    tool.endsWith("execute") || operationIdFromPlainTool(String(tool).replace(/^mcp__[^_]+__/, "")) !== null;
+  const parsed = parseAgentResult(
+    {
+      stdout: res.stdout ?? "",
+      stderr: res.stderr ?? "",
+      status: res.status,
+      signal: res.signal,
+      spawnError: res.error ? { message: res.error.message, code: res.error.code } : null
+    },
+    {
+      promptChars: prompt.length,
+      // execute inputs/results are kept whole — eval/plan/grade-plan.mjs parses
+      // the {code} for service-op extraction and eval/qa/analyze-composition.mjs
+      // reads the results for truncation footers and skill.run `calls` tallies.
+      // Bounded: the server already caps execute results at ~6k tokens via
+      // truncateForModel (src/policy/truncate.ts). The per-operation surface's
+      // manifest tools get the same whole treatment for the same reason.
+      keepWholeResult,
+      // The search QUERY is the routing behaviour under test, so it is never
+      // sliced. Its RESULT includes descriptions, signatures, and conditional
+      // response guidance, so it is projected instead of stored.
+      keepWholeInput: (tool) => keepWholeResult(tool) || isSearchTool(tool),
+      projectResult: makeSearchResultProjector(searchToolNames),
+      requiredMcpServerName: REQUIRED_MCP_SERVER_NAME
+    }
+  );
+  return {
+    ...parsed,
+    inputSha256: sha256(prompt),
+    answerSha256: sha256Text(parsed.answer)
+  };
+}
+
+function agentAttemptRecord(run, number, durationMs) {
+  return {
+    number,
+    inputSha256: run.inputSha256,
+    answerSha256: run.answerSha256,
+    failureClass: run.failure?.class ?? null,
+    costUsd: Number.isFinite(run.costUsd) ? run.costUsd : null,
+    answer: run.answer,
+    transcript: run.transcript,
+    agent: {
+      turns: run.turns,
+      costUsd: run.costUsd,
+      usage: run.usage,
+      mcpServers: run.mcpServers,
+      promptChars: run.promptChars,
+      stderr: run.stderr,
+      failure: run.failure
+    },
+    artifacts: run.artifacts,
+    durationMs
+  };
+}
+
+function budgetFailureVerdict(error, calls) {
+  return {
+    score: "error",
+    coreAnswer: null,
+    missingFacts: [],
+    wrongClaims: [],
+    avoidMatches: [],
+    consistencyViolations: [],
+    rationale: error.message,
+    failureClass: error instanceof BudgetExhaustedError ? "budget-exhausted" : "budget-cost",
+    rubric: JUDGE_RUBRIC,
+    packVersion: PACK_VERSION,
+    promptSha256: calls[0]?.inputSha256 ?? null
+  };
+}
+
+/** One judge method attempt. Its calls retain panel-call costs separately. */
+export async function runJudgeAttempt(
+  input,
+  {
+    number,
+    kind,
+    judgeModel,
+    judgePanel,
+    judge,
+    stabilityRegister,
+    panelBudget,
+    spendLedger
+  }
+) {
+  const calls = [];
+  const inputSha256 = judgeInputSha256(input);
+  const budgetedJudge = async (judgeInput, judgeOptions) => {
+    const callNumber = calls.length + 1;
+    const authorization = authorizeSpend(spendLedger, {
+      method: "judge",
+      id: input.id,
+      attempt: `${number}.${callNumber}`
+    });
+    const verdict = await judge(judgeInput, {
+      ...judgeOptions,
+      maxBudgetUsd: authorization.maxBudgetUsd
+    });
+    const call = {
+      number: callNumber,
+      inputSha256: verdict?.promptSha256 ?? inputSha256,
+      answerSha256: sha256Text(input.candidateAnswer),
+      failureClass: verdict?.failureClass ?? null,
+      costUsd: Number.isFinite(verdict?.costUsd) ? verdict.costUsd : null,
+      verdict
+    };
+    calls.push(call);
+    try {
+      recordSpend(spendLedger, authorization, verdict?.costUsd);
+    } catch (error) {
+      error.judgeCall = call;
+      throw error;
+    }
+    return verdict;
+  };
+  let verdict;
+  try {
+    verdict = await judgeCaseTiered(input, {
+      model: judgeModel,
+      judgePanel,
+      judge: budgetedJudge,
+      stabilityRegister,
+      panelBudget
+    });
+  } catch (error) {
+    if (calls.length === 0) throw error;
+    const attempt = {
+      number,
+      kind,
+      inputSha256,
+      answerSha256: sha256Text(input.candidateAnswer),
+      failureClass:
+        error instanceof BudgetExhaustedError ? "budget-exhausted" :
+          error instanceof MissingReportedCostError || error.code === "budget-cost" ? "budget-cost" : "harness",
+      costUsd: calls.some((call) => Number.isFinite(call.costUsd))
+        ? sumReported(calls.filter((call) => Number.isFinite(call.costUsd)).map((call) => call.costUsd))
+        : null,
+      verdict: budgetFailureVerdict(error, calls),
+      calls
+    };
+    error.judgeAttempt = attempt;
+    throw error;
+  }
+  return {
+    number,
+    kind,
+    inputSha256: verdict.promptSha256 ?? inputSha256,
+    answerSha256: sha256Text(input.candidateAnswer),
+    failureClass: verdict.failureClass ?? null,
+    costUsd: Number.isFinite(verdict.costUsd) ? verdict.costUsd : null,
+    verdict,
+    calls
+  };
+}
+
+/** Enforce one total eligible retry across inline and stored judging. */
+export async function judgeRowWithRetry(input, options, existingAttempts = []) {
+  const attempts = existingAttempts;
+  const onAttempt = options.onAttempt ?? (() => {});
+  const first = attempts[0] ?? null;
+  if (!first) {
+    const attempt = await runJudgeAttempt(input, {
+      ...options,
+      number: 1,
+      kind: "initial"
+    });
+    attempts.push(attempt);
+    await onAttempt(attempts);
+  }
+  if (attempts.length === 1 && isRetryableJudgeError(attempts[0].verdict)) {
+    const retry = await runJudgeAttempt(input, {
+      ...options,
+      number: 2,
+      kind: "retry"
+    });
+    attempts.push(retry);
+    await onAttempt(attempts);
+  }
+  return attempts;
+}
+
+function isRequiredMcpServerFailure(failure) {
+  return (
+    failure?.class === "protocol" &&
+    String(failure.reason ?? "").startsWith(`required MCP server ${REQUIRED_MCP_SERVER_NAME}`)
+  );
+}
+
+export function isRetryableAgentFailure(failure) {
+  return failure?.class === "transport" && failure.retryable === true;
+}
+
+/** Build the production five-track report from the immutable selected cases. */
+export function buildRunnerTracks({ selectedCases, rows, unjudgedSelectedIds = null, lifecyclePartition = null }) {
+  const partition = lifecyclePartition ?? partitionLifecycleCases(selectedCases);
+  return buildFiveTrackSummary({
+    selectedIds: partition.selected.map((kase) => kase.id),
+    activeSelectedIds: partition.activeIds,
+    quarantinedIds: partition.quarantinedIds,
+    selectedTrapIds: partition.active.filter((kase) => Boolean(kase.tags?.trap)).map((kase) => kase.id),
+    rows,
+    unjudgedSelectedIds
+  });
+}
+
+export function verifyStoredLifecycleSnapshot(results, currentSelectedCases) {
+  const snapshot = results.meta?.inputSnapshot?.lifecycle;
+  const expectedSha256 = results.meta?.inputSnapshot?.lifecycleSha256;
+  if (!Array.isArray(snapshot) || !/^[a-f0-9]{64}$/.test(expectedSha256 ?? "")) {
+    throw new Error("--judge-stored: a valid collection-time lifecycle snapshot is required; re-collect");
+  }
+  if (lifecycleSnapshotSha256(snapshot) !== expectedSha256) {
+    throw new Error("--judge-stored: the collection-time lifecycle snapshot digest is invalid; re-collect");
+  }
+  const rowIds = results.rows.map((row) => row.id);
+  const snapshotIds = snapshot.map((entry) => entry?.id);
+  if (JSON.stringify(snapshotIds) !== JSON.stringify(rowIds)) {
+    throw new Error("--judge-stored: the collection-time lifecycle snapshot does not match the stored row order; re-collect");
+  }
+  if (results.meta?.selectedIds && JSON.stringify(snapshotIds) !== JSON.stringify(results.meta.selectedIds)) {
+    throw new Error("--judge-stored: the collection-time lifecycle snapshot does not match selectedIds; re-collect");
+  }
+  const rowSnapshot = results.rows.map((row) => ({ id: row.id, lifecycle: row.truth?.lifecycle }));
+  if (JSON.stringify(rowSnapshot) !== JSON.stringify(snapshot)) {
+    throw new Error("--judge-stored: stored row lifecycle differs from the collection snapshot; re-collect");
+  }
+  const currentSnapshot = lifecycleSnapshot(currentSelectedCases);
+  if (JSON.stringify(currentSnapshot) !== JSON.stringify(snapshot)) {
+    throw new Error("--judge-stored: current lifecycle differs from the collection snapshot; re-collect");
+  }
+  const selectedCases = currentSelectedCases.map((kase, index) => ({
+    ...kase,
+    truth: { ...kase.truth, lifecycle: snapshot[index].lifecycle }
+  }));
+  return { snapshot, selectedCases, partition: partitionLifecycleCases(selectedCases) };
+}
+
+/** Raw judge-score diagnostics are not the T1 quality or T3 safety report. */
+export function formatRawFirstAttemptDiagnostics(summary) {
+  return [
+    "raw first-attempt judge-score diagnostics (not T1 quality or T3 safety)",
+    formatSummaryTable(summary, { includeTraps: false })
+  ].join("\n");
+}
+
+export async function probeLiveSurface(port, { surface, searchTool, plainSurface }) {
+  if (surface === "per-operation" && !plainSurface) {
+    throw new Error('probeLiveSurface requires plainSurface for the "per-operation" surface');
+  }
   const url = `http://localhost:${port}/mcp`;
   const post = async (body) => {
     const r = await fetch(url, {
       method: "POST",
-      headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        // The synchronous agent can outlive Wrangler's pooled socket. Use a fresh
+        // connection for each probe; see research/audits/2026-08-27-qa-postflight-keepalive.md.
+        connection: "close"
+      },
       body: JSON.stringify(body)
     });
     const text = await r.text();
     if (!r.ok) throw new Error(`${url} → HTTP ${r.status}: ${text.slice(0, 200)}`);
-    const data = text.startsWith("event:") ? text.split("data: ")[1] : text;
-    return JSON.parse(data.trim().split("\n")[0]);
+    return parseMcpHttpPayload(text);
   };
   const initialized = await post({
     jsonrpc: "2.0",
     id: 1,
     method: "initialize",
-    params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "run-qa", version: "0" } }
+    params: {
+      protocolVersion: MCP_PROTOCOL_VERSION,
+      capabilities: {},
+      clientInfo: { name: "run-qa", version: "0" }
+    }
   });
   const list = await post({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
   const upstreamTools = list.result?.tools ?? [];
@@ -293,13 +1142,15 @@ async function preflight(port, { surface, searchTool, plainSurface }) {
     return {
       upstreamNames: names,
       exposedNames: plainSurface.tools.map((tool) => tool.name),
-      metrics: { ...plainSurface.metrics, instructionsSha256: sha256(PLAIN_SERVER_INSTRUCTIONS) }
+      metrics: { ...plainSurface.metrics, instructionsSha256: sha256(PLAIN_SERVER_INSTRUCTIONS) },
+      serverInfo: initialized.result?.serverInfo ?? null
     };
   }
   return {
     upstreamNames: names,
     exposedNames: names,
-    metrics: surfaceMetrics(upstreamTools, initialized.result?.instructions)
+    metrics: surfaceMetrics(upstreamTools, initialized.result?.instructions),
+    serverInfo: initialized.result?.serverInfo ?? null
   };
 }
 
@@ -317,17 +1168,54 @@ async function preflight(port, { surface, searchTool, plainSurface }) {
  */
 export async function judgeStoredResults(
   resultsPath,
-  { judgeModel = JUDGE_MODEL, judge = judgeCase, log = console.log } = {}
+  {
+    judgeModel = JUDGE_MODEL,
+    judgePanel = 1,
+    judge = judgeCase,
+    judgeBinary = null,
+    judgeEnvironment = null,
+    maxPanelCases = null,
+    maxPanelCasesSource = "explicit-override",
+    stabilityRegister = loadJudgeStabilityRegister(),
+    maxBudgetUsd = null,
+    log = console.log
+  } = {}
 ) {
   const sourceText = readFileSync(resultsPath, "utf8");
   const results = JSON.parse(sourceText);
+  if (results.meta?.comparable !== true) {
+    throw new Error(
+      `--judge-stored: artifact is non-comparable: ${(results.meta?.comparabilityReasons ?? []).join("; ") || "collection guard failed"}`
+    );
+  }
   if (!Array.isArray(results?.rows) || results.rows.length === 0) {
     throw new Error("--judge-stored: results file has no rows[]");
   }
   const meta = results.meta ?? {};
+  for (const row of results.rows) {
+    const persistedAgentAttempts = agentAttempts(row);
+    const persistedJudgeAttempts = judgeAttempts(row);
+    row.attempts = {
+      agent: persistedAgentAttempts,
+      judge: persistedJudgeAttempts
+    };
+    row.firstAttempt ??= {
+      agent: persistedAgentAttempts.length ? 1 : null,
+      judge: persistedJudgeAttempts.length ? 1 : null,
+      inputSha256: persistedAgentAttempts[0]?.inputSha256 ?? null,
+      answerSha256: persistedAgentAttempts[0]?.answerSha256 ?? null
+    };
+    row.outcomeClass = rowOutcomeClass(row);
+  }
+  const spendLedger = resumeSpendLedger(maxBudgetUsd, meta.budget ?? null);
   if (meta.packVersion !== PACK_VERSION) {
     throw new Error(
       `--judge-stored: results were collected with evidence pack ${meta.packVersion}, current is ${PACK_VERSION} — re-collect, or re-judge.mjs --allow-non-identical for a side artifact`
+    );
+  }
+  if (meta.resultsSchema !== AGENT_RESULT_SCHEMA) {
+    throw new Error(
+      `--judge-stored: results were collected under agent-result schema ${meta.resultsSchema ?? "none"}, current is ${AGENT_RESULT_SCHEMA} — the stored failure/usage shape moved since collection; re-collect`
     );
   }
   if (meta.judgeModel != null && meta.judgeModel !== judgeModel) {
@@ -340,48 +1228,160 @@ export async function judgeStoredResults(
       `--judge-stored: file already carries verdicts under rubric ${meta.judgeRubric}, current is ${JUDGE_RUBRIC} — use re-judge.mjs for cross-rubric work`
     );
   }
+  const hasSavedVerdicts = results.rows.some((row) => typeof row.verdict?.score === "string");
+  const recordedJudgePanel = meta.judgePanel ?? 1;
+  if (hasSavedVerdicts && recordedJudgePanel !== judgePanel) {
+    throw new Error(
+      `--judge-stored: file already carries judge panel size ${recordedJudgePanel}; refusing to mix in ${judgePanel}`
+    );
+  }
+  const recordedRegisterSource = meta.judgeTiering?.stabilityRegisterSource;
+  const recordedRegisterSha256 = meta.judgeTiering?.stabilityRegisterSha256;
+  const currentRegisterSource = stabilityRegister.source ?? "regenerated";
+  const currentRegisterSha256 = stabilityRegister.sha256 ?? null;
+  const resumeUsesPin =
+    recordedRegisterSource === "pinned" || currentRegisterSource === "pinned";
+  if (
+    hasSavedVerdicts &&
+    recordedRegisterSource != null &&
+    resumeUsesPin &&
+    (
+      recordedRegisterSource !== currentRegisterSource ||
+      recordedRegisterSha256 !== currentRegisterSha256
+    )
+  ) {
+    throw new Error(
+      "--judge-stored: file already carries a different stability-register contract"
+    );
+  }
   const identity = verifySourceCases(results, resultsPath);
+  const lifecycleGuard = verifyStoredLifecycleSnapshot(results, identity.selectedCases);
+  const storedSelectedCases = lifecycleGuard.selectedCases;
+  const storedLifecyclePartition = lifecycleGuard.partition;
+  const storedActiveIds = new Set(storedLifecyclePartition.activeIds);
+  const storedActiveRows = () => results.rows.filter((row) => storedActiveIds.has(row.id));
   if (!identity.guard.matches) {
     throw new Error(
       `--judge-stored: case input snapshot differs (expected ${identity.guard.expectedCasesSha256}, got ${identity.guard.actualCasesSha256}; missing ids: ${identity.guard.missingCaseIds.join(", ") || "none"}) — the golden corpus moved since collection; re-collect`
     );
   }
+  const panelLimit = resolveStoredPanelCaseLimit({
+    selectedCaseCount: storedLifecyclePartition.active.length,
+    storedJudgeTiering: meta.judgeTiering,
+    maxPanelCasesOverride: maxPanelCases,
+    overrideSource: maxPanelCasesSource
+  });
 
-  // "error" verdicts on rows WITH an answer are judge-side failures (CLI
-  // crash / unparseable output) — re-attemptable, or they'd poison the file
-  // forever. Empty-answer error verdicts are collection facts and stay.
-  const unjudged = results.rows.filter(
-    (row) =>
-      typeof row.verdict?.score !== "string" ||
-      (row.verdict.score === "error" && hasSuccessfulAnswer(row.answer, row.agent?.error))
-  );
+  // Explicit judge CLI and parse classes on answered rows remain retryable.
+  // Untyped legacy errors are terminal because their timeout and safeguard
+  // status cannot be reconstructed safely. Send those rows through re-judge.
+  const unjudged = results.rows.filter((row) => {
+    const attempts = row.attempts.judge;
+    if (!hasSuccessfulAnswer(row.answer, row.agent?.failure)) {
+      return typeof row.verdict?.score !== "string";
+    }
+    if (attempts.length === 0) return true;
+    return attempts.length === 1 && isRetryableJudgeError(attempts[0].verdict);
+  });
 
   // Every persisted state must be internally consistent, so finalize stamps
   // costs + summary and writes atomically. A resume that finds nothing left to
   // judge still finalizes: a crash between the last row and the old
   // end-of-run write used to leave summary:null with stale costs and no way
   // back (re-running threw "nothing to judge").
+  const priorJudgeStored = meta.judgeStored ?? {};
+  const incompleteJudgeIds = new Set(priorJudgeStored.incompleteIds ?? []);
   const paidIds = [];
-  const finalize = () => {
+  let processedCount = 0;
+  const existingPanelCounts = panelCaseCounts(results.rows);
+  const panelBudget = createPanelCaseBudget(
+    panelLimit.maxPanelCases,
+    existingPanelCounts.boundaryPanelCases
+  );
+  const sourceResultsSha256 = priorJudgeStored.sourceResultsSha256 ?? sha256(sourceText);
+  const collectionAggregatesAllowed =
+    meta.comparable === true && meta.completeness?.aggregatesAllowed === true;
+  const initiallyJudgedIds = results.rows
+    .filter((row) => row.attempts.judge.length > 0)
+    .map((row) => row.id);
+  const writeState = ({ withSummary }) => {
     meta.judgeModel = judgeModel;
     meta.judgeRubric = JUDGE_RUBRIC;
-    meta.totalJudgeCostUsd = results.rows.reduce((s, r) => s + (r.verdict?.costUsd ?? 0), 0);
-    meta.totalCostUsd = results.rows.reduce(
-      (s, r) => s + (r.agent?.costUsd ?? 0) + (r.verdict?.costUsd ?? 0),
-      0
+    meta.judgePanel = judgePanel;
+    meta.judgeTiering = judgeTieringMetadata({
+      judgePanel,
+      stabilityRegister,
+      panelLimit,
+      rows: results.rows
+    });
+    const totals = costTotals(results.rows);
+    Object.assign(meta, totals);
+    // P4 for the two-phase path: the case snapshot is already guarded by
+    // verifySourceCases, so what stays checkable here is the judged
+    // denominator — a summary must never describe partly judged rows.
+    const completeness = runCompleteness({
+      expectedIds: results.rows.map((row) => row.id),
+      rows: results.rows,
+      judging: true
+    });
+    meta.judgingCompleteness = completeness;
+    const aggregatesAllowed = collectionAggregatesAllowed && completeness.aggregatesAllowed;
+    meta.aggregatesSuppressed = !aggregatesAllowed;
+    // Every stored-judge write owns the measurement block: drop the current
+    // keys before re-stamping them, and drop the retired coverage keys that an
+    // artifact produced before the retirement still carries. This runs on the
+    // zero-call finalization and on the suppressed-aggregate write too.
+    const measurementMetrics = qaMeasurementMetrics(storedActiveRows());
+    for (const key of [...RETIRED_MEASUREMENT_METRIC_KEYS, ...Object.keys(measurementMetrics)]) {
+      delete meta[key];
+    }
+    if (aggregatesAllowed) Object.assign(meta, measurementMetrics);
+    if (judgeBinary) meta.judgeBinary = judgeBinary;
+    if (judgeEnvironment) meta.judgeEnvironment = judgeEnvironment;
+    meta.trackSchema = QA_TRACK_SCHEMA;
+    meta.selectedIds ??= results.rows.map((row) => row.id);
+    meta.lifecycle = {
+      activeCount: storedLifecyclePartition.active.length,
+      selectedCount: storedSelectedCases.length,
+      activeIds: storedLifecyclePartition.activeIds,
+      excludedQuarantinedIds: storedLifecyclePartition.quarantinedIds
+    };
+    meta.unattemptedIds = meta.selectedIds.filter(
+      (id) => !results.rows.some((row) => row.id === id)
     );
-    const prior = meta.judgeStored ?? {};
+    const unjudgedSelectedIds = results.rows
+      .filter((row) => hasSuccessfulAnswer(row.answer, row.agent?.failure) && row.attempts.judge.length === 0)
+      .map((row) => row.id);
+    meta.tracks = buildRunnerTracks({
+      selectedCases: storedSelectedCases,
+      rows: results.rows,
+      unjudgedSelectedIds,
+      lifecyclePartition: storedLifecyclePartition
+    });
+    meta.budget = spendLedgerRecord(spendLedger);
     meta.judgeStored = {
       judgedAt: new Date().toISOString(),
       // Keep the ORIGINAL collection-time hash across resumes; re-hashing the
       // partially judged file would erase the link this block exists to record.
-      sourceResultsSha256: prior.sourceResultsSha256 ?? sha256(sourceText),
+      sourceResultsSha256,
       // Only ids that actually reached a paid judge, merged across resumes.
-      judgedIds: [...new Set([...(prior.judgedIds ?? []), ...paidIds])],
-      toolVersion: "run-qa/judge-stored-v1"
+      judgedIds: [
+        ...new Set([...(priorJudgeStored.judgedIds ?? []), ...initiallyJudgedIds, ...paidIds])
+      ],
+      unattemptedIds: unjudgedSelectedIds,
+      incompleteIds: [...incompleteJudgeIds],
+      attempts: results.rows.flatMap((row) =>
+        row.attempts.judge.map((attempt) => ({ id: row.id, ...attempt }))
+      ),
+      toolVersion: "run-qa/judge-stored-v3"
     };
     results.meta = meta;
-    results.summary = summarize(results.rows);
+    if (withSummary) {
+      results.summary = aggregatesAllowed ? summarize(storedActiveRows()) : null;
+      if (!aggregatesAllowed) {
+        log(formatCompletenessNotice(completeness, { label: "judge-stored" }));
+      }
+    }
     // Temp-then-rename: a truncate-in-place rewrite of the sole copy holding
     // every paid verdict is the loss this feature exists to prevent.
     const tmpPath = `${resultsPath}.tmp`;
@@ -395,24 +1395,42 @@ export async function judgeStoredResults(
     }
     // Unfinalized artifact from an interrupted run: complete it rather than
     // leaving a paid file stuck with a null summary.
-    finalize();
+    writeState({ withSummary: true });
     log(`judge-stored: ${resultsPath} · nothing left to judge · finalized stamps + summary`);
-    return { judgedCount: 0, summary: results.summary, outPath: resultsPath };
+    log(formatFiveTrackSummary(meta.tracks));
+    return {
+      judgedCount: 0,
+      summary: results.summary,
+      metrics: meta.aggregatesSuppressed
+        ? null
+        : qaMeasurementMetrics(storedActiveRows()),
+      judgeTiering: meta.judgeTiering,
+      outPath: resultsPath
+    };
   }
   log(
-    `judge-stored: ${resultsPath} · ${unjudged.length}/${results.rows.length} unjudged row(s) · judge ${judgeModel}`
+    `judge-stored: ${resultsPath} · ${unjudged.length}/${results.rows.length} unjudged row(s) · ` +
+    `judge ${judgeModel}${judgePanel > 1 ? ` forced panel ${judgePanel}` : ` tiered (${stabilityRegister.status})`}`
   );
+  log(formatPanelSummary(judgeTieringMetadata({
+    judgePanel,
+    stabilityRegister,
+    panelLimit,
+    rows: results.rows
+  }), "before"));
 
   // Stamp the judge tuple BEFORE the first paid call so a crash-resume with a
   // different model trips the mixing guard instead of silently mixing tuples.
   meta.judgeModel = judgeModel;
   meta.judgeRubric = JUDGE_RUBRIC;
+  meta.judgePanel = judgePanel;
   results.meta = meta;
+  writeState({ withSummary: false });
 
   for (const [i, row] of unjudged.entries()) {
     log(`[${i + 1}/${unjudged.length}] ${row.id} …`);
     const kase = identity.caseById.get(row.id);
-    if (hasSuccessfulAnswer(row.answer, row.agent?.error)) {
+    if (hasSuccessfulAnswer(row.answer, row.agent?.failure)) {
       if (!Array.isArray(row.transcript)) {
         throw new Error(`--judge-stored: row ${row.id} has no saved transcript array`);
       }
@@ -431,45 +1449,230 @@ export async function judgeStoredResults(
           `--judge-stored: row ${row.id} evidence pack no longer reproduces its collection-time hash (recorded ${row.evidencePack?.sha256 ?? "absent"}, rebuilt ${packSha ?? "null"}) — the pack builder changed since collection; re-collect`
         );
       }
-      row.verdict = await judge(
-        { ...kase, candidateAnswer: row.answer, transcript: row.transcript, transcriptEvidence },
-        { model: judgeModel }
-      );
+      try {
+        await judgeRowWithRetry(
+          { ...kase, candidateAnswer: row.answer, transcript: row.transcript, transcriptEvidence },
+          {
+            judgeModel,
+            judgePanel,
+            judge,
+            stabilityRegister,
+            panelBudget,
+            spendLedger,
+            onAttempt: () => {
+              row.verdict ??= row.attempts.judge[0]?.verdict ?? null;
+              row.firstAttempt.judge = row.attempts.judge.length ? 1 : null;
+              row.outcomeClass = rowOutcomeClass(row);
+              writeState({ withSummary: false });
+            }
+          },
+          row.attempts.judge
+        );
+      } catch (error) {
+        if (error.judgeAttempt) row.attempts.judge.push(error.judgeAttempt);
+        if (
+          error instanceof MissingReportedCostError ||
+          error instanceof BudgetAuthorizationExceededError ||
+          (error instanceof BudgetExhaustedError && error.judgeAttempt)
+        ) incompleteJudgeIds.add(row.id);
+        row.verdict ??= row.attempts.judge[0]?.verdict ?? null;
+        row.firstAttempt.judge = row.attempts.judge.length ? 1 : null;
+        row.outcomeClass = rowOutcomeClass(row);
+        writeState({ withSummary: true });
+        if (error instanceof BudgetExhaustedError) break;
+        throw error;
+      }
+      row.verdict ??= row.attempts.judge[0]?.verdict ?? null;
+      row.firstAttempt.judge = row.attempts.judge.length ? 1 : null;
+      row.outcomeClass = rowOutcomeClass(row);
       paidIds.push(row.id);
+      processedCount += 1;
       // Persist after every judged row: a crash on row N keeps rows 1..N-1's
       // paid verdicts on disk (the run resumes as judge-all-unjudged).
-      finalize();
+      writeState({ withSummary: true });
+      log(
+        `${row.id} → ${row.verdict.score} · ${row.verdict.meta?.judgeTierUsed ?? "single"}` +
+        `${row.verdict.meta?.escalationReason ? ` (${row.verdict.meta.escalationReason})` : ""}`
+      );
     } else {
       // Mirror the inline no-answer verdict exactly.
-      row.verdict = {
-        score: "error",
-        missingFacts: [],
-        wrongClaims: [],
-        rationale: agentErrorRationale(row.agent?.error),
-        rubric: JUDGE_RUBRIC,
-        packVersion: PACK_VERSION,
-        promptSha256: null
-      };
+      row.verdict = buildAgentErrorVerdict(row.agent?.failure);
+      row.outcomeClass = rowOutcomeClass(row);
+      processedCount += 1;
     }
   }
 
-  finalize();
-  return { judgedCount: unjudged.length, summary: results.summary, outPath: resultsPath };
+  writeState({ withSummary: true });
+  log(formatFiveTrackSummary(meta.tracks));
+  return {
+    judgedCount: processedCount,
+    summary: results.summary,
+    metrics: meta.aggregatesSuppressed
+      ? null
+      : qaMeasurementMetrics(storedActiveRows()),
+    judgeTiering: meta.judgeTiering,
+    outPath: resultsPath
+  };
+}
+
+/**
+ * Precondition P4: decide whether this run may report an aggregate at all.
+ *
+ * A lane that lost rows is incomplete, not smaller — but the rows it did buy
+ * are still evidence, so the artifact is always written. Only the aggregate is
+ * withheld, with the reason recorded next to it. Exported so the decision is
+ * testable without paying for a run.
+ */
+export function collectionAggregates(rows, cases, { judging }) {
+  const completeness = runCompleteness({
+    expectedIds: cases.map((c) => c.id),
+    rows,
+    judging
+  });
+  if (!completeness.aggregatesAllowed) {
+    return { completeness, summary: null, metrics: null };
+  }
+  const partition = partitionLifecycleCases(cases);
+  const activeIds = new Set(partition.activeIds);
+  const activeRows = rows.filter((row) => activeIds.has(row.id));
+  return {
+    completeness,
+    summary: judging ? summarize(activeRows) : null,
+    metrics: qaMeasurementMetrics(judging ? activeRows : [])
+  };
+}
+
+export function applyCollectionComparability(aggregates, comparabilityReasons) {
+  const comparable = comparabilityReasons.length === 0;
+  if (comparable) return { comparable, ...aggregates };
+  return {
+    comparable,
+    completeness: {
+      ...aggregates.completeness,
+      aggregatesAllowed: false,
+      reasons: [...aggregates.completeness.reasons, ...comparabilityReasons]
+    },
+    summary: null,
+    metrics: null
+  };
+}
+
+function failureMessage(error) {
+  return String(error?.message ?? error);
+}
+
+export function collectionComparabilityReasons({
+  collectionError,
+  postflightError,
+  remoteIdentityPostflightError,
+  collectionSourceIdentityGuard,
+  remoteIdentityGuardRecord
+}) {
+  const reasons = [];
+  if (collectionError && collectionError.code !== "remote-identity-guard") {
+    reasons.push(`collection failed: ${failureMessage(collectionError)}`);
+  }
+  if (postflightError) reasons.push(`postflight failed: ${failureMessage(postflightError)}`);
+  if (
+    remoteIdentityPostflightError &&
+    remoteIdentityPostflightError.code !== "remote-identity-guard"
+  ) {
+    reasons.push(
+      `remote identity postflight failed: ${failureMessage(remoteIdentityPostflightError)}`
+    );
+  }
+  if (!collectionSourceIdentityGuard.matches) {
+    reasons.push(
+      `source identity changed: ${collectionSourceIdentityGuard.changedKeys.join(", ")}`
+    );
+  }
+  if (!remoteIdentityGuardRecord.matches) {
+    const failure = remoteIdentityGuardRecord.failure;
+    if (failure?.reason === "identity-changed") {
+      reasons.push(`remote service identity changed: ${failure.changedServices.join(", ")}`);
+    } else if (failure?.reason === "pre-arm-vector-mismatch") {
+      reasons.push("remote identity pre-arm vector SHA-256 mismatch");
+    } else if (failure?.reason === "missing-baseline") {
+      reasons.push("remote identity baseline is missing");
+    } else if (failure?.reason === "probe-unavailable") {
+      reasons.push("remote identity probe unavailable");
+    } else {
+      reasons.push(`remote identity guard failed: ${failure?.reason ?? "unknown"}`);
+    }
+  }
+  return [...new Set(reasons)];
 }
 
 async function main() {
   const args = process.argv.slice(2);
+  assertRunQaCliSyntax(args);
+  const ids = parseOptionalIdsFlag(args);
   const argVal = (flag) => {
     const i = args.indexOf(flag);
     return i !== -1 ? args[i + 1] : undefined;
   };
+  const noJudge = args.includes("--no-judge");
+  const pairedControlArm = argVal("--paired-control-arm");
+  if (args.includes("--paired-control-arm") &&
+      !["baseline", "candidate"].includes(pairedControlArm)) {
+    throw new Error("--paired-control-arm must be baseline or candidate");
+  }
+  if (pairedControlArm && (args.includes("--judge-stored") || !noJudge)) {
+    throw new Error("--paired-control-arm is valid only for --no-judge collection");
+  }
+  const agentBinary = assertExpectedExecutable(
+    executableIdentity("claude"),
+    parseRequiredFlagValue(args, "--expect-agent-binary-sha256"),
+    { label: "Claude CLI" }
+  );
+  const inheritedAgentEnvironment = assertExpectedAgentEnvironment(
+    agentEnvironmentIdentity(),
+    parseRequiredAgentEnvironmentFlag(args)
+  );
+  const safeJudge = (input, options) =>
+    judgeCase(input, { ...options, command: agentBinary.resolvedPath, safeMode: true });
+  const {
+    maxPanelCases: maxPanelCasesOverride,
+    maxPanelCasesSource
+  } = parsePanelCaseOverride({
+    cliValue: argVal("--max-panel-cases"),
+    cliPresent: args.includes("--max-panel-cases"),
+    environmentValue: process.env.QA_MAX_PANEL_CASES
+  });
+  const stabilityRegisterArgument = argVal("--stability-register");
+  if (
+    args.includes("--stability-register") &&
+    (!stabilityRegisterArgument || stabilityRegisterArgument.startsWith("--"))
+  ) {
+    throw new Error("--stability-register requires a path");
+  }
+  const prepareStabilityRegister = () => prepareJudgeStabilityRegister({
+    pinnedPath: stabilityRegisterArgument
+      ? path.resolve(process.cwd(), stabilityRegisterArgument)
+      : null
+  });
+  const maxBudgetUsd = parseRequiredBudgetFlag(args);
   const judgeStoredPath = argVal("--judge-stored");
   if (judgeStoredPath) {
     if (args.includes("--no-judge")) throw new Error("--judge-stored and --no-judge are contradictory");
-    const { summary } = await judgeStoredResults(path.resolve(process.cwd(), judgeStoredPath), {
-      judgeModel: argVal("--judge-model") ?? JUDGE_MODEL
+    if (ids !== undefined) {
+      throw new Error("--judge-stored and --ids are contradictory; use re-judge.mjs --ids");
+    }
+    const stabilityRegister = prepareStabilityRegister();
+    const { summary, metrics, judgeTiering } = await judgeStoredResults(path.resolve(process.cwd(), judgeStoredPath), {
+      judgeModel: argVal("--judge-model") ?? JUDGE_MODEL,
+      judgePanel: parseJudgePanel(argVal("--judge-panel")),
+      judge: safeJudge,
+      judgeBinary: agentBinary,
+      judgeEnvironment: inheritedAgentEnvironment,
+      maxPanelCases: maxPanelCasesOverride,
+      maxPanelCasesSource,
+      stabilityRegister,
+      maxBudgetUsd
     });
-    console.log("\n" + formatSummaryTable(summary));
+    if (summary) console.log("\n" + formatRawFirstAttemptDiagnostics(summary));
+    if (metrics) console.log(formatMeasurementMetrics(metrics));
+    console.log(formatPanelSummary(judgeTiering, "after"));
     return;
   }
   const variant = (argVal("--variant") ?? "A").toUpperCase();
@@ -485,14 +1688,38 @@ async function main() {
   const port = Number(argVal("--port") ?? 8788);
   const model = argVal("--model") ?? AGENT_MODEL;
   const judgeModel = argVal("--judge-model") ?? JUDGE_MODEL;
-  const noJudge = args.includes("--no-judge");
-  const serverRevision = argVal("--server-revision");
+  const judgePanel = parseJudgePanel(argVal("--judge-panel"));
+  const stabilityRegister = prepareStabilityRegister();
+  const pairedControl = pairedControlArm
+    ? createPairedCollectionChildControl({
+        arm: pairedControlArm,
+        cancellationFile: process.env.QA_PAIRED_CANCELLATION_FILE
+      })
+    : null;
+  const spendLedger = createSpendLedger(maxBudgetUsd);
+  const serverRevisionArgument = parseRequiredFlagValue(args, "--server-revision");
+  const expectedSurfaceSha256 = parseRequiredFlagValue(args, "--expect-sha256");
+  const remoteIdentityProbe = remoteIdentityProbeIdentity(
+    parseRequiredFlagValue(args, "--remote-identity-probe"),
+    parseRequiredFlagValue(args, "--expect-remote-identity-probe-sha256"),
+    { repoRoot: REPO_ROOT }
+  );
+  const remoteIdentityGuard = createRemoteIdentityGuard({
+    probeIdentity: remoteIdentityProbe,
+    expectedVectorSha256: parseRequiredFlagValue(args, "--expect-remote-identity-sha256")
+  });
+  const serverRevision = assertPinnedServerRevision(serverRevisionArgument);
+  const collectionSourceIdentity = assertCollectionSourceIdentity(sourceIdentity(serverRevision));
+  const runtimeAdapter = parseRuntimeAdapterFlags(args, {
+    publicPort: port,
+    runnerRevision: collectionSourceIdentity.runnerRevision,
+    serverRevision
+  });
   const casesPath = argVal("--cases") ?? path.join(QA_DIR, "cases.json");
   const plainSurface = loadPlainOperationSurface();
 
   const battery = loadCases(casesPath);
   let cases = battery.cases;
-  const ids = argVal("--ids");
   if (ids) {
     const want = new Set(ids.split(",").map((s) => s.trim()));
     cases = cases.filter((c) => want.has(c.id));
@@ -501,13 +1728,75 @@ async function main() {
   }
   const sampleN = argVal("--sample") ? Number(argVal("--sample")) : undefined;
   if (sampleN) cases = stratifiedSample(cases, sampleN);
-
-  const preflightResult = await preflight(port, { surface, searchTool, plainSurface });
-  console.log(
-    `run-qa: surface ${surface} · variant ${variant}${surface === "search-execute" ? ` (search tool "${searchTool}")` : ""} · ${battery.contract ? `contract ${battery.contract} · ` : ""}${cases.length} cases · server :${port} · ${preflightResult.exposedNames.length} exposed tool(s) · agent ${model} · judge ${noJudge ? "OFF" : judgeModel}`
+  const lifecyclePartition = partitionLifecycleCases(cases);
+  const collectionLifecycleSnapshot = lifecycleSnapshot(cases);
+  // Pre-spend: an empty selection spawns nothing, and a duplicated id pays
+  // twice for one case and then collapses on every per-id join.
+  assertRunPlan(cases.map((c) => c.id), { label: "run-qa" });
+  const panelLimit = resolvePanelCaseLimit(
+    lifecyclePartition.active.length,
+    maxPanelCasesOverride,
+    maxPanelCasesSource
   );
+  const panelBudget = createPanelCaseBudget(panelLimit.maxPanelCases);
+  if (!noJudge) {
+    console.log(formatPanelSummary(judgeTieringMetadata({
+      judgePanel,
+      stabilityRegister,
+      panelLimit,
+      rows: []
+    }), "before"));
+  }
+
+  let listenerPair = null;
+  let adapterAttestation = null;
+  let serverProcess;
+  let upstreamServerProcess = null;
+  if (runtimeAdapter) {
+    listenerPair = dualBoundServerIdentity({
+      adapterPort: port,
+      adapterRevision: runtimeAdapter.adapterRevision,
+      upstreamPort: runtimeAdapter.upstreamPort,
+      upstreamRevision: serverRevision
+    });
+    serverProcess = listenerPair.adapter;
+    upstreamServerProcess = listenerPair.upstream;
+    adapterAttestation = await fetchAdapterAttestation(port, {
+      mode: runtimeAdapter.mode,
+      sourceRevision: serverRevision,
+      implementationSha256: runtimeAdapter.implementationSha256,
+      upstreamPort: runtimeAdapter.upstreamPort,
+      upstreamIdentity: listenerPair.upstream
+    });
+  } else {
+    serverProcess = boundServerIdentity(port, serverRevision);
+  }
+  const preflightResult = await probeLiveSurface(port, { surface, searchTool, plainSurface });
+  const surfacePin = assertExpectedSurface(preflightResult.metrics, expectedSurfaceSha256, {
+    label: "run-qa live MCP surface"
+  });
+  const sourceRevisionPin = assertExpectedSourceRevision(preflightResult.serverInfo, serverRevision, {
+    label: "run-qa live Worker"
+  });
+  console.log(
+    `run-qa: surface ${surface} · variant ${variant}${surface === "search-execute" ? ` (search tool "${searchTool}")` : ""} · ${battery.contract ? `contract ${battery.contract} · ` : ""}active ${lifecyclePartition.active.length} of ${cases.length} selected cases · excluded quarantined IDs: ${lifecyclePartition.quarantinedIds.join(", ") || "none"} · server :${port} · ${preflightResult.exposedNames.length} exposed tool(s) · agent ${model} · judge ${noJudge ? "OFF" : `${judgeModel}${judgePanel > 1 ? ` forced panel ${judgePanel}` : ` tiered (${stabilityRegister.status})`}`}`
+  );
+  if (pairedControl) {
+    const selectedIds = cases.map((c) => c.id);
+    await pairedControl.ready({
+      runnerWorktree: process.cwd(),
+      serverWorktree: runtimeAdapter ? listenerPair.upstream.cwd : serverProcess.cwd,
+      selectedIdsSha256: sha256(JSON.stringify(selectedIds)),
+      selectedContentSha256: sha256(JSON.stringify(cases))
+    });
+  }
 
   const tmpDir = mkdtempSync(path.join(os.tmpdir(), "qa-mcp-"));
+  // Precondition P2: the answering agent runs here, not in the repository.
+  // An empty directory outside the repo keeps AGENTS.md and CLAUDE.md off its
+  // project-instruction discovery walk.
+  const agentCwd = mkdtempSync(path.join(os.tmpdir(), "qa-agent-cwd-"));
+  assertNeutralAgentCwd(agentCwd, { repoRoot: REPO_ROOT, label: "run-qa answering agent" });
   const mcpConfigPath = path.join(tmpDir, "mcp.json");
   const upstreamUrl = `http://localhost:${port}/mcp`;
   const mcpServerConfig =
@@ -517,76 +1806,274 @@ async function main() {
           args: [path.join(QA_DIR, "plain-operation-harness.mjs"), "--upstream", upstreamUrl]
         }
       : { type: "http", url: upstreamUrl };
-  writeFileSync(mcpConfigPath, JSON.stringify({ mcpServers: { raven: mcpServerConfig } }));
+  writeFileSync(
+    mcpConfigPath,
+    JSON.stringify({ mcpServers: { [REQUIRED_MCP_SERVER_NAME]: mcpServerConfig } })
+  );
   const allowedTools =
     surface === "per-operation"
       ? plainSurface.tools.map((tool) => `mcp__raven__${tool.name}`)
       : [`mcp__raven__${searchTool}`, "mcp__raven__execute"];
 
   const rows = [];
+  const incompleteIds = new Set();
   const startedAt = new Date().toISOString();
+  let collectionError = null;
+  let postflightResult;
+  let surfacePinAfter;
+  let sourceRevisionPinAfter;
+  let serverProcessAfter;
+  let serverProcessGuard;
+  let upstreamServerProcessAfter;
+  let listenerPairAfter;
+  let listenerPairGuard;
+  let adapterAttestationAfter;
+  let postflightError = null;
+  let remoteIdentityPostflightError = null;
   try {
     for (const [i, c] of cases.entries()) {
       const t0 = Date.now();
       process.stdout.write(`[${i + 1}/${cases.length}] ${c.id} … `);
-      const run = runAgent(c.question, { surface, searchTool, allowedTools, mcpConfigPath, model });
-      const successfulAnswer = hasSuccessfulAnswer(run.answer, run.error);
+      const answerAttempts = [];
+      const rowJudgeAttempts = [];
+      let stopError = null;
+      for (let attemptNumber = 1; attemptNumber <= 2; attemptNumber++) {
+        let run;
+        const attemptStartedAt = Date.now();
+        try {
+          run = runRemoteIdentityGuardedCall({
+            guard: remoteIdentityGuard,
+            context: { id: c.id, attempt: attemptNumber },
+            authorize: () => {
+              pairedControl?.assertActive();
+              return authorizeSpend(spendLedger, {
+                method: "agent",
+                id: c.id,
+                attempt: attemptNumber
+              });
+            },
+            call: (authorization) => runAgent(c.question, {
+              surface,
+              searchTool,
+              allowedTools,
+              mcpConfigPath,
+              model,
+              agentCwd,
+              agentCommand: agentBinary.resolvedPath,
+              maxBudgetUsd: authorization.maxBudgetUsd
+            }),
+            onCompleted: (completedRun) => {
+              const attempt = agentAttemptRecord(
+                completedRun,
+                attemptNumber,
+                Date.now() - attemptStartedAt
+              );
+              answerAttempts.push(attempt);
+            },
+            recordSpend: (authorization, completedRun) => {
+              recordSpend(spendLedger, authorization, completedRun.costUsd);
+            }
+          });
+        } catch (error) {
+          stopError = error;
+          break;
+        }
+        if (attemptNumber === 1 && isRetryableAgentFailure(run.failure)) {
+          continue;
+        }
+        break;
+      }
+      if (answerAttempts.length === 0) throw stopError;
+      const firstAttempt = answerAttempts[0];
+      const successfulAnswer = hasSuccessfulAnswer(firstAttempt.answer, firstAttempt.agent?.failure);
       const transcriptEvidence = successfulAnswer
-        ? buildTranscriptEvidence({ ...c, candidateAnswer: run.answer, transcript: run.transcript })
+        ? buildTranscriptEvidence({
+            ...c,
+            candidateAnswer: firstAttempt.answer,
+            transcript: firstAttempt.transcript
+          })
         : "";
       let verdict = null;
       if (!noJudge) {
-        verdict = successfulAnswer
-          ? await judgeCase(
-              { ...c, candidateAnswer: run.answer, transcript: run.transcript, transcriptEvidence },
-              { model: judgeModel }
-            )
-          : {
-              score: "error",
-              missingFacts: [],
-              wrongClaims: [],
-              rationale: agentErrorRationale(run.error),
-              rubric: JUDGE_RUBRIC,
-              packVersion: PACK_VERSION,
-              promptSha256: null
-            };
+        if (successfulAnswer && !stopError) {
+          try {
+            await judgeRowWithRetry(
+              {
+                ...c,
+                candidateAnswer: firstAttempt.answer,
+                transcript: firstAttempt.transcript,
+                transcriptEvidence
+              },
+              {
+                judgeModel,
+                judgePanel,
+                judge: safeJudge,
+                stabilityRegister,
+                panelBudget,
+                spendLedger
+              },
+              rowJudgeAttempts
+            );
+          } catch (error) {
+            if (error.judgeAttempt) rowJudgeAttempts.push(error.judgeAttempt);
+            stopError = error;
+          }
+          verdict = rowJudgeAttempts[0]?.verdict ?? null;
+        } else if (!successfulAnswer) {
+          verdict = buildAgentErrorVerdict(firstAttempt.agent?.failure);
+        }
       }
       const durationMs = Date.now() - t0;
-      rows.push({
+      const row = {
         id: c.id,
         question: c.question,
+        caseInput: caseInputPayload(c),
+        caseInputSha256: caseInputSha256(c),
         tags: c.tags,
         truth: {
           status: c.truth.status,
-          ...(c.truth.asOf ? { asOf: c.truth.asOf } : {})
+          ...(c.truth.asOf ? { asOf: c.truth.asOf } : {}),
+          lifecycle: c.truth.lifecycle ?? { state: "active", reviewState: "none" }
         },
-        answer: run.answer,
-        transcript: run.transcript,
+        answer: firstAttempt.answer,
+        transcript: firstAttempt.transcript,
         agent: {
           model,
-          turns: run.turns,
-          costUsd: run.costUsd,
-          usage: run.usage ?? null,
-          promptChars: run.promptChars,
-          error: run.error ?? null
+          ...firstAttempt.agent,
+          inputSha256: firstAttempt.inputSha256,
+          answerSha256: firstAttempt.answerSha256,
+          // ONE failure field. A row is failed iff this is non-null.
+          failure: firstAttempt.agent?.failure ?? null
         },
+        // Derived artifact-continuation outcomes (handles, info/read calls,
+        // read failures by host reason, bounded final projection). Model-facing
+        // MCP results are unaffected — this is eval-side evidence only.
+        artifacts: firstAttempt.artifacts,
         verdict,
         evidencePack: {
           packVersion: PACK_VERSION,
           chars: transcriptEvidence.length,
           sha256: transcriptEvidence ? sha256(transcriptEvidence) : null
         },
-        durationMs
-      });
+        durationMs,
+        attempts: {
+          agent: answerAttempts,
+          judge: rowJudgeAttempts
+        },
+        firstAttempt: {
+          agent: 1,
+          judge: rowJudgeAttempts.length ? 1 : null,
+          inputSha256: firstAttempt.inputSha256,
+          answerSha256: firstAttempt.answerSha256
+        }
+      };
+      row.outcomeClass = rowOutcomeClass(row);
+      if (
+        answerAttempts.length > 0 && (
+          stopError instanceof BudgetExhaustedError ||
+          stopError instanceof MissingReportedCostError ||
+          stopError instanceof BudgetAuthorizationExceededError
+        )
+      ) incompleteIds.add(c.id);
+      rows.push(row);
       console.log(
-        `${verdict ? verdict.score : "answered"} (${run.transcript.length} tool calls, ${Math.round(durationMs / 1000)}s)`
+        `${verdict ? verdict.score : "answered"}` +
+        `${verdict?.meta?.judgeTierUsed ? ` [${verdict.meta.judgeTierUsed}${verdict.meta.escalationReason ? `:${verdict.meta.escalationReason}` : ""}]` : ""} ` +
+        `(${firstAttempt.transcript.length} tool calls, ${answerAttempts.length} agent attempt(s), ` +
+        `${rowJudgeAttempts.length} judge attempt(s), ${Math.round(durationMs / 1000)}s)`
       );
+      if (isRequiredMcpServerFailure(firstAttempt.agent?.failure)) {
+        throw new Error(`answering harness failed: ${firstAttempt.agent.failure.reason}`);
+      }
+      if (stopError) throw stopError;
+      if (pairedControl) await pairedControl.rowComplete({ index: i, id: c.id });
     }
+  } catch (error) {
+    collectionError = error;
+    pairedControl?.failed(error);
   } finally {
     rmSync(tmpDir, { recursive: true, force: true });
+    rmSync(agentCwd, { recursive: true, force: true });
   }
 
-  const summary = noJudge ? null : summarize(rows);
+  try {
+    if (runtimeAdapter) {
+      listenerPairAfter = dualBoundServerIdentity({
+        adapterPort: port,
+        adapterRevision: runtimeAdapter.adapterRevision,
+        upstreamPort: runtimeAdapter.upstreamPort,
+        upstreamRevision: serverRevision
+      });
+      listenerPairGuard = assertStableDualBoundServerIdentity(listenerPair, listenerPairAfter);
+      serverProcessAfter = listenerPairAfter.adapter;
+      serverProcessGuard = listenerPairGuard.adapter;
+      upstreamServerProcessAfter = listenerPairAfter.upstream;
+      adapterAttestationAfter = await fetchAdapterAttestation(port, {
+        mode: runtimeAdapter.mode,
+        sourceRevision: serverRevision,
+        implementationSha256: runtimeAdapter.implementationSha256,
+        upstreamPort: runtimeAdapter.upstreamPort,
+        upstreamIdentity: listenerPairAfter.upstream
+      });
+    } else {
+      serverProcessAfter = boundServerIdentity(port, serverRevision);
+      serverProcessGuard = assertStableBoundServerIdentity(serverProcess, serverProcessAfter);
+    }
+    postflightResult = await probeLiveSurface(port, { surface, searchTool, plainSurface });
+    surfacePinAfter = assertExpectedSurface(postflightResult.metrics, expectedSurfaceSha256, {
+      label: "run-qa final live MCP surface"
+    });
+    sourceRevisionPinAfter = assertExpectedSourceRevision(postflightResult.serverInfo, serverRevision, {
+      label: "run-qa final live Worker"
+    });
+  } catch (error) {
+    postflightError = error;
+  }
+
+  try {
+    remoteIdentityGuard.postflight();
+  } catch (error) {
+    remoteIdentityPostflightError = error;
+  }
+
+  const finalSourceIdentity = sourceIdentity(serverRevision);
+  const collectionSourceIdentityGuard = sourceIdentityGuard(collectionSourceIdentity, finalSourceIdentity);
+  const remoteIdentityGuardRecord = remoteIdentityGuard.record();
+  let comparabilityReasons = collectionComparabilityReasons({
+    collectionError,
+    postflightError,
+    remoteIdentityPostflightError,
+    collectionSourceIdentityGuard,
+    remoteIdentityGuardRecord
+  });
+  if (pairedControl && comparabilityReasons.length === 0) {
+    try {
+      await pairedControl.postflightComplete();
+    } catch (error) {
+      collectionError = error;
+      comparabilityReasons = collectionComparabilityReasons({
+        collectionError,
+        postflightError,
+        remoteIdentityPostflightError,
+        collectionSourceIdentityGuard,
+        remoteIdentityGuardRecord
+      });
+    }
+  } else if (pairedControl && comparabilityReasons.length > 0 && !collectionError) {
+    pairedControl.failed(new Error(comparabilityReasons.join("; ")));
+  }
+  const aggregates = collectionAggregates(rows, cases, { judging: !noJudge });
+  const {
+    comparable,
+    completeness,
+    summary,
+    metrics
+  } = applyCollectionComparability(aggregates, comparabilityReasons);
+  const selectedIds = cases.map((c) => c.id);
+  const unattemptedIds = selectedIds.filter((id) => !rows.some((row) => row.id === id));
+  const totals = costTotals(rows);
+  const tracks = buildRunnerTracks({ selectedCases: cases, rows, lifecyclePartition });
+  const budget = spendLedgerRecord(spendLedger);
   const stampSuffix = surface === "per-operation" ? "perOperation" : `variant${variant}`;
   const stamp = `${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}-${stampSuffix}`;
   const resultsDir = path.join(QA_DIR, "results");
@@ -597,6 +2084,7 @@ async function main() {
     JSON.stringify(
       {
         meta: {
+          trackSchema: QA_TRACK_SCHEMA,
           variant: surface === "search-execute" ? variant : null,
           surface,
           searchTool: surface === "search-execute" ? searchTool : null,
@@ -604,7 +2092,20 @@ async function main() {
           model,
           judgeModel: noJudge ? null : judgeModel,
           judgeRubric: noJudge ? null : JUDGE_RUBRIC,
+          ...(!noJudge ? { judgePanel } : {}),
+          ...(!noJudge
+            ? {
+                judgeTiering: judgeTieringMetadata({
+                  judgePanel,
+                  stabilityRegister,
+                  panelLimit,
+                  rows
+                })
+              }
+            : {}),
           packVersion: PACK_VERSION,
+          resultsSchema: AGENT_RESULT_SCHEMA,
+          caseIdentitySchema: CASE_INPUT_IDENTITY,
           casesPath,
           caseContract: battery.contract ?? null,
           sampleN: sampleN ?? null,
@@ -612,6 +2113,15 @@ async function main() {
           startedAt,
           finishedAt: new Date().toISOString(),
           caseCount: rows.length,
+          selectedIds,
+          lifecycle: {
+            activeCount: lifecyclePartition.active.length,
+            selectedCount: cases.length,
+            activeIds: lifecyclePartition.activeIds,
+            excludedQuarantinedIds: lifecyclePartition.quarantinedIds
+          },
+          unattemptedIds,
+          incompleteIds: [...incompleteIds],
           // Prompt-append experiments (QA_AGENT_PROMPT_APPEND) are invisible on
           // the wire without this: stamp exactly what the answering prompt
           // carried so arms are auditable from the artifact alone.
@@ -624,15 +2134,62 @@ async function main() {
           inputSnapshot: {
             casesSha256: sha256(JSON.stringify(cases)),
             caseIdsSha256: sha256(JSON.stringify(cases.map((c) => c.id))),
+            lifecycle: collectionLifecycleSnapshot,
+            lifecycleSha256: lifecycleSnapshotSha256(collectionLifecycleSnapshot),
             manifestGeneratedAt: plainSurface.metrics.manifestGeneratedAt,
             operationIdsSha256: plainSurface.metrics.operationIdsSha256,
             operationEntriesSha256: plainSurface.metrics.operationEntriesSha256
           },
-          sourceIdentity: sourceIdentity(serverRevision),
+          sourceIdentity: collectionSourceIdentity,
+          sourceIdentityGuard: collectionSourceIdentityGuard,
+          remoteIdentityGuard: remoteIdentityGuardRecord,
+          comparable,
+          comparabilityReasons,
+          runtimeAdapter: runtimeAdapter
+            ? {
+                ...runtimeAdapter,
+                attestation: adapterAttestation,
+                attestationAfter: adapterAttestationAfter ?? null
+              }
+            : null,
+          listenerPair,
+          listenerPairAfter: listenerPairAfter ?? null,
+          listenerPairGuard: listenerPairGuard ?? null,
+          serverProcess,
+          serverProcessAfter,
+          serverProcessGuard,
+          upstreamServerProcess,
+          upstreamServerProcessAfter: upstreamServerProcessAfter ?? null,
           toolSurface: preflightResult.metrics,
-          totalAgentCostUsd: rows.reduce((s, r) => s + (r.agent.costUsd ?? 0), 0),
-          totalJudgeCostUsd: rows.reduce((s, r) => s + (r.verdict?.costUsd ?? 0), 0),
-          totalCostUsd: rows.reduce((s, r) => s + (r.agent.costUsd ?? 0) + (r.verdict?.costUsd ?? 0), 0)
+          toolSurfaceAfter: postflightResult?.metrics ?? null,
+          surfacePin,
+          surfacePinAfter: surfacePinAfter ?? null,
+          serverInfo: preflightResult.serverInfo,
+          serverInfoAfter: postflightResult?.serverInfo ?? null,
+          sourceRevisionPin,
+          sourceRevisionPinAfter: sourceRevisionPinAfter ?? null,
+          postflightError: postflightError
+            ? { message: String(postflightError.message ?? postflightError) }
+            : null,
+          remoteIdentityPostflightError: remoteIdentityPostflightError
+            ? { message: String(remoteIdentityPostflightError.message ?? remoteIdentityPostflightError) }
+            : null,
+          agentBinary,
+          // Denominator facts, always present. `aggregatesSuppressed` is the
+          // one-field answer to "may I quote a percentage from this file?".
+          completeness,
+          aggregatesSuppressed: !completeness.aggregatesAllowed,
+          agentCwdNeutral: true,
+          agentEnvironment: {
+            cwd: agentCwd,
+            cwdOutsideRepository: true,
+            isolation: answeringAgentIsolationRecord(),
+            inherited: inheritedAgentEnvironment
+          },
+          tracks,
+          budget,
+          ...(metrics ?? {}),
+          ...totals
         },
         summary,
         rows
@@ -641,9 +2198,30 @@ async function main() {
       2
     ) + "\n"
   );
+  if (pairedControl && comparable) {
+    await pairedControl.complete({ resultsPath: outPath });
+  }
   console.log(`\nwrote ${outPath}`);
-  if (summary) {
-    console.log("\n" + formatSummaryTable(summary));
+  console.log("\n" + formatFiveTrackSummary(tracks));
+  if (!completeness.aggregatesAllowed) {
+    console.log("\n" + formatCompletenessNotice(completeness, { label: "run-qa collection" }));
+  } else if (summary) {
+    console.log("\n" + formatRawFirstAttemptDiagnostics(summary));
+    console.log(formatMeasurementMetrics(metrics));
+  }
+  if (!noJudge) {
+    console.log(formatPanelSummary(judgeTieringMetadata({
+      judgePanel,
+      stabilityRegister,
+      panelLimit,
+      rows
+    }), "after"));
+  }
+  if (!comparable) {
+    pairedControl?.close();
+    throw new Error(
+      `QA collection is non-comparable; saved evidence at ${outPath}: ${comparabilityReasons.join("; ")}`
+    );
   }
 }
 

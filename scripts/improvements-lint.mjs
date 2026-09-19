@@ -5,8 +5,9 @@ import path from "node:path";
 import {
   ALLOWED_SERVICES,
   ALLOWED_STATUSES,
+  GITHUB_EVIDENCE_REF_RE,
   GITHUB_REPO_RE,
-  IMPROVEMENTS_DIR,
+  INDEX_PATH,
   SERVICE_ORDER,
   collectIntakeRepos,
   listFindingFiles,
@@ -15,6 +16,7 @@ import {
   readResolved,
   renderIndex,
   resolveIntake,
+  upstreamTitleError,
 } from "./improvements-lib.mjs";
 
 const AUTH_PROBE_HOSTS = {
@@ -31,7 +33,6 @@ const statusRank = {
 };
 
 const errors = [];
-const githubRefRe = /https:\/\/github\.com\/[^/\s)]+\/[^/\s)]+\/(?:issues|pull)\/\d+/i;
 const dateRe = /^\d{4}-\d{2}-\d{2}$/;
 const findings = [];
 
@@ -72,11 +73,16 @@ for (const file of listFindingFiles()) {
   if (fm.service && fm.id && !fm.id.startsWith(prefixForService(fm.service))) {
     errors.push(`${label}: id '${fm.id}' does not match service '${fm.service}'`);
   }
-  if (fm.evidence?.some((entry) => githubRefRe.test(entry)) && statusRank[fm.status] < statusRank["reported-upstream"]) {
+  const evidenceList = Array.isArray(fm.evidence) ? fm.evidence : [];
+  if (evidenceList.some((entry) => GITHUB_EVIDENCE_REF_RE.test(String(entry))) && statusRank[fm.status] < statusRank["reported-upstream"]) {
     errors.push(`${label}: evidence contains a GitHub issue/PR URL but status is '${fm.status}'`);
   }
+  // Same grandfathering predicate as the rule above: a cited GitHub ref is the mechanical marker
+  // of a record filed before the upstreamTitle field existed.
+  const titleError = upstreamTitleError(fm);
+  if (titleError) errors.push(`${label}: ${titleError}`);
   if (fm.status === "declined-upstream") {
-    if (!fm.evidence?.some((entry) => githubRefRe.test(entry))) {
+    if (!evidenceList.some((entry) => GITHUB_EVIDENCE_REF_RE.test(String(entry)))) {
       errors.push(`${label}: declined-upstream requires the durable upstream decline ref in evidence`);
     }
     if (!String(fm.disposition ?? "").trim()) {
@@ -145,7 +151,7 @@ function validateResolvedLedger(findings) {
     if (!GITHUB_REPO_RE.test(entry.repo ?? "")) errors.push(`${label}: repo must be owner/repo`);
     for (const key of ["upstreamRefs", "resolvingRefs"]) {
       if (!Array.isArray(entry[key])) errors.push(`${label}: ${key} must be an array`);
-      else if (entry[key].some((ref) => !githubRefRe.test(ref))) {
+      else if (entry[key].some((ref) => !GITHUB_EVIDENCE_REF_RE.test(ref))) {
         errors.push(`${label}: ${key} entries must be GitHub issue or PR URLs`);
       }
     }
@@ -167,6 +173,8 @@ function prefixForService(service) {
     "stellar-light-scout": "sls-",
     "stellar-docs": "sd-",
     skills: "sk-",
+    "workers-ai-provider": "wai-",
+    "canonical-source": "cs-",
   }[service];
 }
 
@@ -221,8 +229,7 @@ function validateProbe(label, probe) {
 }
 
 function validateIndexFreshness(findings) {
-  const indexPath = path.join(IMPROVEMENTS_DIR, "INDEX.md");
-  const actual = readFileSync(indexPath, "utf8");
+  const actual = readFileSync(INDEX_PATH, "utf8");
   const expected = renderIndex(findings);
   if (actual !== expected) {
     errors.push("improvements/INDEX.md is stale; run npm run improvements:index");

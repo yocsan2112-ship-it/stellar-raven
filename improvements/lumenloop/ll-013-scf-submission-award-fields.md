@@ -4,6 +4,7 @@ service: lumenloop
 status: reported-upstream
 discovered: 2026-07-10
 evidence:
+  - "Coordinator published the new LOBSTR awarded-versus-paid evidence and verified the posted body: https://github.com/lumenloop/lumenloop-backend/issues/26#issuecomment-5707452339"
   - https://github.com/lumenloop/lumenloop-backend/issues/26
   - live lumenloop.get_scf_submissions({slug:"blend"}) response asOf 2026-07-10
   - current official SCF Blend submission/project payload fetched independently the same day
@@ -13,6 +14,8 @@ evidence:
   - GT-38 recurrence: Aquarius submissions exposed four bare budgets totaling $391K without statuses while the project summary returned the three-Awarded-row $291K basis; Blend and Soroswap still required official status/paid fields
   - GT-37 recurrence: oracle/passkey/payroll rows exposed populated budgets without awarded/paid status, including partial-payment and non-awarded fixtures
 recurrences:
+  - date: 2026-09-17
+    evidence: "Independent live LOBSTR check: get_project({slug:lobstr}) returns scf.awarded_total 267463, matching the rounded public SCF totalPaid 267462.64, while totalAwarded is 232000. The public project payload and the 2026-05-21 archive expose both bases. See research/audits/2026-09-17-routing-audit/golden-and-pipeline-review.md."
   - date: 2026-07-10
     evidence: GT-38 primary/blind probes reproduced bare-budget ambiguity across Aquarius, Blend, and Soroswap, including a Pending Aquarius row with a populated budget
   - date: 2026-07-10
@@ -21,6 +24,8 @@ recurrences:
     evidence: GT-40 aggregate reconciliation confirmed that bare submission budgets cannot resolve reconstructed, round-ledger, project-record, awarded, or paid lifetime totals
   - date: 2026-07-11
     evidence: P4 Lane X observed successful exact-slug submission lookups whose rows retained linked_project_slug:null while Decaf used linked_project_slugs:["decaf"]; an unambiguous successful lookup therefore still cannot provide a stable primary project join or amount/status semantics. solo://proj/49/scratchpad/super-corpus-rebuild--585
+  - date: 2026-08-11
+    evidence: "Live Blend output still exposes bare budget without award, payment, currency, or basis fields; issue #26 remains open."
 ---
 
 ## Finding

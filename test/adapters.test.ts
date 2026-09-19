@@ -355,6 +355,38 @@ describe("stellarDocs adapter", () => {
     expect(calls.length).toBe(1); // no retry ladder on request errors
   });
 
+  it("returns non-JSON 4xx without retry and bounds the response fallback", async () => {
+    const body = `bad request: ${"x".repeat(2048)}:unbounded-tail`;
+    const { fetchImpl, calls } = stubFetch(body, 400, "text/plain");
+    const r = await callStellarDocs(
+      entry("stellarDocs.search_docs"),
+      { query: "soroban" },
+      docsEnv,
+      fetchImpl
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.status).toBe(400);
+    expect(r.error.message).toContain("bad request");
+    expect(r.error.message).not.toContain("unbounded-tail");
+    expect(calls).toHaveLength(1);
+  });
+
+  it("returns malformed 2xx JSON without retry", async () => {
+    const { fetchImpl, calls } = stubFetch("not JSON", 200, "text/plain");
+    const r = await callStellarDocs(
+      entry("stellarDocs.search_docs"),
+      { query: "soroban" },
+      docsEnv,
+      fetchImpl
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.status).toBe(200);
+    expect(r.error.message).toContain("returned malformed JSON");
+    expect(calls).toHaveLength(1);
+  });
+
   it("retries the host ladder on 5xx and succeeds on a later host", async () => {
     let call = 0;
     const urls: string[] = [];
@@ -375,6 +407,38 @@ describe("stellarDocs adapter", () => {
     expect(r.ok).toBe(true);
     expect(urls[0]).toContain("-dsn.algolia.net");
     expect(urls[1]).toContain("-1.algolianet.com");
+    expect(urls).toHaveLength(2);
+  });
+
+  it("retries every host on malformed 5xx JSON", async () => {
+    const { fetchImpl, calls } = stubFetch("not JSON", 502, "text/plain");
+    const r = await callStellarDocs(
+      entry("stellarDocs.search_docs"),
+      { query: "soroban" },
+      docsEnv,
+      fetchImpl
+    );
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.message).toContain("all algolia hosts failed");
+    expect(calls).toHaveLength(4);
+  });
+
+  it("retries network failures and succeeds on a later host", async () => {
+    let requestCount = 0;
+    const fetchImpl: FetchLike = async () => {
+      requestCount += 1;
+      if (requestCount === 1) throw new TypeError("network unavailable");
+      return new Response(fixture("stellar-docs-success.json"), { status: 200 });
+    };
+    const r = await callStellarDocs(
+      entry("stellarDocs.search_docs"),
+      { query: "soroban storage" },
+      docsEnv,
+      fetchImpl
+    );
+    expect(r.ok).toBe(true);
+    expect(requestCount).toBe(2);
   });
 
   it("derives the query and filters to the exact page for get_doc_page_sections", async () => {
@@ -411,5 +475,180 @@ describe("stellarDocs adapter", () => {
     const data = r.data as { sections: { anchor: string }[]; nbSections: number };
     expect(data.nbSections).toBe(2); // the other page's record was dropped
     expect(data.sections.map((s) => s.anchor)).toEqual(["a", "b"]); // weight.position order
+  });
+
+  it("retrieves every page section when the derived slug query matches only the page heading", async () => {
+    const page = "https://developers.stellar.org/docs/tokens/control-asset-access";
+    const record = (anchor: string, position: number, url = page) => ({
+      url: `${url}#${anchor}`,
+      url_without_anchor: url,
+      anchor,
+      type: "content",
+      hierarchy: {
+        lvl0: "Assets",
+        lvl1: "Controlling Access to an Asset with Flags"
+      },
+      content: `section ${anchor}`,
+      weight: { position }
+    });
+    const responses = [
+      {
+        hits: [record("controlling-access-to-an-asset-with-flags", 0)],
+        nbHits: 1,
+        page: 0,
+        nbPages: 1,
+        hitsPerPage: 100
+      },
+      {
+        hits: [
+          record("authorization-revocable-0x2", 2),
+          record("authorization-required-0x1", 1),
+          record("controlling-access-to-an-asset-with-flags", 0),
+          record("noise", 0, "https://developers.stellar.org/docs/other")
+        ],
+        nbHits: 8,
+        page: 0,
+        nbPages: 2,
+        hitsPerPage: 100
+      },
+      {
+        hits: [
+          record("authorization-immutable-0x4", 3),
+          record("clawback-enabled-0x8", 4),
+          record("set-trustline-flag-operation", 5),
+          record("example-flow", 6)
+        ],
+        nbHits: 8,
+        page: 1,
+        nbPages: 2,
+        hitsPerPage: 100
+      }
+    ];
+    const calls: { url: string; init?: RequestInit }[] = [];
+    const fetchImpl: FetchLike = async (url, init) => {
+      calls.push({ url, init });
+      const response = responses[calls.length - 1];
+      if (!response) throw new Error("unexpected extra Algolia query");
+      return new Response(JSON.stringify(response), { status: 200 });
+    };
+
+    const r = await callStellarDocs(
+      entry("stellarDocs.get_doc_page_sections"),
+      { path: "/docs/tokens/control-asset-access" },
+      docsEnv,
+      fetchImpl
+    );
+
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const data = r.data as {
+      sections: { anchor: string }[];
+      nbSections: number;
+      complete: boolean;
+      truncated: boolean;
+    };
+    expect(data.nbSections).toBe(7);
+    expect(data.sections.map((section) => section.anchor)).toEqual([
+      "controlling-access-to-an-asset-with-flags",
+      "authorization-required-0x1",
+      "authorization-revocable-0x2",
+      "authorization-immutable-0x4",
+      "clawback-enabled-0x8",
+      "set-trustline-flag-operation",
+      "example-flow"
+    ]);
+    expect(data.complete).toBe(true);
+    expect(data.truncated).toBe(false);
+    const titleParams = JSON.parse(String(calls[1]?.init?.body));
+    expect(titleParams.query).toBe('"Controlling Access to an Asset with Flags"');
+    expect(titleParams.restrictSearchableAttributes).toEqual(["hierarchy.lvl1"]);
+    expect(titleParams.removeWordsIfNoResults).toBe("none");
+    expect(titleParams.typoTolerance).toBe(false);
+    expect(JSON.parse(String(calls[2]?.init?.body)).page).toBe(1);
+  });
+
+  it("keeps one section per URL and prefers the content-bearing record", async () => {
+    const page = "https://developers.stellar.org/docs/learn/fundamentals/lumens";
+    const shared = {
+      url: `${page}#base-reserves`,
+      url_without_anchor: page,
+      anchor: "base-reserves",
+      hierarchy: { lvl0: "Learn", lvl1: "Lumens" },
+      weight: { position: 2 }
+    };
+    const body = JSON.stringify({
+      hits: [
+        { ...shared, type: "lvl2" },
+        { ...shared, type: "content", content: "The base reserve contributes to minimum balance." }
+      ],
+      nbHits: 2,
+      page: 0,
+      nbPages: 1,
+      hitsPerPage: 100
+    });
+    const { fetchImpl } = stubFetch(body, 200);
+
+    const r = await callStellarDocs(
+      entry("stellarDocs.get_doc_page_sections"),
+      { path: "/docs/learn/fundamentals/lumens", includeContent: true },
+      docsEnv,
+      fetchImpl
+    );
+
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const data = r.data as {
+      sections: { url: string; type: string; content?: string }[];
+      nbSections: number;
+    };
+    expect(data.nbSections).toBe(1);
+    expect(data.sections).toEqual([
+      {
+        url: `${page}#base-reserves`,
+        url_without_anchor: page,
+        anchor: "base-reserves",
+        type: "content",
+        breadcrumb: "Learn > Lumens",
+        content: "The base reserve contributes to minimum balance."
+      }
+    ]);
+  });
+
+  it("omits page-section content when includeContent is false", async () => {
+    const page = "https://developers.stellar.org/docs/learn/fundamentals/lumens";
+    const body = JSON.stringify({
+      hits: [
+        {
+          url: `${page}#base-reserves`,
+          url_without_anchor: page,
+          anchor: "base-reserves",
+          type: "lvl2",
+          hierarchy: { lvl0: "Learn", lvl1: "Lumens" },
+          weight: { position: 2 }
+        }
+      ],
+      nbHits: 1,
+      page: 0,
+      nbPages: 1,
+      hitsPerPage: 100
+    });
+    const { fetchImpl, calls } = stubFetch(body, 200);
+
+    const r = await callStellarDocs(
+      entry("stellarDocs.get_doc_page_sections"),
+      { path: "/docs/learn/fundamentals/lumens", includeContent: false },
+      docsEnv,
+      fetchImpl
+    );
+
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const data = r.data as { sections: { content?: string }[] };
+    expect(data.sections).toHaveLength(1);
+    expect(data.sections[0]).not.toHaveProperty("content");
+    for (const call of calls) {
+      const params = JSON.parse(String(call.init?.body));
+      expect(params.attributesToRetrieve).not.toContain("content");
+    }
   });
 });

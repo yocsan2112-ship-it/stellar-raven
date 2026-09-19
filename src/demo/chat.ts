@@ -1,5 +1,5 @@
 /**
- * POST /playground/chat — the stateless SSE chat turn (design Decisions 1, 4, 5).
+ * POST /playground/chat — the stateless SSE chat turn.
  *
  * Gauntlet order: method → CSRF/origin (Origin must equal the request
  * origin; Sec-Fetch-Site, when present, must be "same-origin" — "same-site"
@@ -9,15 +9,19 @@
  * not burn a throttle slot) → best-effort KV throttle. Only then does a
  * model turn start: streamText over the AI binding — routed through the AI
  * Gateway whose spend-limit rule is the mandatory account-level cost
- * backstop (design Decisions 3/5) — with the two demo tools, the production
+ * backstop — with the two demo tools, the production
  * SERVER_INSTRUCTIONS + playground preamble as system prompt, and
  * fullStream translated to DemoFrame SSE events. The whole turn is bounded
  * by one abort signal: client disconnect (stream cancel) or the turn
  * timeout stops model + tool spend, not just frame delivery.
  * tool-start/tool-result frames are emitted by the tools themselves
  * (src/demo/tools.ts); here only token/step/done/error mapping remains
- * (part names verified against ai v6: text-delta, start-step, finish,
- * abort, error, tool-error).
+ * (part names re-verified against ai v7's TextStreamPart union: text-delta,
+ * reasoning-delta, start-step, tool-error, abort, error, finish — all
+ * unchanged from v6).
+ * The switch below is over a discriminated union, so a renamed part is a type
+ * error rather than a silent no-op. The demo tests use a model stub, so the
+ * real AI tool loop runs without provider network access.
  *
  * WORKER-ONLY MODULE: imports src/demo/tools.ts (→ src/executor/run.ts →
  * cloudflare:workers). Route coverage lives in test/smoke/server.test.ts.
@@ -26,6 +30,7 @@ import { stepCountIs, streamText, type ToolSet } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createWorkersAI } from "workers-ai-provider";
 import { openai as openaiChat } from "workers-ai-provider/openai";
+import { google as googleGemini } from "workers-ai-provider/google";
 import { allowDevUnauthenticated } from "../auth/gate.ts";
 import { logEvent } from "../observability.ts";
 import { verifyDemoCookie } from "./auth.ts";
@@ -39,10 +44,13 @@ import {
   DEMO_REASONING_EFFORT_OVERRIDE_VAR,
   DEMO_TEMPERATURE,
   demoEffectiveOpenAiApiMode,
+  demoAnthropicProviderOptions,
   demoGatewayOptions,
   demoOpenAiApiModeFromOverride,
   demoOpenAiProviderOptions,
   demoModelSettings,
+  demoTemperatureFor,
+  demoUsesUnifiedRun,
   demoReasoningEffortFromOverride,
   demoReasoningEffortOverride,
   demoModelsFromOverride,
@@ -71,20 +79,14 @@ declare global {
   }
 }
 
-// The 2026-07-07 live /playground/chat gauntlet selected GPT-5.4 primary with
-// GPT-5.4 Mini fallback. Grok 4.3 and Kimi K2.7 Code remain useful controls,
-// but were slower or less stable in the exact SSE + tool-call path. Sonnet 4.6
-// is viable after the Cloudflare Anthropic system-field normalization below,
-// but slower and more likely to exhaust the demo's tight tool budget. Gemini
-// stays unregistered because its tool follow-up requires preserving Google's
-// provider-specific thought_signature in the OpenAI-compatible transcript.
-// See research/demo-model-gauntlet-2026-07-07.md for the measured matrix.
+// Model defaults come from measured gauntlet results. The current matrix and
+// provider routing constraints live in scripts/run-demo-model-gauntlet.mjs.
 /** Throttle-bucket subject for loopback dev requests (no cookie, no WorkOS). */
 const DEV_SUBJECT = "dev-loopback";
 const TOOL_BUDGET_MESSAGE =
   "The demo hit its tool/step budget before the model produced a final answer. The trace above shows the completed tool work, but the answer may be incomplete; ask a narrower follow-up.";
 /**
- * Whole-turn ceiling (design Decision 5: "abort/timeout on the whole turn").
+ * Whole-turn ceiling.
  * Worst legitimate turn: 3 model steps + 1 sandbox execute; generous so it
  * only trips hung provider streams, not slow-but-live turns.
  */
@@ -136,15 +138,22 @@ export async function handleDemoChat(
   if (contentLength > MAX_BODY_CHARS) {
     return reject(413, "payload_too_large", `Request body exceeds ${MAX_BODY_CHARS} bytes.`);
   }
-  const messages = await parseChatBody(request);
-  if (!messages) {
+  const parsed = await parseChatBody(request);
+  if (!parsed) {
     return reject(
       400,
       "bad_request",
       'Body must be JSON { messages: [{ role: "user" | "assistant", content: string }, ...] } with at least one message.'
     );
   }
-  const history = clampHistory(messages) as ChatMessage[];
+  if ("error" in parsed) {
+    return reject(
+      400,
+      "message_too_long",
+      `Each user message must contain at most ${DEMO_CAPS.maxUserMessageChars} characters.`
+    );
+  }
+  const history = clampHistory(parsed.messages) as ChatMessage[];
 
   const throttle = await demoThrottle(env.OAUTH_KV, subject);
   if (!throttle.allowed) {
@@ -174,13 +183,22 @@ export async function handleDemoChat(
       clientGone.abort();
     }
   });
+  let emittedTerminal = false;
   const emit = (frame: DemoFrame): void => {
     if (!open) return;
+    if (frame.type === "done" || frame.type === "error") {
+      // First terminal wins. The AI SDK can emit `finish` after an `error`,
+      // and the later generic frame must not replace the provider error.
+      if (emittedTerminal) return;
+      emittedTerminal = true;
+    }
     try {
       controller.enqueue(encoder.encode(encodeFrame(frame)));
-    } catch {
+    } catch (error) {
       open = false; // client went away — keep the turn's tool caps honest, drop frames
       clientGone.abort();
+      // Record which frame failed. Client disconnects also reach this path.
+      logEvent("demo-stream-drop", { frame: frame.type, error: errorText(error) });
     }
   };
 
@@ -190,6 +208,9 @@ export async function handleDemoChat(
   emit({ type: "ready" });
 
   ctx.waitUntil(runTurn(env, emit, history, subject, turnSignal).finally(() => {
+    // Mark an unexpected non-terminal exit as incomplete. The client and
+    // gauntlet treat this reason as a failure instead of a normal stop.
+    if (!emittedTerminal) emit({ type: "done", reason: "incomplete" });
     open = false;
     try {
       controller.close();
@@ -238,12 +259,24 @@ async function runTurn(
   try {
     const workersai = createWorkersAI({
       binding: env.AI,
-      // Gateway routing is mandatory: a missing gateway id/config fails model
-      // calls. Spend/rate rules are account-side posture tracked in Solo todo
-      // 848, not something this binding can enforce by itself.
+      // Gateway routing is mandatory. Spend and rate limits are account-side
+      // configuration; verify them live as described in ARCHITECTURE.md §7.
       gateway: demoGatewayOptions(env.DEMO_AI_GATEWAY_ID ?? DEMO_GATEWAY_ID_FALLBACK),
-      providers: [openAiApiMode === "responses" ? openAiResponses : openaiChat, cloudflareAnthropic],
+      // Register one plugin for each wire format. OpenAI-compatible vendors
+      // share one plugin, while Anthropic and Google use distinct plugins.
+      providers: [
+        openAiApiMode === "responses" ? openAiResponses : openaiChat,
+        cloudflareAnthropic,
+        googleGemini
+      ],
       resume: false
+    });
+    // The unified-run client omits `providers` for slugs that the plugin
+    // registry cannot resolve. Keep it separate so other models retain their
+    // provider SDK normalization.
+    const unifiedRun = createWorkersAI({
+      binding: env.AI,
+      gateway: demoGatewayOptions(env.DEMO_AI_GATEWAY_ID ?? DEMO_GATEWAY_ID_FALLBACK)
     });
     const sessionAffinity = await demoSessionAffinity(subject);
     for (let index = 0; index < demoModels.length; index += 1) {
@@ -272,8 +305,16 @@ async function runTurn(
         });
       };
       try {
+        // Vendors the plugin registry does not know (see DEMO_UNIFIED_RUN_PREFIXES)
+        // resolve through the plain binding instead. Same dispatch either way —
+        // binding.run(slug, body, { gateway }) — so the gateway's rate limit and
+        // spend rule still apply; only the SDK wrapper differs.
+        const viaUnifiedRun = demoUsesUnifiedRun(config.model);
+        const settings = demoModelSettings(config.model, sessionAffinity, reasoningEffort);
         const result = streamText({
-          model: workersai(config.model, demoModelSettings(config.model, sessionAffinity, reasoningEffort)),
+          model: viaUnifiedRun
+            ? unifiedRun(config.model, { extraHeaders: settings.extraHeaders })
+            : workersai(config.model, settings),
           system: DEMO_SYSTEM_PROMPT,
           messages,
           tools: tools as ToolSet,
@@ -286,7 +327,8 @@ async function runTurn(
             });
           },
           maxOutputTokens: DEMO_CAPS.maxOutputTokens,
-          temperature: DEMO_TEMPERATURE,
+          temperature: demoTemperatureFor(config.model),
+          ...demoAnthropicProviderOptions(config.model, reasoningEffort),
           ...demoOpenAiProviderOptions(config.model, openAiReasoningEffort),
           abortSignal
         });
@@ -300,7 +342,13 @@ async function runTurn(
               // Reasoning models can sit silent before answering; stream the
               // reasoning tail so the wait is visibly alive (client shows a
               // rolling tail, not a transcript).
-              attemptEmit({ type: "thinking", text: part.text });
+              //
+              // Empty deltas are dropped: the Claude family reports
+              // `thinkingChars: 0` across whole runs while still emitting
+              // reasoning parts — its thinking is signature/redacted, so the text
+              // is genuinely "". Forwarding those paints the pulse "thinking · "
+              // with nothing after it and costs a frame per delta.
+              if (part.text) attemptEmit({ type: "thinking", text: part.text });
               break;
             case "start-step":
               // Round boundaries are telemetry only (`steps` in demo-chat) —
@@ -349,14 +397,16 @@ async function runTurn(
                 totalTokens: part.totalUsage.totalTokens
               });
               if (!emittedUsefulOutput && index < demoModels.length - 1) {
-                fallbackToNextModel(`model finished (${part.finishReason}) before useful output`);
+                fallbackToNextModel(`model finished (${finishReason}) before useful output`);
                 break;
               }
-              if (part.finishReason === "tool-calls") {
+              if (finishReason === "tool-calls") {
                 attemptEmit({ type: "error", message: TOOL_BUDGET_MESSAGE });
                 return;
               }
-              attemptEmit({ type: "done", reason: part.finishReason });
+              // The SDK reports "other" when a step ends without a model
+              // finish chunk. The client must label that state as incomplete.
+              attemptEmit({ type: "done", reason: finishReason === "other" ? "incomplete" : finishReason });
               return;
             default:
               break; // source/raw/tool-call etc. — no frame mapping
@@ -489,17 +539,23 @@ function bodyText(body: BodyInit): string {
   if (typeof body === "string") return body;
   if (body instanceof Uint8Array) return new TextDecoder().decode(body);
   if (body instanceof ArrayBuffer) return new TextDecoder().decode(body);
-  return "{}";
+  // Refuse unknown body types. Replacing a request with empty JSON would hide
+  // an incompatible SDK change, while a throw activates the normal fallback.
+  throw new TypeError(`Unsupported Anthropic request body type: ${Object.prototype.toString.call(body)}`);
 }
 
 /**
- * null = malformed (caller answers 400). Oversized contents are truncated,
- * not rejected. Reads text first and re-checks the char cap (Content-Length
+ * null = malformed (caller answers 400). Oversized user messages are rejected.
+ * Reads text first and re-checks the char cap (Content-Length
  * can lie or be absent on chunked bodies) so JSON.parse and the entry walk
  * are bounded — within MAX_BODY_CHARS the walk is a few thousand entries at
  * worst, so no separate messages.length rejection is needed pre-clamp.
  */
-async function parseChatBody(request: Request): Promise<ChatMessage[] | null> {
+async function parseChatBody(request: Request): Promise<
+  | { messages: ChatMessage[] }
+  | { error: "message_too_long" }
+  | null
+> {
   let body: unknown;
   try {
     const raw = await request.text();
@@ -517,15 +573,14 @@ async function parseChatBody(request: Request): Promise<ChatMessage[] | null> {
     const { role, content } = entry as { role?: unknown; content?: unknown };
     if (role !== "user" && role !== "assistant") return null;
     if (typeof content !== "string") return null;
-    // The per-message cap is a USER-input cap (mirrors the textarea
-    // maxlength); replayed assistant answers can legitimately exceed it
-    // (maxOutputTokens 4096 ≈ >4000 visible chars), and truncating them
-    // feeds the model corrupted versions of its own prior replies
-    // (PR #5 review). Aggregate prefill stays bounded by MAX_BODY_CHARS
-    // here and clampHistory's total-char budget.
-    out.push({ role, content: role === "user" ? content.slice(0, DEMO_CAPS.maxUserMessageChars) : content });
+    // Apply the per-message cap only to user input. Replayed assistant answers
+    // can exceed it, while aggregate history remains bounded separately.
+    if (role === "user" && content.length > DEMO_CAPS.maxUserMessageChars) {
+      return { error: "message_too_long" };
+    }
+    out.push({ role, content });
   }
-  return out;
+  return { messages: out };
 }
 
 /** Message text only — never a stack, never a serialized error object. */

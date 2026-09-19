@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { DEMO_CAPS, clampHistory, createDemoToolBudget, demoThrottle } from "../src/demo/budget";
+import { RETENTION } from "../src/auth/retention";
 
 // ---------------------------------------------------------------------------
 // Stub (same shape as test/auth.test.ts's memoryKv)
@@ -47,7 +48,7 @@ describe("DEMO_CAPS", () => {
       maxSearchCallsPerTurn: 3,
       maxExecuteCallsPerTurn: 3,
       maxExecuteCodeChars: 8000,
-      maxUserMessageChars: 4000,
+      maxUserMessageChars: 8000,
       chatsPerHour: 30
     });
   });
@@ -64,20 +65,19 @@ describe("createDemoToolBudget", () => {
       unknownServiceSearches: 0,
       executeFailures: 0,
       executeResultTruncated: 0,
-      operationTotal: 0,
-      operationOk: 0,
-      operationError: 0,
-      operationSoftEmpty: 0,
+      operations: { total: 0, ok: 0, error: 0, softEmpty: 0 },
       recoveryHintedExecutes: 0,
       recoveryAdviceDelivered: false,
       recoveryAdviceSuppressed: 0,
-      latestOperationTotal: 0,
-      latestOperationOk: 0,
-      latestOperationError: 0,
-      latestOperationSoftEmpty: 0,
+      latestOperations: { total: 0, ok: 0, error: 0, softEmpty: 0 },
       latestExecuteEvidence: null,
       latestRecoveryHint: null
     });
+  });
+
+  it("creates distinct aggregate and latest summaries", () => {
+    const budget = createDemoToolBudget();
+    expect(budget.operations).not.toBe(budget.latestOperations);
   });
 });
 
@@ -150,12 +150,13 @@ describe("demoThrottle", () => {
     expect(denied).toEqual({ allowed: false, remaining: 0 });
   });
 
-  it("keys the counter by subject and hour bucket, and sets a 2h expirationTtl", async () => {
+  it("keys the counter by subject and hour bucket, with the disclosed retention as its expirationTtl", async () => {
     const kv = memoryKv();
     await demoThrottle(kv, "subject-d");
     const hourBucket = Math.floor(Date.now() / (60 * 60 * 1000));
     expect(kv.store.has(`demo-throttle:subject-d:${hourBucket}`)).toBe(true);
-    expect(kv.putCalls[0]?.options).toEqual({ expirationTtl: 2 * 60 * 60 });
+    // Runtime TTL and disclosed retention are one value — no independent source.
+    expect(kv.putCalls[0]?.options).toEqual({ expirationTtl: RETENTION.demoThrottleSeconds });
   });
 
   it("keeps separate counters per subject", async () => {

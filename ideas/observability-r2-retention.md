@@ -3,15 +3,16 @@
 Status: research note only. Do not build this until a real investigation needs history beyond the
 current Workers Logs window.
 
-Verified: 2026-07-07 against the current repo and current Cloudflare docs.
+Historical research verified on 2026-07-07. Provider limits, prices, and source line numbers below are dated observations.
+Use [the architecture](../ARCHITECTURE.md) for current logging and [the usage guide](../usage/README.md) for aggregate retention.
+The implemented usage archive is not the raw-log archive proposed here.
 
-## Current state
+## Observed state — 2026-07-07
 
 The production worker already emits useful structured observability. `src/observability.ts` is a
-thin helper: `logEvent(evt, fields)` writes one flat JSON object to `console.log`, and `preview()`
-caps text fields at 300 chars by default, with execute code previews capped at 4,000 chars. The
-file's discipline is explicit: flat, small fields; no secrets; model-authored queries/code may be
-logged because they are the debugging/eval evidence; adapter results are expected to be redacted
+thin helper: `logEvent(evt, fields)` writes one flat JSON object to `console.log`. The file's
+discipline is explicit: flat, small fields, and never a secret value, a query, execute code, a
+result, an answer, or a provider error message; adapter results are expected to be redacted
 before logging. It also documents the split between logs for facts and trace spans for timing
 attribution (`src/observability.ts:1-36`).
 
@@ -218,7 +219,7 @@ already support independent head sampling, and traces are the higher event multi
   report shape.
 - Eval result files remain local-only evidence by default; READMEs remain the committed durable
   record.
-- Secrets remain host-side; no secret values go into logs, R2 object names, Solo comments, or repo
+- Secrets remain host-side; no secret values go into logs, R2 object names, round ledgers, or repo
   files.
 - `wrangler tail` remains a convenience stream only, not evidence of absence.
 

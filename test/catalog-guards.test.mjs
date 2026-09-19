@@ -16,12 +16,30 @@ import { fileURLToPath } from "node:url";
 import {
   attachRunnableSkills,
   assertNoNonExposedRefs,
-  assertBuildAuthorityIdsResolve
+  assertBuildAuthorityIdsResolve,
+  assertScoutExclusionsResolve
 } from "../scripts/build-catalog.mjs";
 import { RUNNERS } from "../src/skills/runners/index.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DIGEST = "skills.lumenloop.stellar-ecosystem-digest";
+
+describe("Scout exposure data matches the source contract", () => {
+  const inventory = JSON.parse(readFileSync(join(ROOT, "inventory", "stellar-light.json"), "utf8"));
+
+  it("accepts the current contract and still rejects a removed excluded operation", () => {
+    expect(() => assertScoutExclusionsResolve(inventory.openapi)).not.toThrow();
+    const changed = structuredClone(inventory.openapi);
+    delete changed.paths["/api/feedback"].post;
+    expect(() => assertScoutExclusionsResolve(changed)).toThrow("no longer present");
+  });
+
+  it("requires an exposure decision when a skill-only collection enters OpenAPI", () => {
+    const changed = structuredClone(inventory.openapi);
+    changed.paths["/api/repos"] = { get: { operationId: "listRepos" } };
+    expect(() => assertScoutExclusionsResolve(changed)).toThrow("Previously unlisted Scout paths");
+  });
+});
 
 /**
  * The committed manifest's entries with the runnable attachment UNDONE —
@@ -74,7 +92,7 @@ describe("attachRunnableSkills — fail-loud drift guards (design §5)", () => {
   });
 });
 
-describe("assertNoNonExposedRefs — runnable schema JSON is guarded emitted text (design §5)", () => {
+describe("assertNoNonExposedRefs — all emitted schema JSON follows ADR-0003", () => {
   it("passes on the real attached entries (the build's own steady state)", () => {
     expect(() => assertNoNonExposedRefs(attachRunnableSkills(preAttachEntries(), RUNNERS))).not.toThrow();
   });
@@ -105,6 +123,43 @@ describe("assertNoNonExposedRefs — runnable schema JSON is guarded emitted tex
       };
     });
     expect(() => assertNoNonExposedRefs(planted)).toThrow(/ADR-0003 leak/);
+  });
+
+  it("a planted non-exposed op inside a non-runnable operation inputSchema trips the build", () => {
+    const planted = preAttachEntries().map((entry) =>
+      entry.id === "scout.searchProjects"
+        ? {
+            ...entry,
+            inputSchema: {
+              ...entry.inputSchema,
+              description: "submit corrections with scout.submitFeedback"
+            }
+          }
+        : entry
+    );
+    expect(() => assertNoNonExposedRefs(planted)).toThrow(/ADR-0003 leak/);
+  });
+
+  it("a planted excluded path inside a non-runnable operation outputSchema trips the build", () => {
+    const planted = preAttachEntries().map((entry) =>
+      entry.id === "scout.searchProjects"
+        ? {
+            ...entry,
+            outputSchema: {
+              ...entry.outputSchema,
+              description: "aggregated from POST /api/feedback"
+            }
+          }
+        : entry
+    );
+    expect(() => assertNoNonExposedRefs(planted)).toThrow(/ADR-0003 leak/);
+  });
+
+  it("scrubs excluded endpoint prose from the generated operation schemas", () => {
+    const projects = preAttachEntries().find((entry) => entry.id === "scout.searchProjects");
+    const schema = JSON.stringify(projects.outputSchema);
+    expect(schema).not.toContain("POST /api/feedback");
+    expect(schema).toContain("Aggregated nightly from upstream feedback vote kinds.");
   });
 });
 

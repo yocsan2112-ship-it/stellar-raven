@@ -1,5 +1,5 @@
 /**
- * searchCatalog tests — the FROZEN contract (scratchpad 514): ranked hits,
+ * searchCatalog tests — the frozen contract: ranked hits,
  * excluded-op absence, kind/service filters, default limit 10, TS signatures on
  * operation hits. Runs against the real generated manifest.
  */
@@ -12,6 +12,7 @@ import {
   searchCatalog,
   searchCatalogPage,
   recoveryCandidates,
+  recoveryCandidatesFromSources,
   renderSignature,
   COMPACT_OUTPUT_THRESHOLD,
   DEFAULT_SEARCH_LIMIT,
@@ -29,8 +30,9 @@ import {
 import { readSkill } from "../src/skills/store.ts";
 import { lazyPinnedSkillSource as skillSource } from "./helpers/skill-source.ts";
 import { RUNNERS } from "../src/skills/runners/index.ts";
-import { scoreEntryWeighted, canonicalizeQuery } from "../src/catalog/scoring.ts";
+import { STOPWORDS, scoreEntryWeighted, canonicalizeQuery } from "../src/catalog/scoring.ts";
 import { lastIdSegment } from "../src/catalog/id.ts";
+import { prepareAliasQuery, queryContainsAliasTrigger } from "../src/catalog/known-aliases.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -63,6 +65,28 @@ describe("searchCatalog — contract shape", () => {
   it("boosts an exact id match to the top", () => {
     const hits = searchCatalog(catalog, { query: "lumenloop.search_directory" });
     expect(hits[0]?.id).toBe("lumenloop.search_directory");
+  });
+
+  it("scores receipt-backed entity aliases only for complete normalized triggers", () => {
+    const expected = [
+      "lumenloop.find_content_by_entity"
+    ];
+    for (const query of ["CRDT", "CRD-T", "CRDYX", "WisdomTree Private Credit", "wisdomtree", "wisdom-tree"]) {
+      const ids = searchCatalog(catalog, {
+        query,
+        service: "lumenloop",
+        limit: 5
+      }).map((hit) => hit.id);
+      expect(ids.slice(0, 1), query).toEqual(expected);
+    }
+    for (const query of ["merkle tree", "tree", "wisdom", "credit card"]) {
+      const ids = searchCatalog(catalog, {
+        query,
+        service: "lumenloop",
+        limit: 50
+      }).map((hit) => hit.id);
+      expect(ids, query).not.toContain("lumenloop.find_content_by_entity");
+    }
   });
 
   it("defaults to limit 10 and honors an explicit limit", () => {
@@ -117,6 +141,29 @@ describe("recoveryCandidates — advisory contingency graph", () => {
     expect(recovery.map((candidate) => candidate.id)).not.toContain("scout.getBuilders");
   });
 
+  it("applies the Scout profile triggers and leaves getChanges unprofiled", () => {
+    const ids = (from: string, reason: "empty" | "weak" | "partial") =>
+      recoveryCandidates(catalog, [from], reason).map((candidate) => candidate.id);
+
+    expect(ids("scout.listContracts", "empty")).toEqual([
+      "scout.searchRepos",
+      "lumenloop.search_content_semantic"
+    ]);
+    expect(ids("scout.getRepoTrust", "partial")).toEqual([
+      "scout.searchRepos",
+      "scout.searchResearch"
+    ]);
+    expect(ids("scout.scfPitch", "empty")).toEqual([
+      "lumenloop.find_similar_scf_submissions"
+    ]);
+    expect(ids("scout.vetIdea", "weak")).toEqual([
+      "lumenloop.find_similar_scf_submissions",
+      "scout.searchHackathonBuilds",
+      "scout.searchResearch"
+    ]);
+    expect(ids("scout.getChanges", "empty")).toEqual([]);
+  });
+
   it("deduplicates targets, excludes attempted ids, and observes its bound", () => {
     const recovery = recoveryCandidates(
       catalog,
@@ -136,7 +183,126 @@ describe("recoveryCandidates — advisory contingency graph", () => {
   });
 });
 
+describe("recoveryCandidatesFromSources — execute-time contingency graph", () => {
+  it("keeps its unfiltered source traversal distinct from reason-filtered recovery", () => {
+    expect(recoveryCandidates(catalog, ["scout.getBuilders"], "partial").map(({ id }) => id)).toEqual([
+      "lumenloop.find_av_passages"
+    ]);
+    expect(recoveryCandidatesFromSources(catalog, ["scout.getBuilders"], []).map(({ id }) => id)).toEqual([
+      "lumenloop.search_content_semantic",
+      "scout.searchResearch",
+      "lumenloop.find_av_passages"
+    ]);
+  });
+
+  it("preserves source and edge order while deduplicating and observing the early limit", () => {
+    const sources = ["scout.getPeople", "scout.getBuilders"];
+
+    expect(recoveryCandidatesFromSources(catalog, sources, [], 3).map(({ id, from }) => ({ id, from }))).toEqual([
+      { id: "scout.getBuilders", from: "scout.getPeople" },
+      { id: "scout.searchResearch", from: "scout.getPeople" },
+      { id: "lumenloop.search_content_semantic", from: "scout.getPeople" }
+    ]);
+    expect(recoveryCandidatesFromSources(catalog, sources, [], 4).map(({ id, from }) => ({ id, from }))).toEqual([
+      { id: "scout.getBuilders", from: "scout.getPeople" },
+      { id: "scout.searchResearch", from: "scout.getPeople" },
+      { id: "lumenloop.search_content_semantic", from: "scout.getPeople" },
+      { id: "lumenloop.find_av_passages", from: "scout.getBuilders" }
+    ]);
+  });
+
+  it("uses the complete exclusion set, including ids outside the source set", () => {
+    const recovery = recoveryCandidatesFromSources(
+      catalog,
+      ["scout.getPeople", "scout.getBuilders"],
+      ["scout.searchResearch"],
+      4
+    );
+
+    expect(recovery.map(({ id, from }) => ({ id, from }))).toEqual([
+      { id: "scout.getBuilders", from: "scout.getPeople" },
+      { id: "lumenloop.search_content_semantic", from: "scout.getPeople" },
+      { id: "lumenloop.find_av_passages", from: "scout.getBuilders" }
+    ]);
+    expect(recovery.map(({ id }) => id)).not.toContain("scout.searchResearch");
+  });
+
+  it("leaves ranked search output unchanged", () => {
+    const before = searchCatalogPage(catalog, { query: "builder directory", limit: 5 });
+
+    recoveryCandidatesFromSources(
+      catalog,
+      ["scout.getPeople", "scout.getBuilders"],
+      ["scout.searchResearch"]
+    );
+
+    expect(searchCatalogPage(catalog, { query: "builder directory", limit: 5 })).toEqual(before);
+  });
+});
+
 describe("searchCatalogPage — structural wider candidates", () => {
+  it("keeps service-filter-excluded skill matches in labeled recovery metadata", () => {
+    const page = searchCatalogPage(catalog, {
+      query: "agentic payments MPP",
+      service: "lumenloop",
+      limit: 5
+    });
+    const advisories = page.recoveryMetadata.serviceFilterExcludedSkills;
+
+    expect(page.hits.every((hit) => hit.service === "lumenloop")).toBe(true);
+    expect(page.hits.map((hit) => hit.id)).not.toContain(
+      "skills.stellar-dev.agentic-payments"
+    );
+    expect(advisories).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "skills.stellar-dev.agentic-payments",
+          service: "skills",
+          kind: "skill",
+          basis: "service-filter-excluded-skill"
+        })
+      ])
+    );
+  });
+
+  it("does not add excluded-skill advisories to explicit operation searches", () => {
+    const page = searchCatalogPage(catalog, {
+      query: "agentic payments MPP",
+      kind: "operation",
+      service: "lumenloop"
+    });
+    expect(page.recoveryMetadata.serviceFilterExcludedSkills).toEqual([]);
+  });
+
+  it("reports hit count and the absolute top-two score gap", () => {
+    const page = searchCatalogPage(catalog, { query: "search directory", limit: 5 });
+    expect(page.confidence.hitCount).toBe(page.hits.length);
+    expect(page.confidence.topScoreGap).toBe(
+      Math.abs(page.hits[0]!.score - page.hits[1]!.score)
+    );
+    expect(page.confidence.topScoreTiers).toEqual({
+      first: page.hits[0]!.tier,
+      second: page.hits[1]!.tier
+    });
+
+    const empty = searchCatalogPage(catalog, { query: "zzzzqqqq zzqqzzqq", kind: "skill" });
+    expect(empty.confidence).toEqual({ hitCount: 0, topScoreGap: null, topScoreTiers: null });
+  });
+
+  it("reports an absolute gap with tier context when gated order leads a higher score", () => {
+    const page = searchCatalogPage(catalog, {
+      query: "What functions does the Stellar Asset Contract expose, and which are restricted to the asset issuer/admin?",
+      limit: 5
+    });
+    expect(page.hits[0]!.tier).toBe("gated");
+    expect(page.hits[1]!.tier).toBe("backfill");
+    expect(page.hits[1]!.score).toBeGreaterThan(page.hits[0]!.score);
+    expect(page.confidence).toMatchObject({
+      topScoreGap: page.hits[1]!.score - page.hits[0]!.score,
+      topScoreTiers: { first: "gated", second: "backfill" }
+    });
+  });
+
   it("uses canonical Lumenloop lanes for the production-shaped Tomer Weller query", () => {
     const page = searchCatalogPage(catalog, {
       query: "Tomer Weller",
@@ -188,7 +354,11 @@ describe("searchCatalogPage — structural wider candidates", () => {
   });
 
   it("recommends semantic and research anchors for exact low-evidence person questions", () => {
-    for (const query of ["Who is Tyler van der Hoeven?", "Who is Danel Jed McCaleb?"]) {
+    for (const query of [
+      "Who is Tyler van der Hoeven?",
+      "Who is Danel Jed McCaleb?",
+      "Who was Ada Lovelace?"
+    ]) {
       const page = searchCatalogPage(catalog, { query, limit: 5 });
       expect(page.hits.every((hit) => hit.tier === "backfill"), query).toBe(true);
       expect(page.widerCandidates.map((candidate) => candidate.id), query).toEqual([
@@ -197,6 +367,18 @@ describe("searchCatalogPage — structural wider candidates", () => {
         "stellarDocs.search_docs"
       ]);
     }
+  });
+
+  it("does not treat a role question as a proper-name advisory", () => {
+    const page = searchCatalogPage(catalog, {
+      query: "Who is responsible for Soroban protocol upgrades?",
+      limit: 5
+    });
+    expect(page.widerCandidates.map((candidate) => candidate.id)).not.toEqual([
+      "scout.searchResearch",
+      "lumenloop.search_content_semantic",
+      "stellarDocs.search_docs"
+    ]);
   });
 
   it("routes a current SDF person query to the structured people directory", () => {
@@ -242,7 +424,7 @@ describe("searchCatalogPage — structural wider candidates", () => {
     ]);
   });
 
-  it("stays silent for gated, mixed, and skill-only pages and honors service filters", () => {
+  it("stays silent for multi-token gated and mixed pages and skill-only pages, and honors service filters", () => {
     expect(
       searchCatalogPage(catalog, {
         query: "stellar soroban contract",
@@ -286,7 +468,7 @@ describe("searchCatalogPage — structural wider candidates", () => {
   });
 });
 
-describe("loadManifest — structural invariants (F6)", () => {
+describe("loadManifest — structural invariants", () => {
   function rawManifest(): { entries: Record<string, unknown>[] } {
     return JSON.parse(readFileSync(join(ROOT, "catalog", "manifest.json"), "utf8"));
   }
@@ -343,6 +525,396 @@ describe("searchCatalog — excluded ops are absent by construction (ADR-0003)",
 });
 
 describe("searchCatalog — routing quality", () => {
+  function structuredIntentFixture({
+    query,
+    overflowDescription,
+    overflowPhrases,
+    overflowRoutingKeywords,
+    overflowKeywords,
+    overflowLane
+  }: {
+    query: string;
+    overflowDescription: string;
+    overflowPhrases?: CatalogEntry["routingPhrases"];
+    overflowRoutingKeywords?: string[];
+    overflowKeywords?: string[];
+    overflowLane?: "detail";
+  }): Catalog {
+    const tokens = query.split(" ");
+    const querySlug = tokens.join("_");
+    const entry = (
+      service: "lumenloop" | "scout" | "stellarDocs" | "skills",
+      name: string,
+      description: string,
+      extra: Partial<CatalogEntry> = {}
+    ): CatalogEntry => ({
+      id: `${service}.${name}`,
+      service,
+      kind: service === "skills" ? "skill" : "operation",
+      description,
+      inputSchema: null,
+      outputSchema: null,
+      transport: null,
+      provenance: { source: "test://structured-intent", fetchedAt: "2026-01-01T00:00:00Z" },
+      ...extra
+    });
+
+    return loadManifest({
+      version: 1,
+      generatedAt: "2026-01-01T00:00:00Z",
+      entries: [
+        entry("scout", `${querySlug}_primary`, `${tokens[0]} route`),
+        entry("scout", `${querySlug}_secondary`, `${tokens[1]} route`),
+        entry("scout", "overflow", overflowDescription, {
+          ...(overflowPhrases ? { routingPhrases: overflowPhrases } : {}),
+          ...(overflowRoutingKeywords ? { routingKeywords: overflowRoutingKeywords } : {}),
+          ...(overflowKeywords ? { keywords: overflowKeywords } : {}),
+          ...(overflowLane ? {
+            retrievalProfile: {
+              lane: overflowLane,
+              emptyScope: "operation",
+              recoverWith: [{
+                id: `scout.${querySlug}_primary`,
+                relation: "cross-family",
+                on: ["empty"]
+              }]
+            }
+          } : {})
+        }),
+        entry("lumenloop", `${querySlug}_aux`, `${tokens[0]} route`),
+        entry("stellarDocs", `${querySlug}_aux`, `${tokens[1]} route`),
+        entry("skills", `${querySlug}_aux`, `${tokens[2] ?? tokens[0]} route`)
+      ]
+    });
+  }
+
+  it.each([1, 5])("preserves the default-kind name ranking and page facts at limit %i", (limit) => {
+    const page = searchCatalogPage(catalog, { query: "freighter", limit });
+    const expected = [
+      { id: "skills.stellar-dev.dapp", score: 75, tier: "gated" },
+      { id: "stellarDocs.search_wallet_dapp_docs", score: 75, tier: "gated" }
+    ];
+    expect(page.hits.map(({ id, score, tier }) => ({ id, score, tier }))).toEqual(expected.slice(0, limit));
+    expect(page.total).toBe(2);
+    expect(page.truncated).toBe(limit < 2);
+    expect(page.effectiveLimit).toBe(limit);
+    expect(page.widerCandidates).toEqual([
+      expect.objectContaining({ id: "scout.searchProjects", basis: "short-query-directory" })
+    ]);
+  });
+
+  it("keeps the accepted GitHub-activity leaderboard intent inside the Scout quota", () => {
+    const page = searchCatalogPage(catalog, {
+      query: "top projects by GitHub activity",
+      limit: 5
+    });
+
+    expect(page.hits.map((hit) => hit.id)).toContain("scout.getLeaderboard");
+    expect(page.hits.map((hit) => hit.id)).not.toContain("scout.searchProjects");
+    expect(page.hits.filter((hit) => hit.service === "scout")).toHaveLength(2);
+    expect(searchCatalogPage(catalog, {
+      query: "top projects by GitHub activity",
+      limit: 5
+    })).toEqual(page);
+    expect(page.truncated).toBe(true);
+  });
+
+  it("keeps the accepted Stellar GitHub-activity leaderboard intent inside the Scout quota", () => {
+    const page = searchCatalogPage(catalog, {
+      query: "top Stellar projects by GitHub activity",
+      limit: 5
+    });
+
+    expect(page.hits.map((hit) => hit.id)).toContain("scout.getLeaderboard");
+    expect(page.hits.map((hit) => hit.id)).not.toContain("scout.searchProjects");
+    expect(page.hits.filter((hit) => hit.service === "scout")).toHaveLength(2);
+    expect(searchCatalogPage(catalog, {
+      query: "top Stellar projects by GitHub activity",
+      limit: 5
+    })).toEqual(page);
+    expect(page.truncated).toBe(true);
+  });
+
+  it("does not preserve a description-only full match without a qualifying phrase", () => {
+    const synthetic = structuredIntentFixture({
+      query: "alpha beta gamma delta",
+      overflowDescription: "alpha beta gamma delta"
+    });
+
+    const ids = searchCatalogPage(synthetic, {
+      query: "alpha beta gamma delta",
+      limit: 5
+    }).hits.map((hit) => hit.id);
+
+    expect(ids).toContain("scout.alpha_beta_gamma_delta_primary");
+    expect(ids).toContain("scout.alpha_beta_gamma_delta_secondary");
+    expect(ids).not.toContain("scout.overflow");
+  });
+
+  it("preserves a complete three-token intent with two description tokens", () => {
+    const synthetic = structuredIntentFixture({
+      query: "alpha beta gamma",
+      overflowDescription: "alpha beta ranking",
+      overflowPhrases: [{ field: "useWhen", tokens: ["beta", "gamma"] }]
+    });
+
+    const ids = searchCatalogPage(synthetic, {
+      query: "alpha beta gamma",
+      limit: 5
+    }).hits.map((hit) => hit.id);
+
+    expect(ids).toContain("scout.alpha_beta_gamma_primary");
+    expect(ids).not.toContain("scout.alpha_beta_gamma_secondary");
+    expect(ids).toContain("scout.overflow");
+  });
+
+  it("does not preserve an ambiguous two-token intent with one description token", () => {
+    const synthetic = structuredIntentFixture({
+      query: "alpha beta",
+      overflowDescription: "alpha ranking",
+      overflowPhrases: [{ field: "keywords", tokens: ["alpha", "beta"] }],
+      overflowRoutingKeywords: ["alpha", "beta"]
+    });
+
+    const ids = searchCatalogPage(synthetic, {
+      query: "alpha beta",
+      limit: 5
+    }).hits.map((hit) => hit.id);
+
+    expect(ids).toContain("scout.alpha_beta_primary");
+    expect(ids).toContain("scout.alpha_beta_secondary");
+    expect(ids).not.toContain("scout.overflow");
+  });
+
+  it("does not admit an ungated overflow operation through phrase metadata", () => {
+    const synthetic = structuredIntentFixture({
+      query: "alpha beta gamma delta epsilon",
+      overflowDescription: "alpha ranking",
+      overflowPhrases: [{
+        field: "useWhen",
+        tokens: ["alpha", "beta", "gamma", "delta", "epsilon"]
+      }]
+    });
+
+    const page = searchCatalogPage(synthetic, {
+      query: "alpha beta gamma delta epsilon",
+      limit: 5
+    });
+
+    expect(page.hits).toHaveLength(5);
+    expect(page.hits.map((hit) => hit.id)).not.toContain("scout.overflow");
+  });
+
+  it("does not use schema keywords as structured intent evidence", () => {
+    const synthetic = structuredIntentFixture({
+      query: "alpha beta gamma delta",
+      overflowDescription: "alpha beta ranking",
+      overflowKeywords: ["gamma", "delta"]
+    });
+
+    const ids = searchCatalogPage(synthetic, {
+      query: "alpha beta gamma delta",
+      limit: 5
+    }).hits.map((hit) => hit.id);
+
+    expect(ids).toContain("scout.alpha_beta_gamma_delta_secondary");
+    expect(ids).not.toContain("scout.overflow");
+  });
+
+  it("does not combine two source phrases into one complete intent", () => {
+    const synthetic = structuredIntentFixture({
+      query: "alpha beta gamma delta",
+      overflowDescription: "alpha beta ranking",
+      overflowPhrases: [
+        { field: "useWhen", tokens: ["beta", "gamma"] },
+        { field: "exampleQuestions", tokens: ["beta", "delta"] }
+      ],
+      overflowRoutingKeywords: ["alpha", "beta", "gamma", "delta"]
+    });
+
+    const ids = searchCatalogPage(synthetic, {
+      query: "alpha beta gamma delta",
+      limit: 5
+    }).hits.map((hit) => hit.id);
+
+    expect(ids).toContain("scout.alpha_beta_gamma_delta_secondary");
+    expect(ids).not.toContain("scout.overflow");
+  });
+
+  it("does not preserve a complete detail-lane overflow operation", () => {
+    const synthetic = structuredIntentFixture({
+      query: "alpha beta gamma",
+      overflowDescription: "alpha beta ranking",
+      overflowPhrases: [{ field: "useWhen", tokens: ["beta", "gamma"] }],
+      overflowLane: "detail"
+    });
+
+    const ids = searchCatalogPage(synthetic, {
+      query: "alpha beta gamma",
+      limit: 5
+    }).hits.map((hit) => hit.id);
+
+    expect(ids).toContain("scout.alpha_beta_gamma_secondary");
+    expect(ids).not.toContain("scout.overflow");
+  });
+
+  it("attributes positive and negative source-routing membership separately", () => {
+    const withoutPositive = loadManifest({
+      ...catalog,
+      entries: catalog.entries.map(({
+        routingPhrases: _phrases,
+        routingKeywords: _keywords,
+        ...entry
+      }) => entry)
+    });
+    const withoutNegative = loadManifest({
+      ...catalog,
+      entries: catalog.entries.map(({ routingExclusions: _exclusions, ...entry }) => entry)
+    });
+    const query = "top projects by GitHub activity";
+    const options = { query, service: "scout", limit: 5 } as const;
+    const routedIds = searchCatalogPage(catalog, options).hits.map((hit) => hit.id);
+    const withoutPositiveIds = searchCatalogPage(withoutPositive, options)
+      .hits.map((hit) => hit.id);
+    const withoutNegativeIds = searchCatalogPage(withoutNegative, options)
+      .hits.map((hit) => hit.id);
+
+    expect(routedIds).toContain("scout.getLeaderboard");
+    expect(withoutPositiveIds).not.toContain("scout.getLeaderboard");
+    expect(routedIds).not.toContain("scout.searchProjects");
+    expect(withoutNegativeIds).toContain("scout.searchProjects");
+  });
+
+  it("keeps every exact operation id first after source-routing admission", () => {
+    for (const entry of catalog.entries.filter((candidate) => candidate.kind === "operation")) {
+      expect(searchCatalog(catalog, { query: entry.id, limit: 1 })[0]?.id, entry.id)
+        .toBe(entry.id);
+    }
+  });
+
+  it("does not let negative routing metadata reject its own exact operation id", () => {
+    const withExclusions = catalog.entries.filter(
+      (entry) => entry.kind === "operation" && (entry.routingExclusions?.length ?? 0) > 0
+    );
+    expect(withExclusions.length).toBeGreaterThan(0);
+    for (const entry of withExclusions) {
+      expect(searchCatalog(catalog, { query: entry.id, limit: 1 })[0]?.id, entry.id)
+        .toBe(entry.id);
+    }
+  });
+
+  it.each([
+    "freighter",
+    "openx402",
+    "hypertron",
+    "planbok",
+    "vigente",
+    "cointracker",
+    "alypay"
+  ])("adds a directory advisory for the bare project name %s", (query) => {
+    const directoryIds = new Set([
+      "lumenloop.search_directory",
+      "scout.searchProjects"
+    ]);
+    const page = searchCatalogPage(catalog, { query, kind: "operation", limit: 5 });
+    expect(
+      page.widerCandidates.some(
+        (candidate) => directoryIds.has(candidate.id) &&
+          candidate.basis === "short-query-directory" &&
+          candidate.lane === "directory"
+      )
+    ).toBe(true);
+    expect(page.hits.some((hit) => directoryIds.has(hit.id) && hit.score === 0)).toBe(false);
+  });
+
+  it.each([
+    ["audit", "scout.listAudits"],
+    ["rfp", "scout.getRfps"]
+  ])("does not add directory advice for the operation word %s", (query, operationId) => {
+    const page = searchCatalogPage(catalog, {
+      query,
+      kind: "operation",
+      limit: 5
+    });
+    expect(page.hits.some((hit) => hit.id === operationId)).toBe(true);
+    expect(page.widerCandidates).toEqual([]);
+  });
+
+  it.each(["open x402", "open-x402"])("does not add short-query directory advice for %s", (query) => {
+    const page = searchCatalogPage(catalog, {
+      query,
+      kind: "operation",
+      limit: 5
+    });
+    expect(page.widerCandidates).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ basis: "short-query-directory" })
+      ])
+    );
+  });
+
+  it("constrains short-query directory advice to the service filter", () => {
+    const page = searchCatalogPage(catalog, {
+      query: "freighter",
+      kind: "operation",
+      service: "lumenloop",
+      limit: 5
+    });
+    expect(page.widerCandidates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "lumenloop.search_directory",
+          service: "lumenloop",
+          basis: "short-query-directory"
+        })
+      ])
+    );
+    expect(page.widerCandidates.every((candidate) => candidate.service === "lumenloop")).toBe(true);
+  });
+
+  it("suppresses short-query directory advice for skill-only searches", () => {
+    const page = searchCatalogPage(catalog, {
+      query: "freighter",
+      kind: "skill",
+      limit: 5
+    });
+    expect(page.widerCandidates).toEqual([]);
+  });
+
+  it("uses only a Scout directory recommendation under the Scout service filter", () => {
+    const page = searchCatalogPage(catalog, { query: "freighter", service: "scout", limit: 5 });
+    expect(page.widerCandidates).toContainEqual(
+      expect.objectContaining({ id: "scout.searchProjects", basis: "short-query-directory" })
+    );
+    expect(page.widerCandidates.every((candidate) => candidate.service === "scout")).toBe(true);
+  });
+
+  it("adds no directory recommendation under the Docs service filter", () => {
+    const page = searchCatalogPage(catalog, { query: "freighter", service: "stellarDocs", limit: 5 });
+    expect(page.widerCandidates).toEqual([]);
+  });
+
+  it("keeps literal identity tokens distinct from semantic matches", () => {
+    const page = searchCatalogPage(catalog, { query: "person", limit: 5 });
+    expect(page.hits.some((hit) => hit.id === "scout.getPeople")).toBe(true);
+    expect(page.widerCandidates).toContainEqual(
+      expect.objectContaining({ id: "scout.searchProjects", basis: "short-query-directory" })
+    );
+  });
+
+  it("keeps broad recommendations after directory advice on a zero-hit name query", () => {
+    const page = searchCatalogPage(catalog, { query: "hypertron", limit: 5 });
+    expect(page.hits).toEqual([]);
+    expect(page.total).toBe(0);
+    expect(page.truncated).toBe(false);
+    expect(page.effectiveLimit).toBe(5);
+    expect(page.widerCandidates.map(({ id, basis }) => ({ id, basis }))).toEqual([
+      { id: "scout.searchProjects", basis: "short-query-directory" },
+      { id: "scout.searchResearch", basis: "catalog-anchor" },
+      { id: "lumenloop.search_content_semantic", basis: "catalog-anchor" }
+    ]);
+  });
+
   it("never surfaces skill-section hits — sections left search (2026-07-13 A/B)", () => {
     // Sections are exposed (skill.read, availableSections) but carry
     // searchable:false since arm B shipped; a WHOLE skill may still rank.
@@ -400,7 +972,7 @@ describe("searchCatalog — routing quality", () => {
   });
 });
 
-describe("searchCatalog — tiered gate-rescue backfill (round 4, M1)", () => {
+describe("searchCatalog — tiered gate-rescue backfill", () => {
   /**
    * Gated (tier-1) score of a returned hit, recomputed through the same
    * public scorer searchCatalog uses for tier 1. null ⇒ the hit could only
@@ -409,25 +981,35 @@ describe("searchCatalog — tiered gate-rescue backfill (round 4, M1)", () => {
   function gatedScore(hitId: string, query: string): number | null {
     const entry = catalog.entries.find((e) => e.id === hitId)!;
     expect(entry).toBeDefined();
+    const aliases = entry.knownAliases ?? [];
+    const triggers = entry.knownAliasTriggers ?? [];
+    const queryTokens = prepareAliasQuery(query);
+    const triggered = triggers.some((trigger) =>
+      queryContainsAliasTrigger(queryTokens, trigger)
+    );
+    const aliasTokens = aliases
+      .flatMap((alias) => alias.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean))
+      .filter((token) => !STOPWORDS.has(token));
     return scoreEntryWeighted(
       {
         id: entry.id,
-        name: lastIdSegment(entry.id),
+        name: [lastIdSegment(entry.id), ...(triggered ? aliasTokens : [])].join(" "),
         service: entry.service,
         kind: entry.kind,
         description: entry.description,
         keywords: entry.keywords,
-        routingKeywords: entry.routingKeywords
+        routingKeywords: entry.routingKeywords,
+        routingPhrases: entry.routingPhrases
       },
       query
     );
   }
 
-  it("a full tier-1 page is untouched — every hit passes the gated scorer with its tier-1 score", () => {
+  it("keeps pages without targeted replacements entirely in tier 1", () => {
     // Tier 2 only fires when fewer than `limit` gate-passing candidates
     // exist; a page of all-gate-passers therefore proves the backfill never
     // ran and the results are identical to the pre-tiering pipeline.
-    for (const query of ["stellar soroban contract", "search directory", "soroban storage"]) {
+    for (const query of ["stellar soroban contract", "search directory"]) {
       const hits = searchCatalog(catalog, { query, limit: 5 });
       expect(hits, `query: ${query}`).toHaveLength(5);
       for (const hit of hits) {
@@ -438,6 +1020,25 @@ describe("searchCatalog — tiered gate-rescue backfill (round 4, M1)", () => {
         expect(hits[i - 1]!.score >= hits[i]!.score).toBe(true);
       }
     }
+  });
+
+  it("permits one evidence-backed full-page replacement without expanding total", () => {
+    const query =
+      "What project categories does the Stellar ecosystem directory actually track — " +
+      "give me the controlled list of category values it uses.";
+    const page = searchCatalogPage(catalog, { query, limit: 5 });
+    const backfill = page.hits.filter((hit) => hit.tier === "backfill");
+    const perService = new Map<string, number>();
+    for (const hit of page.hits) {
+      perService.set(hit.service, (perService.get(hit.service) ?? 0) + 1);
+    }
+
+    expect(backfill).toEqual([
+      expect.objectContaining({ id: "lumenloop.get_categories" })
+    ]);
+    expect(perService.get("lumenloop")).toBeLessThanOrEqual(2);
+    expect(page.total).toBe(6);
+    expect(page.truncated).toBe(true);
   });
 
   it("backfills a long multi-clause query that the coverage gate zeroed out", () => {
@@ -476,7 +1077,7 @@ describe("searchCatalog — tiered gate-rescue backfill (round 4, M1)", () => {
     const tiers = hits.map((h) => gatedScore(h.id, query) !== null);
     expect(tiers[0], "top hit must be the dominant backfill").toBe(false);
     expect(tiers).toContain(false); // page actually mixes tiers
-    // The tier marker (todo 838) must agree with the recomputed ground truth.
+    // The tier marker must agree with the recomputed ground truth.
     for (let i = 0; i < hits.length; i++) {
       expect(hits[i]!.tier).toBe(tiers[i] ? "gated" : "backfill");
     }
@@ -519,7 +1120,7 @@ describe("searchCatalogPage — non-finite limit cannot disable the clamp", () =
   });
 });
 
-describe("searchCatalogPage — tier marker + total/truncated (todos 838/840)", () => {
+describe("searchCatalogPage — tier marker + total/truncated", () => {
   /** Hand-built operation entry (passes loadManifest's structural invariants). */
   function op(name: string, description: string) {
     return {
@@ -580,30 +1181,48 @@ describe("searchCatalogPage — tier marker + total/truncated (todos 838/840)", 
     expect(searchCatalogPage(tiny, { query: "alpha beta", limit: 500 }).effectiveLimit).toBe(50);
   });
 
-  it("keeps page membership, total, and truncated fixed while interleaving", () => {
+  it("keeps the SEP-6 page truthful after admission and replacement", () => {
     const query =
       "In a SEP-6 programmatic deposit, which SEP actually carries the customer's KYC " +
       "data — SEP-6 itself or another SEP?";
     const page = searchCatalogPage(catalog, { query, limit: 5 });
-    // This is the pre-interleave selected page membership, asserted as a set:
-    // the candidate only changes its order.
     expect(page.hits.map((hit) => hit.id).sort()).toEqual(
       [
-        "scout.explainRepo",
         "stellarDocs.search_anchor_sep_docs",
+        "stellarDocs.search_asset_token_docs",
         "stellarDocs.search_docs",
         "stellarDocs.search_docs_in_category",
         "stellarDocs.search_meeting_notes"
       ].sort()
     );
-    // total counts searchable candidates only — 204 sections left search at
-    // the 2026-07-13 A/B, so the candidate pool shrank from 272.
-    expect(page.total).toBe(72);
+    // Admission runs before scoring. It can reduce total when an operation
+    // publishes exclusions but lacks positive evidence for this query.
+    expect(page.total).toBe(37);
     expect(page.truncated).toBe(true);
   });
 
+  it("allows positive-evidence admission to reduce total without a negative match", () => {
+    const excluded = op("lookup", "alpha beta gamma answer") as CatalogEntry;
+    excluded.id = "scout.lookup";
+    excluded.service = "scout";
+    excluded.routingExclusions = [{ tokens: ["unrelated", "directory"] }];
+    const sourceFiltered = loadManifest({
+      version: 1,
+      generatedAt: "2026-01-01T00:00:00Z",
+      entries: [excluded, op("keep", "alpha beta gamma answer")]
+    });
+    const control = loadManifest({
+      ...sourceFiltered,
+      entries: sourceFiltered.entries.map(({ routingExclusions: _excluded, ...entry }) => entry)
+    });
+    const query = "alpha beta gamma";
+
+    expect(searchCatalogPage(control, { query, limit: 5 }).total).toBe(2);
+    expect(searchCatalogPage(sourceFiltered, { query, limit: 5 }).total).toBe(1);
+  });
+
   it("excludes searchable:false entries from results and totals, keeping them exposed", () => {
-    // Skills-form arm seam (scratchpad 608): hidden entries stay in the
+    // Skills-form arm seam: hidden entries stay in the
     // catalog (exact-id describe/read) but never score, rank, or count.
     const hidden = loadManifest({
       version: 1,
@@ -681,10 +1300,10 @@ describe("searchCatalogPage — tier marker + total/truncated (todos 838/840)", 
   });
 });
 
-describe("searchCatalog — availableSections on skill hits (todo 812)", () => {
+describe("searchCatalog — availableSections on skill hits", () => {
   it("skill hits carry availableSections matching the skills store's key set, slugs before file: keys", async () => {
     const hit = searchCatalog(catalog, {
-      query: "skills.lumenloop-api.lumenloop-api-billing"
+      query: "skills.trustless-work.trustless-work-dev"
     })[0] as SearchHit;
     expect(hit.kind).toBe("skill");
     expect(hit.availableSections!.length).toBeGreaterThan(0);
@@ -725,7 +1344,7 @@ describe("searchCatalog — availableSections on skill hits (todo 812)", () => {
   });
 });
 
-describe("searchCatalog — section entries are addresses, not content (todo 810)", () => {
+describe("searchCatalog — section entries are addresses, not content", () => {
   it("carries no body-derived keywords for out-of-search sections, and still answers from elsewhere", () => {
     // Sections are searchable:false since the 2026-07-13 A/B, so body-derived
     // keywords would be upstream-derived text in a committed artifact that
@@ -785,9 +1404,28 @@ describe("searchCatalog — signatures", () => {
       items: ["collection", "date", "dateField", "snippet", "source", "sourceField", "title", "url"]
     });
   });
+
+  it("does not teach false Lumenloop r.data.results paths", () => {
+    const ids = [
+      "lumenloop.find_av_passages",
+      "lumenloop.find_content_by_entity",
+      "lumenloop.find_similar_projects_semantic",
+      "lumenloop.find_similar_scf_submissions",
+      "lumenloop.get_related_projects",
+      "lumenloop.get_tags_vocabulary"
+    ];
+    for (const id of ids) {
+      const entry = catalog.entries.find((candidate) => candidate.id === id)!;
+      const signature = renderSignature(entry)!;
+      expect(entry.outputSchema, id).toBeNull();
+      expect(signature, id).toContain("data: unknown");
+      expect(signature, id).not.toMatch(/^type \w+Output/m);
+      expect(signature, id).not.toMatch(/^\s+results\?:/m);
+    }
+  });
 });
 
-describe("search-hit signature compaction (todo 841)", () => {
+describe("search-hit signature compaction", () => {
   /** Full-render output type block length for one operation entry. */
   function outputBlockLength(entry: CatalogEntry): number {
     if (!entry.outputSchema) return 0;
@@ -843,24 +1481,37 @@ describe("search-hit signature compaction (todo 841)", () => {
     // 1.8.32 (the contract-honesty release: 69 already-served meta fields finally declared)
     // carried exactly ONE more op over the line — scout.getPeople, 1099 -> 3196 — so its
     // output type is now stubbed in search hits and reaching the full shape costs a
-    // codemode.describe("scout.getPeople") round-trip. Every other member was already over.
+    // codemode.describe("scout.getPeople") round-trip. Scout 1.8.87 expands getChanges over
+    // the same threshold. Scout 1.8.109 expands getPartner, hackathonBrief, and
+    // resolveProject over the threshold. Scout 1.9.52 expands five more reviewed
+    // outputs: getRepoTrust, listContracts, scfPitch, searchHackathonBuilds, and
+    // vetIdea. Every other member was already over.
     expect(compacted.sort()).toEqual([
       "scout.analyzeEcosystem",
       "scout.explainRepo",
       "scout.getBuilders",
+      "scout.getChanges",
       "scout.getClusters",
       "scout.getHackathon",
       "scout.getHackathons",
       "scout.getLeaderboard",
+      "scout.getPartner",
       "scout.getPartners",
       "scout.getPeople",
+      "scout.getRepoTrust",
       "scout.getRfps",
       "scout.getStablecoins",
+      "scout.hackathonBrief",
       "scout.listAudits",
+      "scout.listContracts",
       "scout.listSkills",
+      "scout.resolveProject",
+      "scout.scfPitch",
+      "scout.searchHackathonBuilds",
       "scout.searchProjects",
       "scout.searchRepos",
-      "scout.searchResearch"
+      "scout.searchResearch",
+      "scout.vetIdea"
     ]);
   });
 
@@ -933,7 +1584,7 @@ describe("runnable skills — loadManifest refinements (design §5)", () => {
     expect(entry.outputSchema).not.toBeNull();
   });
 
-  it("keeps the retired dossier runner's skill entry a plain readable skill (todo 849)", () => {
+  it("keeps the retired dossier runner's skill entry a plain readable skill", () => {
     const parsed = loadManifest(rawManifest());
     const entry = parsed.entries.find((e) => e.id === "skills.lumenloop.stellar-project-dossier")!;
     expect(entry).toBeDefined();
@@ -1097,7 +1748,7 @@ describe("runnable byte-stability — the §10.1 invariant, pinned offline (desi
   });
 });
 
-describe("alias canonicalization — lever 6 (todo 844)", () => {
+describe("alias canonicalization", () => {
   it("canonicalizeQuery: null when no alias token (byte-identical no-op path)", () => {
     expect(canonicalizeQuery("wallet balance lookup")).toBeNull();
     expect(canonicalizeQuery("soroban contract storage")).toBeNull();

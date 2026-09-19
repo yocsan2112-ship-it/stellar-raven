@@ -1,5 +1,5 @@
 {
-  "fetchedAt": "2026-07-30T15:20:14.615Z",
+  "fetchedAt": "2026-09-16T20:51:36.112Z",
   "index": "crawler_Stellar Docs - Docusaurus",
   "service": "stellar-docs",
   "source": {
@@ -712,10 +712,6 @@
       "title": "Events"
     },
     {
-      "path": "/docs/build/smart-contracts/example-contracts/fungible-token",
-      "title": "Fungible Token"
-    },
-    {
       "path": "/docs/build/smart-contracts/example-contracts/fuzzing",
       "title": "Fuzz Testing"
     },
@@ -730,10 +726,6 @@
     {
       "path": "/docs/build/smart-contracts/example-contracts/mint-lock",
       "title": "Mint Lock"
-    },
-    {
-      "path": "/docs/build/smart-contracts/example-contracts/non-fungible-token",
-      "title": "Non-Fungible Token"
     },
     {
       "path": "/docs/build/smart-contracts/example-contracts/simple-account",
@@ -922,6 +914,10 @@
     {
       "path": "/docs/data/analytics/hubble/developer-guide/visualization/overview",
       "title": "Overview"
+    },
+    {
+      "path": "/docs/data/analytics/public-dashboards",
+      "title": "Public Dashboards"
     },
     {
       "path": "/docs/data/apis",
@@ -1556,8 +1552,32 @@
       "title": "Networks"
     },
     {
+      "path": "/docs/networks/audits",
+      "title": "Audits"
+    },
+    {
+      "path": "/docs/networks/audits/soroban-poseidon",
+      "title": "Soroban Poseidon SDK"
+    },
+    {
+      "path": "/docs/networks/audits/soroban-sdk",
+      "title": "Soroban Rust SDK"
+    },
+    {
+      "path": "/docs/networks/audits/stellar-core",
+      "title": "Stellar Core and Soroban Host Environment"
+    },
+    {
+      "path": "/docs/networks/audits/stellar-rpc",
+      "title": "Stellar RPC"
+    },
+    {
       "path": "/docs/networks/resource-limits-fees",
       "title": "Resource Limits &amp; Fees"
+    },
+    {
+      "path": "/docs/networks/software-versions",
+      "title": "Software Versions"
     },
     {
       "path": "/docs/platforms",
@@ -1736,6 +1756,10 @@
       "title": "User Interface"
     },
     {
+      "path": "/docs/platforms/stellar-disbursement-platform/admin-guide/user-interface/account-picker",
+      "title": "Account Picker"
+    },
+    {
       "path": "/docs/platforms/stellar-disbursement-platform/admin-guide/user-interface/analytics",
       "title": "Analytics"
     },
@@ -1752,16 +1776,16 @@
       "title": "Disbursements"
     },
     {
+      "path": "/docs/platforms/stellar-disbursement-platform/admin-guide/user-interface/distribution-accounts",
+      "title": "Distribution Accounts"
+    },
+    {
       "path": "/docs/platforms/stellar-disbursement-platform/admin-guide/user-interface/payments",
       "title": "Payments"
     },
     {
       "path": "/docs/platforms/stellar-disbursement-platform/admin-guide/user-interface/receivers",
       "title": "Receivers"
-    },
-    {
-      "path": "/docs/platforms/stellar-disbursement-platform/admin-guide/user-interface/wallets",
-      "title": "Wallets"
     },
     {
       "path": "/docs/tokens",
@@ -1798,6 +1822,10 @@
     {
       "path": "/docs/tokens/token-interface",
       "title": "Token Interface"
+    },
+    {
+      "path": "/docs/tokens/usdt0-layerzero",
+      "title": "USDT0 Transfers with LayerZero"
     },
     {
       "path": "/docs/tools",
@@ -1898,6 +1926,10 @@
     {
       "path": "/docs/tools/cli/plugins-list",
       "title": "Plugins List"
+    },
+    {
+      "path": "/docs/tools/cli/stellar-cli",
+      "title": "Stellar CLI Manual"
     },
     {
       "path": "/docs/tools/developer-tools",
@@ -2512,6 +2544,26 @@
       "title": "2026-07-02"
     },
     {
+      "path": "/meetings/2026/07/16",
+      "title": "2026-07-16"
+    },
+    {
+      "path": "/meetings/2026/07/23",
+      "title": "2026-07-23"
+    },
+    {
+      "path": "/meetings/2026/07/30",
+      "title": "2026-07-30"
+    },
+    {
+      "path": "/meetings/2026/08/06",
+      "title": "2026-08-06"
+    },
+    {
+      "path": "/meetings/2026/08/13",
+      "title": "2026-08-13"
+    },
+    {
       "path": "/meetings/archive",
       "title": "Archive"
     },
@@ -2537,32 +2589,32 @@
     },
     {
       "path": "/meetings/tags/developer",
-      "title": "64 posts tagged with \"developer\""
+      "title": "69 posts tagged with \"developer\""
     },
     {
       "path": "/meetings/tags/developer/page/2",
-      "title": "64 posts tagged with \"developer\""
+      "title": "69 posts tagged with \"developer\""
     },
     {
       "path": "/meetings/tags/developer/page/3",
-      "title": "64 posts tagged with \"developer\""
+      "title": "69 posts tagged with \"developer\""
     },
     {
       "path": "/meetings/tags/developer/page/4",
-      "title": "64 posts tagged with \"developer\""
+      "title": "69 posts tagged with \"developer\""
     },
     {
       "path": "/meetings/tags/developer/page/5",
-      "title": "64 posts tagged with \"developer\""
+      "title": "69 posts tagged with \"developer\""
     },
     {
       "path": "/meetings/tags/developer/page/6",
-      "title": "64 posts tagged with \"developer\""
+      "title": "69 posts tagged with \"developer\""
     },
     {
       "path": "/meetings/tags/protocol",
       "title": "11 posts tagged with \"protocol\""
     }
   ],
-  "total": 638
+  "total": 651
 }

@@ -1,6 +1,6 @@
 /**
- * Offline smoke of src/executor/run.ts at the REAL worker boundary (Solo
- * todo 833) — the pieces plain-Node tests cannot touch: `cloudflare:workers`
+ * Offline smoke of src/executor/run.ts at the real worker boundary. It covers
+ * the pieces that plain-Node tests cannot touch: `cloudflare:workers`
  * tracing, `@cloudflare/codemode`'s DynamicWorkerExecutor, and a genuine
  * Dynamic Worker isolate via the LOADER binding.
  *
@@ -14,7 +14,17 @@
  */
 import { env } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createExecuteRunner, createSpecSearchRunner } from "../../src/executor/run";
+import {
+  assertExecutorEvidenceOperationIds,
+  createExecuteRunner,
+  createSpecSearchRunner
+} from "../../src/executor/run";
+import { getCatalog } from "../../src/catalog/load";
+import type { Catalog } from "../../src/catalog/types";
+import {
+  SOURCE_BASIS_MARKER,
+  SOURCE_METADATA_MARKER
+} from "../../src/policy/source-basis";
 import fxSemantic from "../fixtures/skill-runners/lumenloop.search_content_semantic.ts";
 import fxListDocs from "../fixtures/skill-runners/lumenloop.list_documents.ts";
 
@@ -47,6 +57,20 @@ function artifactIdFrom(text: string): string {
   return match[1];
 }
 
+function parseResultJsonWithMetadata(text: string): unknown {
+  const boundary = `\n${SOURCE_METADATA_MARKER}`;
+  const boundaryIndex = text.lastIndexOf(boundary);
+  if (boundaryIndex < 0) throw new Error("expected a host source-metadata block");
+  if (text.indexOf(boundary) !== boundaryIndex) {
+    throw new Error("expected exactly one host source-metadata block");
+  }
+  return JSON.parse(text.slice(0, boundaryIndex));
+}
+
+function occurrences(text: string, needle: string): number {
+  return text.split(needle).length - 1;
+}
+
 const BIG_SECRET_RESULT_CODE = `async () => {
   const refused = await lumenloop.search_directory({ limit: 2 });
   return {
@@ -62,6 +86,42 @@ const BIG_SECRET_RESULT_CODE = `async () => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe("executor evidence operation catalog guard", () => {
+  it("accepts every curated ID in the current exposed catalog", () => {
+    expect(() => assertExecutorEvidenceOperationIds(getCatalog())).not.toThrow();
+  });
+
+  it("fails deterministically when a curated ID is missing", () => {
+    const catalog = getCatalog();
+    const withoutDirectory: Catalog = {
+      ...catalog,
+      entries: catalog.entries.filter((entry) => entry.id !== "lumenloop.search_directory")
+    };
+
+    expect(() => assertExecutorEvidenceOperationIds(withoutDirectory)).toThrow(
+      'Executor candidate evidence operation "lumenloop.search_directory" is missing from the exposed catalog'
+    );
+  });
+
+  it("fails deterministically when a curated ID resolves to the wrong kind", () => {
+    const catalog = getCatalog();
+    const skill = catalog.entries.find((entry) => entry.kind === "skill");
+    if (!skill) throw new Error("current catalog has no skill entry for the wrong-kind fixture");
+    const wrongKind: Catalog = {
+      ...catalog,
+      entries: catalog.entries.map((entry) =>
+        entry.id === "lumenloop.search_directory"
+          ? { ...skill, id: "lumenloop.search_directory" }
+          : entry
+      )
+    };
+
+    expect(() => assertExecutorEvidenceOperationIds(wrongKind)).toThrow(
+      'Executor candidate evidence operation "lumenloop.search_directory" must resolve to an exposed operation, found kind "skill"'
+    );
+  });
 });
 
 describe("execute runner (real Dynamic Worker isolate)", () => {
@@ -89,8 +149,8 @@ describe("execute runner (real Dynamic Worker isolate)", () => {
       requestId: "smoke-request",
       rayId: "smoke-ray"
     });
-    expect(outcome.ok).toBe(true);
     if (!outcome.ok) throw new Error(outcome.error);
+    expect(outcome.ok).toBe(true);
     expect(outcome.truncated).toBe(true);
     expect(outcome.result).toContain("--- SOURCE BASIS ---");
     expect(outcome.result).not.toContain("--- TRUNCATED ---");
@@ -98,8 +158,11 @@ describe("execute runner (real Dynamic Worker isolate)", () => {
     expect(outcome.result).toContain("lumenloop.search_directory=error/");
     expect(outcome.result).toContain("https://example.test/path");
     expect(outcome.sourceBasis?.artifact?.state).toBe("available");
+    expect(outcome.sourceBasis?.shape).toMatchObject({ kind: "object", totalKeys: 3 });
+    expect(outcome.sourceBasis?.shape).not.toHaveProperty("totalItems");
+    expect(outcome.sourceBasis?.shape).not.toHaveProperty("stringChars");
     expect(outcome.operationSummary).toEqual({ total: 1, ok: 0, error: 1, softEmpty: 0 });
-    expect(outcome.evidenceSummary?.kind).toBe("service-inconclusive");
+    expect(outcome.evidenceSummary.kind).toBe("service-inconclusive");
 
     const id = artifactIdFrom(outcome.result);
     const keys = await artifactKeysFor(owner);
@@ -110,6 +173,10 @@ describe("execute runner (real Dynamic Worker isolate)", () => {
     const storedText = (await stored?.text()) ?? "";
     expect(storedText).not.toContain("smoke-test-lumenloop-key");
     expect(storedText).toContain("[REDACTED]");
+    const storedPayload = JSON.parse(storedText) as { rows?: unknown[] };
+    expect(storedPayload.rows).toHaveLength(2500);
+    expect(storedPayload).not.toHaveProperty("encoding");
+    expect(storedPayload).not.toHaveProperty("mime");
   });
 
   it("collects canonical URLs through nested ordinary containers without treating prose as canonical", async () => {
@@ -244,9 +311,15 @@ describe("execute runner (real Dynamic Worker isolate)", () => {
     if (!rootString.ok) throw new Error(rootString.error);
     if (!depthSix.ok) throw new Error(depthSix.error);
     expect(rootArray.sourceBasis?.canonicalUrls).toEqual(["https://root-array.example.test/a"]);
+    expect(rootArray.sourceBasis?.shape).toMatchObject({ kind: "array", totalItems: 2 });
+    expect(rootArray.sourceBasis?.shape).not.toHaveProperty("totalKeys");
+    expect(rootArray.sourceBasis?.shape).not.toHaveProperty("stringChars");
     expect(rootString.sourceBasis?.canonicalUrls?.[0]).toBe(
       `https://root-string.example.test/${"x".repeat(5000)}`
     );
+    expect(rootString.sourceBasis?.shape).toMatchObject({ kind: "string", stringChars: 5033 });
+    expect(rootString.sourceBasis?.shape).not.toHaveProperty("totalKeys");
+    expect(rootString.sourceBasis?.shape).not.toHaveProperty("totalItems");
     expect(depthSix.sourceBasis?.canonicalUrls).toEqual([]);
   });
 
@@ -360,7 +433,116 @@ describe("execute runner (real Dynamic Worker isolate)", () => {
       softEmpty: 0,
       priorArtCandidates: 1
     });
-    expect(outcome.operationSummary?.candidateEvidence).toBeUndefined();
+    expect(outcome.operationSummary.candidateEvidence).toBeUndefined();
+  });
+
+  it("preserves allowlisted source metadata after a compact sandbox projection", async () => {
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+      expect(url.pathname).toBe("/api/repos/search");
+      return Response.json({
+        repos: [{ fullName: "example/escrow", url: "https://github.com/example/escrow" }],
+        meta: {
+          generatedAt: "2026-08-26T12:00:00Z",
+          counts: { returned: 1, total: 9 },
+          matchMode: "strict",
+          privateDetail: "must-not-propagate"
+        }
+      });
+    });
+
+    const outcome = await run(`async () => {
+      const r = await scout.searchRepos({ q: "escrow", limit: 1 });
+      return r.ok ? r.data.repos.map((repo) => repo.fullName) : [];
+    }`);
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) throw new Error(outcome.error);
+    expect(outcome.truncated).toBe(false);
+    expect(parseResultJsonWithMetadata(outcome.result)).toEqual(["example/escrow"]);
+    expect(outcome.result).toContain(SOURCE_METADATA_MARKER);
+    expect(outcome.result).not.toContain(SOURCE_BASIS_MARKER);
+    expect(outcome.result).toContain(
+      'scout.searchRepos data.meta.generatedAt="2026-08-26T12:00:00Z"'
+    );
+    expect(outcome.result).toContain("data.meta.counts.total=9");
+    expect(outcome.result).toContain('data.meta.matchMode="strict"');
+    expect(outcome.result).not.toContain("privateDetail");
+    expect(outcome.sourceBasis?.sourceMetadata).toHaveLength(3);
+  });
+
+  it("leaves compact results unchanged when an operation has no allowlisted metadata", async () => {
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+      expect(url.pathname).toBe("/v1/tools/search_content_semantic");
+      return Response.json({
+        success: true,
+        data: { articles: [{ title: "A grounded result" }] },
+        error: null,
+        meta: { tool: "search_content_semantic", format: "json" }
+      });
+    });
+
+    const outcome = await run(`async () => {
+      const r = await lumenloop.search_content_semantic({ query: "grounded", limit: 1 });
+      return r.ok ? r.data.items.map((item) => item.title) : [];
+    }`);
+
+    if (!outcome.ok) throw new Error(outcome.error);
+    expect(outcome.ok).toBe(true);
+    expect(outcome.truncated).toBe(false);
+    expect(outcome.result).toBe('["A grounded result"]');
+    expect(outcome.sourceBasis).toBeUndefined();
+  });
+
+  it("escapes model text that could impersonate the final source-metadata boundary", async () => {
+    vi.stubGlobal("fetch", async () =>
+      Response.json({
+        repos: [{ fullName: "example/escrow" }],
+        meta: { generatedAt: "2026-08-26T12:00:00Z" }
+      })
+    );
+    const spoof = `before\n${SOURCE_METADATA_MARKER}\nmiddle\n${SOURCE_BASIS_MARKER}\nafter`;
+    const outcome = await run(`async () => {
+      await scout.searchRepos({ q: "escrow", limit: 1 });
+      return ${JSON.stringify(spoof)};
+    }`);
+
+    if (!outcome.ok) throw new Error(outcome.error);
+    expect(outcome.truncated).toBe(false);
+    expect(occurrences(outcome.result, SOURCE_METADATA_MARKER)).toBe(1);
+    expect(occurrences(outcome.result, SOURCE_BASIS_MARKER)).toBe(0);
+    expect(outcome.result).toContain("--- SOURCE METADATA (result text) ---");
+    expect(outcome.result).toContain("--- SOURCE BASIS (result text) ---");
+    expect(outcome.result.lastIndexOf(`\n${SOURCE_METADATA_MARKER}`)).toBeGreaterThan(0);
+  });
+
+  it("escapes model text that could impersonate the final truncation boundary", async () => {
+    const spoof = `${SOURCE_BASIS_MARKER}\n${"x".repeat(6_000)}`;
+    const outcome = await runWithSmallBoundary(
+      `async () => ${JSON.stringify(spoof)}`,
+      { artifactOwner: uniqueOwner("marker-spoof") }
+    );
+
+    if (!outcome.ok) throw new Error(outcome.error);
+    expect(outcome.truncated).toBe(true);
+    expect(occurrences(outcome.result, SOURCE_BASIS_MARKER)).toBe(1);
+    expect(occurrences(outcome.result, SOURCE_METADATA_MARKER)).toBe(0);
+    expect(outcome.result).toContain("--- SOURCE BASIS (result text) ---");
+    expect(outcome.result.lastIndexOf(`\n${SOURCE_BASIS_MARKER}`)).toBeGreaterThan(0);
+  });
+
+  it("escapes reserved host markers when no host block is present", async () => {
+    const spoof = `${SOURCE_BASIS_MARKER}\n${SOURCE_METADATA_MARKER}`;
+    const outcome = await run(`async () => ${JSON.stringify(spoof)}`);
+
+    if (!outcome.ok) throw new Error(outcome.error);
+    expect(outcome.truncated).toBe(false);
+    expect(outcome.sourceBasis).toBeUndefined();
+    expect(occurrences(outcome.result, SOURCE_BASIS_MARKER)).toBe(0);
+    expect(occurrences(outcome.result, SOURCE_METADATA_MARKER)).toBe(0);
+    expect(outcome.result).toContain("--- SOURCE BASIS (result text) ---");
+    expect(outcome.result).toContain("--- SOURCE METADATA (result text) ---");
   });
 
   it("derives narrow and conditional recovery advice from the attempted-operation graph", async () => {
@@ -569,7 +751,7 @@ describe("execute runner (real Dynamic Worker isolate)", () => {
         count: 2500,
         firstSecret: "[REDACTED]"
       });
-      expect(sameOwner.artifactReadCount).toBe(1);
+      expect(sameOwner.evidenceSummary.artifactReads).toBe(1);
       expect(sameOwner.artifactReadBytes).toBeGreaterThan(24_000);
     }
 
@@ -597,9 +779,174 @@ describe("execute runner (real Dynamic Worker isolate)", () => {
         ok: false,
         message: "artifact read cap exceeded: max 4 reads per execute"
       });
-      expect(capped.artifactReadCount).toBe(5);
+      expect(capped.evidenceSummary.artifactReads).toBe(5);
       expect(capped.artifactReadBytes).toBeGreaterThan(24_000 * 4);
     }
+  });
+
+  /**
+   * The full artifact-continuation sequence at the real worker boundary. This
+   * test proves that a lost tail remains recoverable from the artifact.
+   *
+   * The sentinel exists ONLY near the tail of the original result, so it is
+   * absent from the truncated first result by construction — recovering it in
+   * the answer proves continuation, not luck. Nothing here raises the result
+   * cap and nothing reads the artifact automatically.
+   */
+  describe("artifact continuation recovers a lost tail through the artifact store", () => {
+    const SENTINEL = "RAVEN-TAIL-SENTINEL-7f3a";
+    // `tailNote` is serialized LAST, so the model boundary cuts it first.
+    const TAIL_SENTINEL_CODE = `async () => ({
+      rows: Array.from({ length: 900 }, (_, i) => ({ i, pad: "y".repeat(24) })),
+      tailNote: "${SENTINEL}"
+    })`;
+
+    it("loses the tail at the boundary, then recovers it via info + read + a bounded projection", async () => {
+      const owner = uniqueOwner("continuation");
+      const first = await run(TAIL_SENTINEL_CODE, { artifactOwner: owner });
+      expect(first.ok).toBe(true);
+      if (!first.ok) throw new Error(first.error);
+
+      // 1–2: an oversized result, one owner-bound handle, and a genuinely lost tail.
+      expect(first.truncated).toBe(true);
+      expect(first.result).toContain("--- SOURCE BASIS ---");
+      expect(first.result).not.toContain(SENTINEL);
+      const id = artifactIdFrom(first.result);
+      expect(first.sourceBasis?.artifact?.state).toBe("available");
+
+      // 3–7: ONE follow-up execute calls info, then read, branches on r.ok,
+      // reads the full value from r.data, and returns a bounded projection.
+      const continuation = await run(`async () => {
+        const meta = await codemode.artifact.info("${id}");
+        if (!meta.ok) return { stage: "info", ok: false, error: meta.error };
+        const r = await codemode.artifact.read("${id}");
+        if (!r.ok) return { stage: "read", ok: false, error: r.error };
+        return {
+          stage: "projection",
+          ok: true,
+          tail: r.data.tailNote,
+          rowCount: r.data.rows.length,
+          bytes: meta.data.bytes,
+          originalChars: meta.data.originalChars
+        };
+      }`, { artifactOwner: owner });
+      expect(continuation.ok).toBe(true);
+      if (!continuation.ok) throw new Error(continuation.error);
+
+      const projection = JSON.parse(continuation.result) as {
+        stage: string;
+        ok: boolean;
+        tail: string;
+        rowCount: number;
+        bytes: number;
+        originalChars: number;
+      };
+      expect(projection.stage).toBe("projection");
+      // 1 (host-side proof): the original result really exceeded 24,000 chars.
+      expect(projection.originalChars).toBeGreaterThan(24_000);
+      expect(projection.bytes).toBeGreaterThan(24_000);
+      expect(projection.rowCount).toBe(900);
+      // 8–9: the sentinel survives and the projection itself does not truncate.
+      expect(projection.tail).toBe(SENTINEL);
+      expect(continuation.truncated).toBe(false);
+      expect(continuation.result).not.toContain("--- SOURCE BASIS ---");
+      expect(continuation.evidenceSummary.artifactReads).toBe(1);
+      expect(continuation.artifactReadBytes).toBeGreaterThan(24_000);
+      expect(continuation.evidenceSummary?.kind).toBe("artifact-data");
+
+      // 10: the answer built from that projection carries the fact, not the handle.
+      const finalAnswer = `The stored tail marker is ${projection.tail} across ${projection.rowCount} rows.`;
+      expect(finalAnswer).toContain(SENTINEL);
+      expect(finalAnswer).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/);
+    });
+
+    it("keeps every recovery failure fail-closed: missing, expired, oversized, and wrong-level reads", async () => {
+      const owner = uniqueOwner("continuation-failures");
+
+      // Missing: a well-formed id that was never written stays not-found.
+      const missing = await run(`async () => {
+        const r = await codemode.artifact.read("${crypto.randomUUID()}");
+        return { ok: r.ok, kind: r.error.kind, message: r.error.message };
+      }`, { artifactOwner: owner });
+      expect(missing.ok).toBe(true);
+      if (missing.ok) {
+        expect(JSON.parse(missing.result)).toEqual({
+          ok: false,
+          kind: "error",
+          message: "artifact not found"
+        });
+      }
+
+      // Expired: an object whose stored expiresAt has passed reads as not-found,
+      // through info AND read (TTL is enforced on metadata, not on listing).
+      const expiredId = crypto.randomUUID();
+      const body = '{"a":1}';
+      await env.ARTIFACTS.put(`${await ownerPrefix(owner)}${expiredId}`, body, {
+        customMetadata: {
+          createdAt: "2020-01-01T00:00:00.000Z",
+          expiresAt: "2020-01-08T00:00:00.000Z",
+          bytes: "7",
+          sha256: "0".repeat(64),
+          mime: "application/json",
+          requestId: "smoke-expired",
+          rayId: "smoke-expired",
+          capTokens: "6000",
+          originalChars: "30000",
+          opLedger: "{}",
+          catalogGeneratedAt: "2020-01-01T00:00:00.000Z"
+        }
+      });
+      const expired = await run(`async () => {
+        const meta = await codemode.artifact.info("${expiredId}");
+        const r = await codemode.artifact.read("${expiredId}");
+        return { infoOk: meta.ok, infoMessage: meta.error.message, readOk: r.ok, readMessage: r.error.message };
+      }`, { artifactOwner: owner });
+      expect(expired.ok).toBe(true);
+      if (expired.ok) {
+        expect(JSON.parse(expired.result)).toEqual({
+          infoOk: false,
+          infoMessage: "artifact not found",
+          readOk: false,
+          readMessage: "artifact not found"
+        });
+      }
+
+      // Oversized: past ARTIFACT_MAX_BYTES nothing is stored, and the source
+      // basis says so instead of advertising an unreadable handle.
+      const oversized = await run(
+        'async () => ({ pad: "z".repeat(2_200_000) })',
+        { artifactOwner: uniqueOwner("continuation-oversized") }
+      );
+      expect(oversized.ok).toBe(true);
+      if (!oversized.ok) throw new Error(oversized.error);
+      expect(oversized.truncated).toBe(true);
+      expect(oversized.result).toContain("artifact: skipped (size-cap)");
+      expect(oversized.result).not.toContain("artifact: id=");
+
+      // Wrong-level read: the artifact read result goes through the same
+      // fail-loud guard as every service call — no second successful shape.
+      const written = await run(TAIL_SENTINEL_CODE, { artifactOwner: owner });
+      expect(written.ok).toBe(true);
+      if (!written.ok) throw new Error(written.error);
+      const id = artifactIdFrom(written.result);
+      const wrongLevel = await run(`async () => {
+        const r = await codemode.artifact.read("${id}");
+        let pointer = "";
+        try {
+          r.tailNote; // wrong level — must throw a pointer at r.data.tailNote
+        } catch (e) {
+          pointer = String(e && e.message);
+        }
+        return { ok: r.ok, viaData: r.data.tailNote, pointer };
+      }`, { artifactOwner: owner });
+      expect(wrongLevel.ok).toBe(true);
+      if (wrongLevel.ok) {
+        const parsed = JSON.parse(wrongLevel.result) as { ok: boolean; viaData: string; pointer: string };
+        expect(parsed.ok).toBe(true);
+        expect(parsed.viaData).toBe(SENTINEL);
+        expect(parsed.pointer).toContain("r.data.tailNote");
+      }
+    });
   });
 
   it("sandbox has NO network: fetch() rejects (globalOutbound: null)", async () => {
@@ -675,7 +1022,9 @@ describe("execute runner (real Dynamic Worker isolate)", () => {
     }`);
     expect(outcome.ok).toBe(true);
     if (outcome.ok) {
-      const parsed = JSON.parse(outcome.result) as {
+      expect(outcome.result).toContain(SOURCE_METADATA_MARKER);
+      expect(outcome.result).not.toContain(SOURCE_BASIS_MARKER);
+      const parsed = parseResultJsonWithMetadata(outcome.result) as {
         ok: boolean;
         viaData: number;
         payloadReadError: string;
@@ -684,6 +1033,34 @@ describe("execute runner (real Dynamic Worker isolate)", () => {
       expect(parsed.viaData).toBe(1);
       expect(parsed.payloadReadError).toContain("r.data.projects");
     }
+  });
+
+  it("serializes guarded object payloads across the real Dynamic Worker RPC boundary", async () => {
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+      expect(url.href).toBe("https://api.lumenloop.com/v1/tools/search_directory");
+      return Response.json({
+        success: true,
+        data: { count: 1, projects: [{ slug: "smoke-project" }] },
+        meta: { tool: "search_directory", format: "json" }
+      });
+    });
+
+    const outcome = await run(`async () => {
+      const r = await lumenloop.search_directory({ query: "smoke" });
+      return { raw: r, payload: r.data, slugs: r.data.projects.map((project) => project.slug) };
+    }`);
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) throw new Error(outcome.error);
+    const parsed = parseResultJsonWithMetadata(outcome.result) as {
+      raw: { ok: boolean; data: { count: number; projects: { slug: string }[] } };
+      payload: { count: number; projects: { slug: string }[] };
+      slugs: string[];
+    };
+    expect(parsed.raw).toEqual({ ok: true, data: { count: 1, projects: [{ slug: "smoke-project" }] } });
+    expect(parsed.payload).toEqual({ count: 1, projects: [{ slug: "smoke-project" }] });
+    expect(parsed.slugs).toEqual(["smoke-project"]);
   });
 
   it("guards a skill.read result: reading .data throws a pointer to top-level content", async () => {
@@ -707,7 +1084,7 @@ describe("execute runner (real Dynamic Worker isolate)", () => {
       expect(parsed.ok).toBe(true);
       expect(parsed.hasContent).toBe(true);
       expect(parsed.dataReadError).toContain("top level");
-      expect(outcome.evidenceSummary?.kind).toBe("skill-content");
+      expect(outcome.evidenceSummary.kind).toBe("skill-content");
     }
   });
 
@@ -738,6 +1115,8 @@ describe("execute runner (real Dynamic Worker isolate)", () => {
       const skill = await codemode.skill.read("skills.lumenloop.stellar-project-dossier");
       return {
         topHit: found.ok ? found.hits[0]?.id ?? null : null,
+        confidence: found.ok ? found.confidence : null,
+        recoveryMetadata: found.ok ? found.recoveryMetadata : null,
         allCallable: catalog.entries.every((e) => !("policy" in e)), // ADR-0003: no policy layer
         skillOk: skill.ok === true && skill.availableSections.length > 0
       };
@@ -746,13 +1125,19 @@ describe("execute runner (real Dynamic Worker isolate)", () => {
     if (outcome.ok) {
       const parsed = JSON.parse(outcome.result) as {
         topHit: string | null;
+        confidence: { hitCount: number; topScoreGap: number | null } | null;
+        recoveryMetadata: { serviceFilterExcludedSkills: unknown[] } | null;
         allCallable: boolean;
         skillOk: boolean;
       };
       expect(parsed.topHit).toBe("lumenloop.search_directory");
+      expect(parsed.confidence?.hitCount).toBeGreaterThan(0);
+      const gap = parsed.confidence?.topScoreGap;
+      expect(gap === null || gap === undefined || gap >= 0).toBe(true);
+      expect(parsed.recoveryMetadata?.serviceFilterExcludedSkills).toEqual([]);
       expect(parsed.allCallable).toBe(true);
       expect(parsed.skillOk).toBe(true);
-      expect(outcome.evidenceSummary?.kind).toBe("skill-content");
+      expect(outcome.evidenceSummary.kind).toBe("skill-content");
     }
   });
 
@@ -771,19 +1156,29 @@ describe("execute runner (real Dynamic Worker isolate)", () => {
   it("surfaces sandbox throws as { ok: false } with the error text", async () => {
     const outcome = await run(`async () => { throw new Error("smoke-kaboom"); }`);
     expect(outcome.ok).toBe(false);
-    if (!outcome.ok) expect(outcome.error).toContain("smoke-kaboom");
+    if (!outcome.ok) {
+      expect(outcome.error).toContain("smoke-kaboom");
+      expect(outcome.operationSummary).toEqual({ total: 0, ok: 0, error: 0, softEmpty: 0 });
+      expect(outcome.evidenceSummary).toEqual({
+        kind: "none",
+        skillRead: false,
+        buildAuthoritySkillIds: [],
+        buildAuthorityRoles: [],
+        skillRuns: 0,
+        artifactReads: 0
+      });
+    }
   });
 });
 
 describe("codemode.skill.run at the real worker boundary (design §12 smoke)", () => {
   /**
-   * Route the host-side lumenloop adapter to the LIVE-CAPTURED runner
+   * Route the host-side lumenloop adapter to the captured runner
    * fixtures (test/fixtures/skill-runners/, production 2026-07-06) by tool
    * name — the run crosses the true chain: sandbox prelude → provider RPC →
    * runSkill → recording sub-facade → adapter fetch. This lane is offline by
-   * design (miniflare outboundService), so the standing guard against LIVE
-   * upstream payload drift is the wrangler-dev/live lane (rollout step 6,
-   * §11 row 18 refresh discipline); this smoke pins the full dispatch path
+   * design (miniflare outboundService), so the wrangler-dev/live lane guards
+   * against upstream payload drift. This smoke pins the full dispatch path
    * and envelope semantics at the workerd boundary.
    */
   const stubLumenloop = (routes: Record<string, unknown>) => {
@@ -821,6 +1216,9 @@ describe("codemode.skill.run at the real worker boundary (design §12 smoke)", (
         softEmpty: r.data.softEmpty,
         sectionsNonNull: [r.data.items, r.data.upcomingEvents].every((s) => s !== null),
         itemCount: r.data.items === null ? null : r.data.items.length,
+        avDates: r.data.items === null
+          ? null
+          : r.data.items.filter((item) => item.type === "av").map((item) => item.date),
         upcomingCount: r.data.upcomingEvents === null ? null : r.data.upcomingEvents.length,
         calls: r.data.calls.map((c) => ({ op: c.op, ok: c.ok })),
         envelopeTrap
@@ -834,6 +1232,7 @@ describe("codemode.skill.run at the real worker boundary (design §12 smoke)", (
         softEmpty: boolean;
         sectionsNonNull: boolean;
         itemCount: number | null;
+        avDates: Array<string | null> | null;
         upcomingCount: number | null;
         calls: { op: string; ok: boolean }[];
         envelopeTrap: string;
@@ -844,6 +1243,7 @@ describe("codemode.skill.run at the real worker boundary (design §12 smoke)", (
       expect(parsed.softEmpty).toBe(false);
       expect(parsed.sectionsNonNull).toBe(true);
       expect(parsed.itemCount).toBeGreaterThan(0);
+      expect(parsed.avDates).toEqual([null]);
       expect(parsed.upcomingCount).toBeGreaterThan(0);
       expect(parsed.calls.map((c) => c.op).sort()).toEqual([
         "lumenloop.list_documents",

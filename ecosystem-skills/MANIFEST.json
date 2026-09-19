@@ -1,8 +1,8 @@
 {
-  "synced_at": "2026-07-30T15:21:10Z",
+  "synced_at": "2026-09-16T22:35:44Z",
   "status": "complete",
   "missing_sources": [],
-  "skill_count": 19,
+  "skill_count": 21,
   "sources": [
     {
       "id": "lumenloop",
@@ -189,9 +189,9 @@
       "repo": "stellar-dev-skill",
       "path": "skills",
       "ref": "main",
-      "commit": "52baea1d8cb1aa9441004ce44b723f55cbc90901",
-      "commit_date": "2026-07-20T19:25:35Z",
-      "url": "https://github.com/stellar/stellar-dev-skill/tree/52baea1d8cb1aa9441004ce44b723f55cbc90901/skills",
+      "commit": "0472452a05731de5e0a1e886d8aae6df24873fe2",
+      "commit_date": "2026-09-09T04:12:04Z",
+      "url": "https://github.com/stellar/stellar-dev-skill/tree/0472452a05731de5e0a1e886d8aae6df24873fe2/skills",
       "license_files": [
         "LICENSE"
       ],
@@ -201,8 +201,18 @@
           "files": [
             {
               "path": "SKILL.md",
-              "size": 27490,
-              "sha": "5c2c8cc631c7fde1985ccc196b465d38562d9d90"
+              "size": 6753,
+              "sha": "ab6ea05b678e20be97ef701f0578b5a645ec2527"
+            },
+            {
+              "path": "mpp.md",
+              "size": 31834,
+              "sha": "d389cd61c097d0b0045a71352aaf7b8b81505ed9"
+            },
+            {
+              "path": "x402.md",
+              "size": 24606,
+              "sha": "81623e783f8bb0803c9148c6c74bd543fa990d54"
             }
           ]
         },
@@ -211,8 +221,33 @@
           "files": [
             {
               "path": "SKILL.md",
-              "size": 12847,
-              "sha": "993a41589562ab1979f5e5d3505849d40e6349c4"
+              "size": 17876,
+              "sha": "e3812dc3c75e22de668f32a43fa89c2ee5a96111"
+            }
+          ]
+        },
+        {
+          "name": "cross-chain",
+          "files": [
+            {
+              "path": "SKILL.md",
+              "size": 9336,
+              "sha": "e48b2b15400bd950661bcb5118c3b088107d2b77"
+            },
+            {
+              "path": "axelar.md",
+              "size": 11287,
+              "sha": "d166c48d41081eee0a0da6925cf7fc199e76bde6"
+            },
+            {
+              "path": "cctp.md",
+              "size": 17086,
+              "sha": "f7a929887a569ae45384c23e849dea0aa8a14266"
+            },
+            {
+              "path": "layerzero.md",
+              "size": 27898,
+              "sha": "2f76405eeddcd1d248214a3c2a8e50fd780a009a"
             }
           ]
         },
@@ -221,8 +256,23 @@
           "files": [
             {
               "path": "SKILL.md",
-              "size": 26418,
-              "sha": "59f35eca8e628fd9f443c161b0598cd0c3e73783"
+              "size": 17948,
+              "sha": "357654c023d5f6b702241fb811efaccaefd57478"
+            },
+            {
+              "path": "data-fetching.md",
+              "size": 2813,
+              "sha": "4966ca855a108e59e7612d4bb1a457a0ae848fe7"
+            },
+            {
+              "path": "react.md",
+              "size": 3629,
+              "sha": "a34c39c61804075de8166541675557bd962a058f"
+            },
+            {
+              "path": "smart-accounts.md",
+              "size": 4067,
+              "sha": "2632d1147c3ada05210ad31aa10a1f7de2cebf16"
             }
           ]
         },
@@ -231,8 +281,13 @@
           "files": [
             {
               "path": "SKILL.md",
-              "size": 14888,
-              "sha": "3d5c08d9685586c65f0cf50888f44bfd63b4a9d6"
+              "size": 13094,
+              "sha": "c15c645579f1a25afb782a1eedaae04157a58723"
+            },
+            {
+              "path": "horizon.md",
+              "size": 3775,
+              "sha": "b991365d3acccd4e3a1f309249f2786cb6f8c3ae"
             }
           ]
         },
@@ -241,13 +296,13 @@
           "files": [
             {
               "path": "SKILL.md",
-              "size": 9048,
-              "sha": "99903bd48c4cb2031a285dff14cc88628e288731"
+              "size": 9103,
+              "sha": "626ad2e9ec636a88f962dcaa16d0d49f05171ae3"
             },
             {
               "path": "development.md",
-              "size": 27463,
-              "sha": "4e18ae09598007e9c5863ac2e91a36e4b41c506d"
+              "size": 31325,
+              "sha": "fefcf8a1938d9d4e1590c323af2d9d9925f49c25"
             },
             {
               "path": "security.md",
@@ -266,8 +321,18 @@
           "files": [
             {
               "path": "SKILL.md",
-              "size": 41847,
-              "sha": "029a838934affb5d6fcdaf72f6813b91dd57f239"
+              "size": 8037,
+              "sha": "9cae054fc84dae98b8ba5ac190807a4f4f9150c2"
+            },
+            {
+              "path": "ecosystem.md",
+              "size": 23430,
+              "sha": "5403ab392e8df0d5734c0437b66e86e7efc35079"
+            },
+            {
+              "path": "resources.md",
+              "size": 17325,
+              "sha": "afca20186c1f62f6597d9534d10cdd5583b76038"
             }
           ]
         },
@@ -276,8 +341,8 @@
           "files": [
             {
               "path": "SKILL.md",
-              "size": 12364,
-              "sha": "551f9689ccb023fd36f798c7ee0dd59f3704321e"
+              "size": 15555,
+              "sha": "93f44acdc0729df76b98f9cd7a2611ceb676f8f9"
             }
           ]
         }
@@ -290,9 +355,9 @@
       "repo": "stellar-scout",
       "path": "",
       "ref": "main",
-      "commit": "f2659ff63cd891d48f6adeb024de7753bd9efb9f",
-      "commit_date": "2026-07-24T01:15:56Z",
-      "url": "https://github.com/Stellar-Light/stellar-scout/tree/f2659ff63cd891d48f6adeb024de7753bd9efb9f",
+      "commit": "3b587aa9f23d21fc572f6e93cb6d11031dbc24e6",
+      "commit_date": "2026-09-08T00:38:50Z",
+      "url": "https://github.com/Stellar-Light/stellar-scout/tree/3b587aa9f23d21fc572f6e93cb6d11031dbc24e6",
       "license_files": [
         "LICENSE"
       ],
@@ -307,249 +372,153 @@
             },
             {
               "path": "SKILL.md",
-              "size": 29038,
-              "sha": "a3e3ac8d3ccd4b89bf7ca0c2fe186b8537eb678b"
+              "size": 34902,
+              "sha": "de459e784e9e927f42662aa53ab22c8dedab04b7"
             },
             {
               "path": "references/api-reference.md",
-              "size": 29184,
-              "sha": "b6e791417a5d15c1027b5c8505109df519e70987"
+              "size": 47120,
+              "sha": "5035cc98f1e0a7339ab9837e2dee19e7da0616cb"
             },
             {
               "path": "references/examples.md",
-              "size": 14176,
-              "sha": "74551fcbc2b6656e26314ee86dd206243e5d65cd"
+              "size": 14224,
+              "sha": "352edcc9396816fb02d5f1e67a1aa5807e6560a4"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "trustless-work",
+      "type": "github",
+      "owner": "Trustless-Work",
+      "repo": "trustlesswork-skill",
+      "path": ".",
+      "ref": "main",
+      "commit": "634f32bd4be6769b0cae52e72db4899d5f5a069c",
+      "commit_date": "2026-09-12T04:46:13Z",
+      "url": "https://github.com/Trustless-Work/trustlesswork-skill/tree/634f32bd4be6769b0cae52e72db4899d5f5a069c",
+      "license_files": [
+        "LICENSE"
+      ],
+      "skills": [
+        {
+          "name": "trustless-work-dev",
+          "files": [
+            {
+              "path": "SKILL.md",
+              "size": 13836,
+              "sha": "c95f53e79a513dd3efb74badc70c3477d11ea052"
+            },
+            {
+              "path": "constitution.md",
+              "size": 13910,
+              "sha": "81ff369c481642c053eb017a4d4efc967c5ac3e4"
+            },
+            {
+              "path": "skills/api/core-concepts.md",
+              "size": 9513,
+              "sha": "c58ebf929feb9cee73ba18420269e314c07cb809"
+            },
+            {
+              "path": "skills/api/multi-release-escrow.md",
+              "size": 31591,
+              "sha": "78fae830425de5d78c8026f60ae9c0cb8caa0c89"
+            },
+            {
+              "path": "skills/api/single-release-escrow.md",
+              "size": 31462,
+              "sha": "19e2657df4bfc57d9e85107a516fa801b53f8d17"
+            },
+            {
+              "path": "skills/api/trustlines.md",
+              "size": 6985,
+              "sha": "cc7561007f66cb30c617bb7562e278d0ef9440a5"
+            },
+            {
+              "path": "skills/api/types.md",
+              "size": 21811,
+              "sha": "f6435c685b75223bd5da3ca8d038d3b681ce76bb"
+            },
+            {
+              "path": "skills/api/v2/core-concepts.md",
+              "size": 9913,
+              "sha": "bdcaf9059492697f803354e87543b3845ff92358"
+            },
+            {
+              "path": "skills/api/v2/multi-release.md",
+              "size": 7870,
+              "sha": "0339311553bdb89b975d4d9ba1c2da2c80f684a7"
+            },
+            {
+              "path": "skills/api/v2/single-release.md",
+              "size": 8091,
+              "sha": "e9b9afb155b991d8cfc0c17323a11e25f7baee9c"
+            },
+            {
+              "path": "skills/blocks/components.md",
+              "size": 18640,
+              "sha": "009192bfec5016161a249d3f6fb827ed1cd5c65b"
+            },
+            {
+              "path": "skills/blocks/hooks.md",
+              "size": 8484,
+              "sha": "4dd5daa072370597eefca5dc69ace0a36c364086"
+            },
+            {
+              "path": "skills/blocks/introduction.md",
+              "size": 5516,
+              "sha": "ac8a16e207829c405147468c29f66c70e2276431"
+            },
+            {
+              "path": "skills/blocks/providers.md",
+              "size": 5473,
+              "sha": "e35600b2e828f88195175859e3455b6a842c54de"
+            },
+            {
+              "path": "skills/blocks/vibe-coding.md",
+              "size": 11810,
+              "sha": "b07cc71eac9ef9ec01d99cafdac32cafc365a2c0"
+            },
+            {
+              "path": "skills/js-sdk/js-sdk.md",
+              "size": 7580,
+              "sha": "df1a280aa080a529f963539b21cccc5572071512"
+            },
+            {
+              "path": "skills/protocol/v1.md",
+              "size": 11480,
+              "sha": "07ffd9f82e219264b8c4cee81e00735de52046e6"
+            },
+            {
+              "path": "skills/protocol/v2.md",
+              "size": 7878,
+              "sha": "c790ddca6c811d37ffbd053315a91650569b30a3"
+            },
+            {
+              "path": "skills/react-sdk/hooks-reference.md",
+              "size": 22064,
+              "sha": "734a4b810df12b46be542c7b219a8bfe1e983acb"
+            },
+            {
+              "path": "skills/react-sdk/react-sdk.md",
+              "size": 11592,
+              "sha": "f8737e1737b350a8e457106fb06d891a2b6d482a"
+            },
+            {
+              "path": "skills/react-sdk/v2/react-sdk.md",
+              "size": 9785,
+              "sha": "832ab4e8c03e1e8f92427876b9a857a55850e0e9"
+            },
+            {
+              "path": "skills/react-sdk/vibe-coding.md",
+              "size": 17371,
+              "sha": "c7971194f6cd28638c1c050b207b6e8e8bee7e12"
             }
           ]
         }
       ]
     }
-  ],
-  "catalog": {
-    "source": "https://stellarlight.xyz/api/skills",
-    "fetched_at": "2026-07-30T15:21:10Z",
-    "counts": {
-      "returned": 42,
-      "total": 42,
-      "bySource": {
-        "sdf": 7,
-        "stellarlight": 15,
-        "lumenloop": 8,
-        "external": 12,
-        "community": 0
-      }
-    },
-    "entries": [
-      {
-        "name": "allbridge-sdk",
-        "source": "external",
-        "kind": "sdk"
-      },
-      {
-        "name": "blend-sdk",
-        "source": "external",
-        "kind": "sdk"
-      },
-      {
-        "name": "freighter-api",
-        "source": "external",
-        "kind": "sdk"
-      },
-      {
-        "name": "mercury-indexer",
-        "source": "external",
-        "kind": "tool"
-      },
-      {
-        "name": "openzeppelin-stellar-contracts",
-        "source": "external",
-        "kind": "sdk"
-      },
-      {
-        "name": "reflector-network",
-        "source": "external",
-        "kind": "tool"
-      },
-      {
-        "name": "rozo-intent-pay",
-        "source": "external",
-        "kind": "sdk"
-      },
-      {
-        "name": "soroswap-sdk",
-        "source": "external",
-        "kind": "sdk"
-      },
-      {
-        "name": "stellar-cli",
-        "source": "external",
-        "kind": "cli"
-      },
-      {
-        "name": "stellar-sdk",
-        "source": "external",
-        "kind": "sdk"
-      },
-      {
-        "name": "stellar-typescript-wallet-sdk",
-        "source": "external",
-        "kind": "sdk"
-      },
-      {
-        "name": "stellar-wallets-kit",
-        "source": "external",
-        "kind": "sdk"
-      },
-      {
-        "name": "lumenloop-builder-quickstart",
-        "source": "lumenloop",
-        "kind": "skill-md"
-      },
-      {
-        "name": "lumenloop-ecosystem-digest",
-        "source": "lumenloop",
-        "kind": "skill-md"
-      },
-      {
-        "name": "lumenloop-ecosystem-scout",
-        "source": "lumenloop",
-        "kind": "skill-md"
-      },
-      {
-        "name": "lumenloop-integration-finder",
-        "source": "lumenloop",
-        "kind": "skill-md"
-      },
-      {
-        "name": "lumenloop-mcp",
-        "source": "lumenloop",
-        "kind": "mcp-server"
-      },
-      {
-        "name": "lumenloop-mcp-connect",
-        "source": "lumenloop",
-        "kind": "skill-md"
-      },
-      {
-        "name": "lumenloop-project-dossier",
-        "source": "lumenloop",
-        "kind": "skill-md"
-      },
-      {
-        "name": "lumenloop-scf-radar",
-        "source": "lumenloop",
-        "kind": "skill-md"
-      },
-      {
-        "name": "agentic-payments",
-        "source": "sdf",
-        "kind": "skill-md"
-      },
-      {
-        "name": "assets",
-        "source": "sdf",
-        "kind": "skill-md"
-      },
-      {
-        "name": "dapp",
-        "source": "sdf",
-        "kind": "skill-md"
-      },
-      {
-        "name": "data",
-        "source": "sdf",
-        "kind": "skill-md"
-      },
-      {
-        "name": "smart-contracts",
-        "source": "sdf",
-        "kind": "skill-md"
-      },
-      {
-        "name": "standards",
-        "source": "sdf",
-        "kind": "skill-md"
-      },
-      {
-        "name": "zk-proofs",
-        "source": "sdf",
-        "kind": "skill-md"
-      },
-      {
-        "name": "lumenloop-content-auditor",
-        "source": "stellarlight",
-        "kind": "skill-md"
-      },
-      {
-        "name": "scf-budget-builder",
-        "source": "stellarlight",
-        "kind": "skill-md"
-      },
-      {
-        "name": "scf-claim-verifier",
-        "source": "stellarlight",
-        "kind": "skill-md"
-      },
-      {
-        "name": "scf-competitor-analyst",
-        "source": "stellarlight",
-        "kind": "skill-md"
-      },
-      {
-        "name": "scf-fetch-external-doc",
-        "source": "stellarlight",
-        "kind": "skill-md"
-      },
-      {
-        "name": "scf-interest-form-drafter",
-        "source": "stellarlight",
-        "kind": "skill-md"
-      },
-      {
-        "name": "scf-live-context",
-        "source": "stellarlight",
-        "kind": "skill-md"
-      },
-      {
-        "name": "scf-prescreen-checker",
-        "source": "stellarlight",
-        "kind": "skill-md"
-      },
-      {
-        "name": "scf-referral-preparer",
-        "source": "stellarlight",
-        "kind": "skill-md"
-      },
-      {
-        "name": "scf-reviewer",
-        "source": "stellarlight",
-        "kind": "skill-md"
-      },
-      {
-        "name": "scf-round-reviewer",
-        "source": "stellarlight",
-        "kind": "skill-md"
-      },
-      {
-        "name": "scf-submission-drafter",
-        "source": "stellarlight",
-        "kind": "skill-md"
-      },
-      {
-        "name": "scf-tranche-reporter",
-        "source": "stellarlight",
-        "kind": "skill-md"
-      },
-      {
-        "name": "stellar-scout",
-        "source": "stellarlight",
-        "kind": "skill-md"
-      },
-      {
-        "name": "stellar-scout-mcp",
-        "source": "stellarlight",
-        "kind": "mcp-server"
-      }
-    ]
-  }
+  ]
 }

@@ -8,23 +8,50 @@ The runner talks to the real MCP server over HTTP and does not import `src/` sea
 
 ```sh
 node eval/discovery/run-discovery.mjs --url http://localhost:8788
-node eval/discovery/run-agent-discovery.mjs --url http://localhost:8787
+SERVER_REVISION=$(git rev-parse HEAD)
+SURFACE_SHA256=<surfaceSha256 from eval/report-live-surface.mjs>
+AGENT_BINARY_SHA256=<SHA-256 of the capped Claude wrapper resolved on PATH>
+AGENT_ENVIRONMENT_SHA256=$(node --input-type=module -e 'import { agentEnvironmentIdentity } from "./eval/lib/executable-identity.mjs"; process.stdout.write(agentEnvironmentIdentity().sha256)')
+MAX_BUDGET_USD=<approved total USD cap>
+node eval/discovery/run-agent-discovery.mjs --url http://localhost:8787 --server-revision "$SERVER_REVISION" --expect-sha256 "$SURFACE_SHA256" --expect-agent-binary-sha256 "$AGENT_BINARY_SHA256" --expect-agent-environment-sha256 "$AGENT_ENVIRONMENT_SHA256" --max-budget-usd "$MAX_BUDGET_USD"
 node eval/discovery/run-replay.mjs --url http://localhost:8787
 ```
 
 `run-discovery.mjs` retains its historical `http://localhost:8788` default; the new agent and
-replay runners default to the repository's Solo `dev` process at `http://localhost:8787`.
+replay runners default to the repository's local server at `http://localhost:8787`.
 Every `--url` may include or omit `/mcp`. For non-local targets, provide the full named
 credential (`name:token`) through `RAVEN_MCP_BEARER_TOKEN`; the runner sends it as a bearer
 credential and never prints it.
+
+The paid `run-agent-discovery.mjs` lane accepts only a local `dev:eval` server. The free one-shot
+and replay lanes can still use an authenticated remote target.
+
+Start paid agent-discovery servers with `npm run dev:eval -- --port 8787`. This launcher requires
+a clean worktree and compiles its commit into MCP `serverInfo`. The agent runner disables all
+user, project, and local setting sources and slash commands. It keeps the explicit strict MCP
+configuration and the existing permission-bypass flag. It does not use Claude `--safe-mode`,
+because Claude Code 2.1.247 drops explicit MCP servers in that mode.
+Each row must report the explicit `raven` server as `connected`. The runner stops after the first
+failure and suppresses all aggregates.
+
+The paid runner requires one space-separated value for each required flag: the binary pin,
+environment pin, total budget, `--server-revision`, and `--expect-sha256`.
+It rejects missing, duplicate, and empty required flags before an agent starts.
+The paid runner uses fail-closed CLI syntax and has no boolean flags.
+Every supported flag requires one spaced value.
+It rejects every equals form, unknown flag, and stray argument before any paid call.
+Each agent receives only its remaining budget authorization.
+Missing, invalid, and excessive costs fail the run.
+The result artifact records every authorization, reported cost, and remaining amount.
 
 Results are written to `eval/discovery/results/<ISO-stamp>.json` and are local evidence, matching the existing eval results convention.
 
 The agent runner defaults to `claude-sonnet-5` at medium effort, launches non-interactively with
 permission bypass, and exposes only `mcp__raven__search`. It records the observed call count,
 grades at most the first three searches, and invalidates final-selection credit if the agent makes
-zero or more than three calls. `--repeat N`, `--cases`, `--ids`, `--model`, and `--effort`
-support isolated A/Bs.
+zero or more than three calls. `--ids` accepts only one spaced `--ids a,b,c` form.
+The runner rejects `--ids=a,b,c` and duplicate `--ids` flags before any paid call.
+`--repeat N`, `--cases`, `--ids`, `--model`, and `--effort` support isolated A/Bs.
 
 `mine-agent-queries.mjs` builds `mined-lumenloop-queries.json` only from agent-generated queries over committed eval questions; raw user traffic is forbidden. The committed lane has 91 occurrences across the eight LumenLoop target cases from three retained historical agentic result files. Its deterministic register classifier reports 42 mixed (46.2%), 19 entity-only, and 30 capability queries. This does not recreate the unavailable July 9 160-query artifact's 66.3% mixed share; the different retained sample is recorded honestly rather than relabeled to match history.
 
@@ -35,7 +62,7 @@ policy; its exact stamp and aggregate are retained here.
 
 ## Seed Pools
 
-- `extended-strict-misses`: the 12 current extended-lane strict top-5 misses derived from `eval/routing-cases.json`. They are the cases where strict labels still miss while broader acceptable families can be defensible.
+- `extended-strict-misses`: 12 cases selected from extended-lane strict top-5 misses when this pool was authored. Their source references remain in `cases.json`; membership does not track the current routing miss count.
 - `issue-9-exemplars`: vague/status/current-recommendation questions from GitHub issue #9's exemplar class, authored against exact manifest ids.
 - `lumenloop-agentic-misses`: the 8 LumenLoop-labelled cases (`expected_service: lumenloop`) from the real agentic run `eval/agentic/results/agentic-2026-07-04-drift.json` (local-only, gitignored). Ground truth is authored from each case's `expected_cards`, so `expectedFamilies` is `["lumenloop"]` for the seven LumenLoop-only-card cases and `["lumenloop","scout"]` only for `blend-tvl`, whose authoritative card list itself includes `scout_analyze`. This pool deliberately measures **LumenLoop-family** discovery: a miss means one-shot search did not surface the intended LumenLoop editorial/directory source, even in cases where Scout may still return a factually usable answer. Scout was dropped from `phoenix-scf` (SCF submission history is a LumenLoop-specific dataset Scout cannot serve).
 - `round-844-real-user`: representative real-user alias/error/tooling questions from the round-844 lane context in `eval/README.md`, using committed routing-corpus questions as durable refs.

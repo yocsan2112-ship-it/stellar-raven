@@ -5,9 +5,8 @@
  * `codemode.skill.read(name, { sections? })` resolves through the CATALOG,
  * not the filesystem: `name` must be an exact catalog id (a `skills.*` skill
  * id — the form `search` returns — or a skill-section id from a hit's
- * `availableSections`; sections left search at the 2026-07-13 skills-form
- * A/B but stay exact-id readable), and content comes from the entry's
- * `transport: { url, sha }` — the upstream file at the commit pinned in
+ * `availableSections`; sections stay exact-id readable), and content comes
+ * from the entry's `transport: { url, sha }` — the upstream file at the commit pinned in
  * ecosystem-skills/MANIFEST.json, fetched and hash-verified by
  * src/skills/source.ts (bodies are neither vendored in this repo nor shipped
  * in the Worker bundle). Exposure is decided at build time (ADR-0003):
@@ -32,36 +31,45 @@ import { lastIdSegment } from "../catalog/id.ts";
 import { DEFAULT_MAX_TOKENS, CHARS_PER_TOKEN } from "../policy/truncate.ts";
 import { SKILL_READ_DEADLINE_MS, type SkillPin, type SkillSource } from "./source.ts";
 
+export type SkillSection = {
+  section: string;
+  content: string;
+  /** Exact pinned upstream URL for this section's content. */
+  url: string;
+};
+
+type SkillReadSuccess = {
+  ok: true;
+  id: string;
+  /** Pinned upstream URL for the skill's main SKILL.md file. Section reads
+   *  also report exact per-section provenance in each SkillSection.url. */
+  url: string;
+  /**
+   * Advisory size warning, never a withholding: attached (uniformly on
+   * whole, section, and file: reads) when the returned content is large
+   * enough that RETURNING it whole from a sandbox script would be
+   * truncated at the model boundary. The content itself is still fully
+   * present for in-sandbox use.
+   */
+  notice?: string;
+  /**
+   * Section keys readable on this skill (## slugs + file:<path> keys) —
+   * same membership as search hits' availableSections (search.ts
+   * sectionKeysOf).
+   */
+  availableSections: string[];
+};
+
 export type SkillReadResult =
-  | {
-      ok: true;
-      id: string;
-      /** Upstream provenance of the bytes served: the raw file URL at the
-       *  pinned commit (also what the integrity check was made against). */
-      url: string;
-      /**
-       * Full SKILL.md body (frontmatter stripped). ALWAYS present on ok
-       * whole-reads regardless of size — content is never withheld, so
-       * sandbox scripts can grep/aggregate full bodies. Absent on section
-       * reads (only the requested parts come back, in `sections`).
-       */
-      content?: string;
-      sections?: { section: string; content: string }[];
-      /**
-       * Advisory size warning, never a withholding: attached (uniformly on
-       * whole, section, and file: reads) when the returned content is large
-       * enough that RETURNING it whole from a sandbox script would be
-       * truncated at the model boundary. The content itself is still fully
-       * present for in-sandbox use.
-       */
-      notice?: string;
-      /**
-       * Section keys readable on this skill (## slugs + file:<path> keys) —
-       * same membership as search hits' availableSections (search.ts
-       * sectionKeysOf).
-       */
-      availableSections: string[];
-    }
+  | (SkillReadSuccess & {
+      /** Full SKILL.md body, as fetched, including upstream frontmatter. */
+      content: string;
+      sections?: never;
+    })
+  | (SkillReadSuccess & {
+      sections: SkillSection[];
+      content?: never;
+    })
   | { ok: false; error: { service: "skills"; kind: "error"; message: string } };
 
 /**
@@ -124,13 +132,13 @@ function editDistance(a: string, b: string): number {
 }
 
 /**
- * Nearest readable skill id for a failed lookup — a SUGGESTION appended to
+ * Nearest readable skill id for a failed lookup — a suggestion appended to
  * the exact-match error, never a resolution (no fuzzy top-hit acceptance).
  * Terminal-segment equality wins (catches "skills.smart-contracts" for
  * "skills.stellar-dev.smart-contracts"); otherwise smallest edit distance within a
  * typo-sized bound.
  *
- * Exported for src/skills/run.ts (design §6/§11 row 9): skill.run's
+ * Exported for src/skills/run.ts: skill.run's
  * unknown-id error reuses the same suggestion logic over the runnable subset
  * (run.ts passes a catalog narrowed to runnable entries). Behavior unchanged.
  */
@@ -272,9 +280,8 @@ export async function readSkill(
     return err("skill name must be a non-empty string (an exact catalog id)");
   }
 
-  // Options are exact-match like ids: unknown keys are refused, never
-  // silently ignored (a `section` singular typo used to no-op into a whole
-  // read and cost the caller a turn discovering why).
+  // Options are exact-match like ids. Refuse unknown keys instead of turning
+  // a misspelled `section` option into an unintended whole read.
   if (opts !== undefined && opts !== null) {
     if (typeof opts !== "object" || Array.isArray(opts)) {
       return err(
@@ -294,9 +301,9 @@ export async function readSkill(
   // A section id (`skills.x.y#slug`) reads exactly that section.
   const hashIndex = name.indexOf("#");
   const requestedFromId = hashIndex >= 0 ? [name.slice(hashIndex + 1)] : null;
-  const skillIdOrAlias = hashIndex >= 0 ? name.slice(0, hashIndex) : name;
+  const skillId = hashIndex >= 0 ? name.slice(0, hashIndex) : name;
 
-  const resolved = resolveSkillEntry(catalog, skillIdOrAlias);
+  const resolved = resolveSkillEntry(catalog, skillId);
   if ("ok" in resolved) return resolved; // an error result
   const entry = resolved;
 
@@ -310,7 +317,13 @@ export async function readSkill(
   const loaded = await load(source, ref, entry.id);
   if ("ok" in loaded) return loaded; // an error result
 
-  const body = stripFrontmatter(loaded.text);
+  // Upstream frontmatter is forwarded, not stripped. It is where a source
+  // states its own licence and author — OpenZeppelin's three skills declare
+  // `license: AGPL-3.0-only` there, and stripping it removed the only licence
+  // statement from everything this server served. Forwarding upstream's own
+  // bytes costs ~140 tokens on a whole read and authors nothing of our own.
+  // Frontmatter carries no `##` heading, so sectionize is unaffected.
+  const body = loaded.text;
   const bySlug = sectionize(body);
   const sectionEntries = sectionEntriesOf(catalog, entry.id);
   const sectionEntryById = new Map(sectionEntries.map((e) => [e.id, e]));
@@ -340,12 +353,8 @@ export async function readSkill(
   }
 
   if (!requested || requested.length === 0) {
-    // Fail-closed on the WHOLE-read path too. Section reads already refuse an
-    // un-cataloged `##` slug; before 2026-07-30 a whole read served the entire
-    // body regardless, so a section the catalog never indexed (build/read
-    // drift, or a body that moved without a catalog rebuild) still reached the
-    // model. Default-deny both shapes: if the parsed slugs and the cataloged
-    // slugs disagree, serve nothing and name the drift.
+    // Fail closed on whole reads and section reads. If the parsed slugs and
+    // cataloged slugs disagree, serve nothing and name the drift.
     const uncataloged = [...bySlug.keys()].filter(
       (slug) => !sectionEntryById.has(`${entry.id}#${slug}`)
     );
@@ -391,10 +400,14 @@ export async function readSkill(
     }
   }
 
-  const found: { section: string; content: string }[] = [];
+  const found: SkillSection[] = [];
   for (const want of requested) {
     if (want.startsWith("file:")) {
-      found.push({ section: want, content: stripFrontmatter(fileTexts.get(want)!).trim() });
+      found.push({
+        section: want,
+        content: fileTexts.get(want)!.trim(),
+        url: filePins.get(want)!.url
+      });
       continue;
     }
     // ##-heading section: accept the slug (catalog id form) or exact heading text.
@@ -421,7 +434,7 @@ export async function readSkill(
         `section "${want}" of ${entry.id} has no catalog entry — not exposed (section indexing drift; rebuild the catalog)`
       );
     }
-    found.push({ section: want, content: hit.content });
+    found.push({ section: want, content: hit.content, url: ref.url });
   }
 
   // Same advisory treatment as whole reads: large assembled section/file:

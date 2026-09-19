@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 //
-// build-index.mjs — regenerate INDEX.md from MANIFEST.json + groups.json.
+// build-index.mjs — regenerate INDEX.md from MANIFEST.json, catalog.json, and groups.json.
 //
 // For each pinned skill it reads SKILL.md from the pinned upstream commit
 // (scripts/lib/skill-mirror.mjs — fetched once into the gitignored working
@@ -9,7 +9,7 @@
 // index stays fresh without hand-maintained copy. Skills are grouped by theme (groups.json);
 // any skill present in the manifest but not filed in a group lands in an
 // "Uncategorized" section so newly synced skills are impossible to miss. The
-// stellarlight.xyz ecosystem DIRECTORY (manifest.catalog) is rendered as a
+// stellarlight.xyz ecosystem DIRECTORY (catalog.json) is rendered as a
 // separate "what exists in the ecosystem" map (incl. non-skill-md tools/SDKs).
 //
 // Run automatically by update.sh; safe to run standalone after a sync.
@@ -19,10 +19,16 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeFileAtomic } from "../scripts/lib/shared.mjs";
 import { readSkillFile } from "../scripts/lib/skill-mirror.mjs";
+import { parseFrontmatter } from "../scripts/lib/skill-markdown.mjs";
+import {
+  assertSkillDescriptionOverrideIdsResolve,
+  skillDescription
+} from "../scripts/description-notes.mjs";
 
 const DIR = dirname(fileURLToPath(import.meta.url));
 
 const manifest = JSON.parse(readFileSync(join(DIR, "MANIFEST.json"), "utf8"));
+const catalog = JSON.parse(readFileSync(join(DIR, "catalog.json"), "utf8"));
 const { groups } = JSON.parse(readFileSync(join(DIR, "groups.json"), "utf8"));
 
 // Build an index of every synced skill: id "source/skill" -> metadata.
@@ -40,6 +46,11 @@ for (const src of manifest.sources) {
   }
 }
 
+assertSkillDescriptionOverrideIdsResolve(
+  [...skillById.values()].map((skill) => `skills.${skill.source}.${skill.name}`),
+  "ecosystem-skills/build-index"
+);
+
 /** SKILL.md text per skill id, from the pinned upstream commit. */
 const textById = new Map(
   await Promise.all(
@@ -56,20 +67,14 @@ const textById = new Map(
 function frontmatter(id, skillName) {
   const text = textById.get(id);
   if (!text) return { name: skillName, description: "" };
-  const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  if (!m) return { name: skillName, description: "" };
-  const body = m[1];
-  const field = (key) => {
-    const re = new RegExp(`^${key}:\\s*([\\s\\S]*?)(?=\\n[A-Za-z0-9_-]+:|$)`, "m");
-    const hit = body.match(re);
-    if (!hit) return "";
-    let v = hit[1].trim();
-    if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
-      v = v.slice(1, -1);
-    }
-    return v.replace(/\s+/g, " ").trim();
+  const { attrs } = parseFrontmatter(text);
+  return {
+    name: String(attrs.name ?? "").replace(/\s+/g, " ").trim() || skillName,
+    description: skillDescription(
+      `skills.${id.replace("/", ".")}`,
+      String(attrs.description ?? "").replace(/\s+/g, " ").trim()
+    )
   };
-  return { name: field("name") || skillName, description: field("description") };
 }
 
 function meta(id) {
@@ -96,6 +101,13 @@ out.push(
     `[\`MANIFEST.json\`](./MANIFEST.json), which is what this server fetches and hash-verifies at read time.`,
 );
 out.push("");
+out.push(
+  "The **What it does** column is host-owned discovery text. Exact-ID overrides in " +
+    "`scripts/description-notes.mjs` can narrow upstream frontmatter for routing. " +
+    "They do not modify pinned source bytes. `codemode.skill.read` still applies its existing " +
+    "exposure scrub."
+);
+out.push("");
 if (manifest.status && manifest.status !== "complete") {
   const missing = (manifest.missing_sources || []).join(", ") || "unknown";
   out.push(
@@ -113,7 +125,8 @@ out.push("| --- | --- | --- | --- |");
 for (const src of manifest.sources) {
   let origin, pin;
   if (src.type === "github") {
-    origin = `[\`${src.owner}/${src.repo}\`](https://github.com/${src.owner}/${src.repo})${src.path ? ` \`${src.path}/\`` : " (root)"}`;
+    const where = src.path === "." ? " (skill dirs at root)" : src.path ? ` \`${src.path}/\`` : " (root)";
+    origin = `[\`${src.owner}/${src.repo}\`](https://github.com/${src.owner}/${src.repo})${where}`;
     pin = src.url ? `[\`${String(src.commit).slice(0, 12)}\`](${src.url})` : `\`${String(src.commit).slice(0, 12)}\``;
   } else {
     // lumenloop-archive: private repo, not git-commit-reproducible. Show the API
@@ -173,8 +186,8 @@ if (uncategorized.length) {
 }
 
 // Ecosystem directory snapshot (the broader map, incl. non-skill-md entries).
-if (manifest.catalog && Array.isArray(manifest.catalog.entries)) {
-  const cat = manifest.catalog;
+if (Array.isArray(catalog.entries)) {
+  const cat = catalog;
   out.push("## Ecosystem directory (stellarlight.xyz catalog snapshot)");
   out.push("");
   out.push(

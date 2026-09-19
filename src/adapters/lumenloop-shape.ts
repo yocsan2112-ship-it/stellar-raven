@@ -18,6 +18,39 @@
 
 export const LUMENLOOP_SEMANTIC_OPERATION = "lumenloop.search_content_semantic";
 
+/**
+ * The live 2026-08-18 probe disproved these inventory output schemas. The
+ * adapter returns their upstream `data` values unchanged, so publishing the
+ * schemas would teach a false `r.data.results` access path. Keep their output
+ * contracts unknown until a future probe supports exact replacement schemas.
+ * See improvements/lumenloop/ll-029-output-schema-top-level-shape-drift.md
+ * for the shared defect; ll-019 covers find_av_passages.
+ *
+ * Do not infer this list from the shared legacy schema shape. Other operations
+ * can legitimately return an object with `results`, and their contracts stay
+ * model-visible unless evidence disproves them too.
+ */
+export const LUMENLOOP_UNVERIFIED_OUTPUT_SCHEMA_OPERATIONS = new Set([
+  "lumenloop.find_av_passages",
+  "lumenloop.find_content_by_entity",
+  "lumenloop.find_similar_projects_semantic",
+  "lumenloop.find_similar_scf_submissions",
+  "lumenloop.get_related_projects",
+  "lumenloop.get_tags_vocabulary"
+]);
+
+export const LUMENLOOP_DOCUMENT_SORTS = [
+  "processed_at",
+  "publishing_date",
+  "created_at",
+  "domain",
+  "source",
+  "start_at",
+  "updated_at",
+  "last_seen_at",
+  "published_at"
+] as const;
+
 export const LUMENLOOP_SEMANTIC_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -83,6 +116,40 @@ export const LUMENLOOP_SEMANTIC_OUTPUT_SCHEMA = {
 
 type JsonRecord = Record<string, unknown>;
 
+/**
+ * Lumenloop currently accepts an unknown list_documents sort key. The live
+ * operation schema documents its supported fields in prose, so make that
+ * closed set executable in both generated model-facing contracts. This runs
+ * through the normal host-side schema guard before the adapter sends traffic.
+ */
+export function lumenloopInputSchema(operationId: string, upstream: unknown): unknown {
+  if (
+    operationId !== "lumenloop.list_documents" ||
+    upstream === null ||
+    typeof upstream !== "object" ||
+    Array.isArray(upstream)
+  ) {
+    return upstream;
+  }
+
+  const schema = upstream as JsonRecord;
+  const properties = schema.properties;
+  if (properties === null || typeof properties !== "object" || Array.isArray(properties)) {
+    return upstream;
+  }
+
+  const sort = (properties as JsonRecord).sort;
+  if (sort === null || typeof sort !== "object" || Array.isArray(sort)) return upstream;
+
+  return {
+    ...schema,
+    properties: {
+      ...properties,
+      sort: { ...(sort as JsonRecord), enum: [...LUMENLOOP_DOCUMENT_SORTS] }
+    }
+  };
+}
+
 function firstString(
   source: JsonRecord,
   keys: readonly string[]
@@ -126,9 +193,8 @@ function canonicalSemanticFields(source: JsonRecord): JsonRecord {
 }
 
 export function lumenloopOutputSchema(operationId: string, upstream: unknown): unknown {
-  return operationId === LUMENLOOP_SEMANTIC_OPERATION
-    ? LUMENLOOP_SEMANTIC_OUTPUT_SCHEMA
-    : upstream;
+  if (operationId === LUMENLOOP_SEMANTIC_OPERATION) return LUMENLOOP_SEMANTIC_OUTPUT_SCHEMA;
+  return LUMENLOOP_UNVERIFIED_OUTPUT_SCHEMA_OPERATIONS.has(operationId) ? null : upstream;
 }
 
 export function normalizeLumenloopOutput(operationId: string, data: unknown): unknown {

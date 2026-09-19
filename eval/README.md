@@ -1,5 +1,8 @@
 # Search-routing eval
 
+Use [How to run](#how-to-run) for commands and `gates.json` for the accepted thresholds and source fingerprints.
+The dated result sections preserve historical evidence; they do not describe the current deployment or authorize another experiment.
+
 > **Start at [`eval/EVALS.md`](./EVALS.md)** — the one-page map of all eval instruments,
 > which numbers are gates vs diagnostics, and the rules that keep them targeted.
 
@@ -9,8 +12,12 @@ Solo scratchpad 514) surface an entry from the *correct service* near the top of
 
 - **top-1 / top-3 / top-5**: any hit whose `service` equals the case's `expected_service`
   at rank 1 / within the first 3 / within the first 5 (query = the raw question, `limit: 5`).
-- **card@5** (secondary, only for cases with `expected_cards`): any top-5 hit whose id
-  matches one of the expected capability-card labels under the tolerant normalizer below.
+- **card@5** (secondary, only for cases with operation-level `expected_cards`): any top-5
+  hit whose id matches one of the expected capability-card labels under the tolerant
+  normalizer below. Service-level cards of the form `<service>_mcp` (e.g.
+  `stellar_docs_mcp`) name a whole service, not an operation; they are retired from card@5
+  (see "Service-level cards retired from card@5" below) — a case carrying only those is not
+  card-graded, because service routing is already measured by top-1/3/5.
 
 Nothing here executes tools or grades prose answers — that is the separate `execute` Q→A
 battery in [`eval/qa/`](./qa/) (LLM-judged answers over the whole two-tool surface; see
@@ -56,7 +63,9 @@ unaffected — verified exactly 183/236/256 after the change):
 ### Card-name normalizer (documented tolerance)
 
 Corpus cards use raven-next naming (`lumenloop_search_directory`, `scout_projects`,
-`stellar_docs_mcp`); catalog ids are `service.op_name`. A card matches a hit when, after
+`stellar_docs_mcp`); catalog ids are `service.op_name`. Service-level cards — whose op
+token after prefix mapping is exactly `mcp` — are excluded before matching (they name no
+operation; see the retirement note below). A remaining card matches a hit when, after
 canonicalization (lowercase, `-`/`.`/space → `_`):
 
 1. the full tokens are equal, **or**
@@ -68,10 +77,19 @@ canonicalization (lowercase, `-`/`.`/space → `_`):
 
 Implementation + unit fixtures: `eval/lib/grade.mjs`, `eval/self-test.mjs`.
 
+### Service-level cards
+
+A `<service>_mcp` card names a service, not an operation. Card@5 excludes these cards because
+top-1/3/5 already measures service routing. A case with no operation-level card is not card-graded.
+Stellar Docs operation routing remains unmeasured until the corpus names specific Docs operations.
+This release defers those labels because the current reviewers already saw rankings and results.
+A later blind author must select operation labels from source questions and the Docs API contract.
+That author must not read the scorer, manifest ranking, or prior result traces before freezing labels.
+
 ## How to run
 
 ```sh
-# 0. sanity-check the grader math (no src/ or catalog/ needed)
+# 0. sanity-check the grader math and committed evidence (no server needed)
 node eval/self-test.mjs
 
 # 1. compile corpus -> eval/routing-cases.json (labels preserved)
@@ -81,11 +99,14 @@ node eval/compile-routing.mjs            # optional arg: alternate corpus path
 node eval/run-routing.mjs
 ```
 
-`run-routing.mjs` also loads two **hand-authored** files at run time (deliberately not part
+`run-routing.mjs` also loads three **hand-authored** files at run time (deliberately not part
 of the compile step, so `node eval/compile-routing.mjs` can never wipe them):
 `eval/skills-cases.json` (the skills lane) and `eval/build-question-overlay.json` (the
-accept-either overlay) — see "Skills lane" below. Both are optional: if absent, the run
-degrades to the legacy 338-case eval.
+accept-either overlay), plus `eval/protocol-history-cases.json` (a diagnostic with eight
+positive cases and four direct-lookup controls). That in-run protocol-history lane remains the
+historical v1 contract. The standalone `npm run eval:protocol-history` command loads both v2
+protocol-history contracts. These files are optional. Without them, the run degrades to the
+legacy 338-case eval.
 
 Zero new dependencies: `run-routing.mjs` imports `src/catalog/search.ts` directly (Node
 ≥ 23.6 native type stripping); if the direct import fails it transpiles the file (and its
@@ -95,11 +116,15 @@ npm scripts: `npm run eval:selftest` / `eval:compile` / `eval:routing` (QA lane:
 `eval:qa:compile` / `eval:qa:selftest` / `eval:qa`; plan: `eval:plan`).
 
 **Gate enforcement:** baselines are committed in `eval/gates.json` (legacy 338 top-1/3/5
-±1%, skills-lane top-1 floor). Every run prints a `GATE PASS`/`GATE FAIL` verdict and
-records it in the results JSON; `npm run eval:routing -- --gate` turns a breach (or a
-changed denominator) into exit 1. CI runs `eval:selftest` + `eval:routing -- --gate` on
-every push/PR. Re-baselining = updating `gates.json` in the same commit that moves the
-numbers, decision recorded in Solo (EVALS.md rule 1).
+±1%, skills-lane top-1 floor). The gate record includes SHA-256 fingerprints for every gated
+data input and exact accepted lane totals. `eval:selftest` proves that a fresh clone resolves
+each input and matches each fingerprint. Every routing run verifies the same evidence, prints a
+`GATE PASS`/`GATE FAIL` verdict, and records it in the results JSON.
+`npm run eval:routing -- --gate` turns an evidence mismatch, a threshold breach, or a changed
+denominator into exit 1. CI runs `eval:selftest` + `eval:routing -- --gate` on every push/PR.
+Re-baselining updates the fingerprints, totals, thresholds, timestamp, and decision note together.
+A raw result name can appear as optional `evidence.localTrace` context. It never defines the
+committed baseline because `eval/results/` is local-only.
 
 ## Baseline
 
@@ -226,21 +251,21 @@ stellar-scout ×1). Active cases carry `expected_cards` in the
 containment bridges the `<source>` segment in `skills.<source>.<name>` ids). Graded
 strictly as its own scope — **never merged into the legacy 338-case aggregate**.
 
-**2. `eval/build-question-overlay.json` — accept-either for genuinely ambiguous legacy
-cases.** 32 hand-reviewed ids of existing stellarDocs-labeled questions that are
-build/how-do-I-shaped (deploy a contract, establish a trustline, write unit tests, wire
-Wallets Kit…) where the mirrored skills cover the same procedure — reviewed
+**2. `eval/build-question-overlay.json` — per-case accept-either labels for genuinely
+ambiguous cases.** 34 hand-reviewed records (33 legacy, 1 extended) attach an
+`expected_any` set to a specific case at load time. Most are stellarDocs-labeled
+build/how-do-I questions where a mirrored skill covers the same procedure; the
+extended Axelar bridge case accepts scout, lumenloop, or skills. Records are reviewed
 question-by-question against actual skill content, precision over recall (what-is /
-which-SEP / lookup / comparison questions excluded). These get
-`expected_any: ["stellarDocs", "skills"]` applied at load time and are reported **both
-ways**: strict (expected_service only) and accept-either (any accepted service counts).
+which-SEP / lookup / comparison questions excluded), and reported **both ways**:
+strict (expected_service only) and accept-either (any accepted service counts).
 The headline `overall` / `perService` numbers stay strict-only, so legacy comparability
 is never lost — grader-side, `gradeCase`'s strict fields are computed identically whether
 or not an accept set is passed (fixture-proved in `self-test.mjs`).
 
-**How to run:** nothing new — `node eval/run-routing.mjs` prints three tables (legacy
-strict, skills lane, overlay dual) and writes `skillsLane` + `overlay` sections into the
-results JSON alongside the unchanged legacy keys.
+**How to run:** nothing new — `node eval/run-routing.mjs` prints the normal lane tables
+plus separate legacy and extended overlay dual-grading tables, and writes `skillsLane`
++ `overlay` sections into the results JSON alongside the unchanged legacy keys.
 
 **BEFORE numbers** (`routing-2026-07-02T20-41-03-868Z.json`, same catalog + shipped
 scoring as Round 2; legacy strict verified byte-identical to the
@@ -942,3 +967,279 @@ routing improvement, not a skill disappearance; weakening the accurate Scout
 route solely to preserve the old strict winner was rejected.
 The authoritative baseline and full rationale are in `eval/gates.json`, with
 result `routing-2026-07-26T23-51-48-789Z.json`.
+
+## Re-baseline (2026-08-18, issue #26): Scout 1.8.67 composite operations
+
+Scout 1.8.67 added four public, keyless, read-only operations:
+`listContracts`, `getRepoTrust`, `scfPitch`, and `vetIdea`. Raven exposes all
+four operations under ADR-0003. The generic Scout adapter handles them, and no
+runnable-skill runner uses them.
+
+A pristine-main control under the current scorer measured legacy
+207/280/314, skills 17/23/23, and holdout 12/25/27. The regenerated manifest
+measures legacy **208/280/313**, skills **16/23/23**, and holdout
+**11/24/27**. Forbidden holdout captures remain 11, and passed holdout cases
+remain 23.
+
+Controlled ablations isolate the declines. Removing only `scfPitch` restores
+the skills and holdout top-1 floors. Removing only `listContracts` restores
+the holdout top-3 floor. Removing all four new operations passes the prior
+gate. This proves that the scorer and the existing catalog changes did not
+cause the movement.
+
+The two operations are relevant results for the displaced questions.
+`scfPitch` directly handles current SCF funding and pitch questions.
+`listContracts` is relevant to contract inventory and audit questions. The
+new floors accept this tradeoff without a scorer change, corpus edit, or
+per-question tuning. The decision record is Solo scratchpad 814. The baseline
+result is `routing-2026-08-18T14-10-11-708Z.json`.
+
+## Re-baseline (2026-08-19): golden QA overfitting review
+
+Four independent reviewers found no runtime golden-answer map or query-specific
+regex. They found benchmark-aware comments and model-facing wording. The repair
+keeps case evidence in eval records and uses general product language in the
+catalog.
+
+The same-scorer control measures legacy **208/281/313**, with card@5 at
+**94/182**. The reviewed change measures **208/280/312**, with card@5 at
+**94/182**. The skills lane stays at **16/23/23**. The frozen holdout measures
+**10/22/25**, with 11 forbidden captures. The extended lane measures
+**89/109/117**.
+
+Commit `2396700` had already removed service-only cards from card@5. It changes
+the evidence denominator from 338 to 182 independently of this wording change.
+
+The re-baseline accepts the measured movements. The change removes case-shaped
+wording instead of adding a question rule. It does not change the routing
+corpus. The decision record is Solo scratchpad 832.
+
+Scout 1.8.73 then removed three rejected hackathon-build parameters. It corrected
+the RFP semantics and most round-schema fields. It also expanded the stablecoin
+schema. The new Scout skill prefers the read-only Hackathon Build Brief.
+Raven adopts the pin. A manifest-derived filter removes structural blocks for
+excluded Scout paths from every selected file.
+
+The prior exposure rule hid that endpoint only because it moved eval totals.
+Raven now exposes `scout.hackathonBrief`. The scorer consumes its upstream
+`x-routing` fields through the existing weighting system. This release accepts
+the raw routing result without a new query rule or composite-specific weight.
+The evidence trace is `routing-2026-08-19T20-26-07-408Z.json`.
+
+## Re-baseline (2026-08-25, issue #35): Scout 1.8.87 and resolver exclusion
+
+Scout 1.8.87 has 34 paths and 35 operations. It adds the read-only
+`GET /api/projects/resolve` operation. Raven withholds that operation because
+OpenAPI leaves its `subject`, `current`, and `evidence` objects opaque and omits
+the live `meta` envelope. Resolved ledger entry `sls-075` tracks the upstream contract gap.
+
+The refresh changes routing text for `scout.getPartners` and
+`scout.searchProjects`. The Stellar Docs title vocabulary grows from 636 to
+646 titles. The stellar-light skill pin advances to `540c4c3f19e9`; Raven
+filters the non-exposed resolver reference from served prompt input.
+
+The strict legacy totals move from **208/280/312** to **209/279/312**, within
+the existing 1% band. Card@5 remains **94/182**. Skills remain **16/23/23**.
+The frozen holdout remains **10/22/25**, with 11 forbidden captures. No scorer
+lever, routing corpus, per-question rule, floor, or band changes. The runner
+operation set does not intersect the upstream operation changes.
+
+Independent Herdr review checked exposure, generated artifacts, routing,
+runner impact, documentation, and the complete skill-body diff.
+
+## Re-baseline (2026-08-27, issue #67): Scout 1.8.110 exposure review
+
+Scout 1.8.110 has 36 paths and 37 operations. It includes the read-only
+`GET /api/quality` and `GET /api/verify` operations. It also fully types the
+historical project resolver and adds Oracle vocabulary to `searchProjects`.
+The Stellar Docs title vocabulary grows from 646 to 649 titles.
+
+Raven exposes `scout.resolveProject` because its identity, status evidence,
+and provenance fields now match the live response. Resolved ledger entry `sls-075` records
+the upstream fix. Raven withholds `scout.verifyClaim` because its live
+`claim.type: "issued"` response is absent from the published response enum.
+Finding `sls-077` records that contract gap.
+
+Raven also withholds `scout.getQualityReport`. An A/B run showed that its broad
+routing vocabulary entered 56 of 338 legacy top-five results and 26 of 122
+extended top-five results. It ranked first for unrelated protocol and research
+questions. Excluding it improved extended strict routing from **88/109/116** to
+**90/109/117**. Finding `sls-078` records the upstream routing boundary.
+
+Against the prior baseline, legacy strict routing moves from **209/279/311** to
+**208/279/311**. The one strict change is `q-defi-reflector-resolve`.
+`scout.resolveProject` reaches rank one, while the strict corpus label remains
+Lumenloop and `expected_any` includes Scout. This is an accepted labeling
+trade, not a strict routing win. Card@5 remains **95/182**. Extended strict
+improves from **89/109/117** to
+**90/109/117** because the Oracle routing moves
+`q-defi-oracles-chainlink-band` to `scout.searchProjects` at rank one.
+
+Skills remain **16/23/23**. The frozen holdout remains **10/22/25**, with 11
+forbidden captures. No scorer, routing corpus, floor, band, or runner operation
+changed. The final passing evidence trace is
+`routing-2026-08-28T02-49-08-451Z.json`.
+
+## Re-baseline (2026-09-02): Lumenloop A/V contract correction
+
+The model-facing `lumenloop.find_av_passages` contract now states its supported search behavior.
+It covers videos, podcasts, and recorded talks. It does not promise transcript text, quotes,
+playback timestamps, or a recording date from `created_at`. Upstream calls `created_at` the
+recording date, but live rows contradict that claim. Finding `ll-019` records the discrepancy.
+The correction lives in `scripts/catalog-data/model-contract-corrections.mjs`.
+
+Against the prior baseline, legacy strict routing moves from **208/279/311** to
+**213/279/312**. Extended strict moves from **90/109/117** to **90/110/116**.
+Skills remain **16/23/23**. The frozen holdout moves from **10/22/25** to **10/22/26**,
+with 11 forbidden captures and 21 passed cases. The canonical passkey-talk case remains a direct
+A/V result at rank three. `q-ti-video-tutorials` moves from rank four to outside the top five.
+No evidence-true wording reaches the gated tier for that case. Two wallet cases and one anchor
+case lose false service credit from the A/V operation.
+
+No scorer, corpus, floor, band, or runner operation changed. The holdout was not tuned.
+The decision record is `.agents/rounds/2026-09-02-av-created-at-semantics.md`.
+The final passing trace is `routing-2026-09-02T17-26-17-593Z.json`.
+
+## Decision (2026-09-03): Reject Scout 1.9.23 drift
+
+The committed Scout inventory remains 1.9.1.
+The 1.9.23 candidate changed Scout routing and the claim-verification response enum.
+The candidate regressed legacy strict routing from 213/279/312 to 211/277/312.
+It regressed extended strict routing from 90/110/116 to 90/109/114.
+It regressed skills routing from 16/23/23 to 16/22/23.
+
+Raven keeps `scout.getQualityReport` and `scout.verifyClaim` excluded.
+Upstream 1.9.13 narrowed quality routing and completed the issued response enum.
+The quality candidate captured 90 unrelated queries through Raven response-schema
+keyword projection across the 544-case corpus.
+The rejection does not rebaseline `eval/gates.json`.
+See `.agents/rounds/2026-09-03-truth-maintenance/final-routing-review-terra.md`.
+
+## Decision (2026-09-04): Reject Scout 1.9.30 drift
+
+The committed Scout inventory remains 1.9.1.
+The 1.9.30 candidate keeps the same 36 paths and 37 operations.
+It changes 27 operation objects, 15 `x-routing` blocks, 22 direct schemas, and six shared schemas.
+The generated candidate meets the numeric routing floors.
+However, the current gates have no accepted fingerprint for its changed routing intent.
+Both protocol-history v2 contracts also stop as `source-expired` on the current manifest.
+
+Raven therefore rejects the generated 1.9.30 surface.
+It keeps `scout.getQualityReport` and `scout.verifyClaim` excluded.
+No policy, golden answer, finding state, or routing baseline changes with this decision.
+See `.agents/rounds/2026-09-03-truth-maintenance/scout-1.9.30-drift-terra.md`.
+
+## Decision (2026-09-08): Reject Scout 1.9.48 drift
+
+The committed Scout inventory remains 1.9.1.
+The 1.9.48 candidate adds `GET /api/rwa` and changes 17 routing blocks.
+It also changes 12 operation schemas.
+
+The new RWA card captures 52 of the 495 ranked cases.
+False captures include Friendbot, RPC, WASM, simulation, and balance questions.
+Removing only that operation does not restore every accepted routing result.
+The remaining regressions match the rejected 1.9.30 pattern.
+
+The RWA request and response contracts omit `issued-single-holder` from their state enums.
+The live handler accepts that value and lists it in validation errors.
+Finding `sls-082` records the defect.
+
+Raven rejects the generated 1.9.48 surface and does not rebaseline for that Scout candidate.
+It keeps the committed Scout pin and current-state documentation unchanged.
+The decision changes no golden answer or finding status.
+See `.agents/rounds/2026-09-08-live-drift-91.md`.
+
+## Protocol-history frozen measurement (2026-08-30)
+
+This round adds a frozen diagnostic with eight positive cases and four direct controls.
+It measures whether `scout.searchResearch` surfaces for protocol-history and incident questions.
+Positive cases require a top-five hit. Controls forbid any top-five research capture.
+
+An independent review supplied a second frozen set before the replacement product design.
+It has 11 blind paraphrases and nine hostile controls. Run both sets with
+`npm run eval:protocol-history`. The original 12 cases remain in `run-routing.mjs`.
+This keeps its ranked dump at exactly 495 cases.
+
+The untouched scorer passes all existing routing gates. The original diagnostic starts at
+3/4/4 for top-1/top-3/top-5. One of four controls captures research at rank five.
+The blind set starts at 3/11 top-five, with six hostile control captures.
+
+The first product attempt is not part of this measurement commit. Independent review found
+copied vocabulary, broad false captures, and a gated-tier inversion. The round ledger records
+that rejected attempt and each finding.
+
+Three manifest-driven tiering replacements were also rejected. The closest candidate kept all
+routing gates and surfaced the named case at rank five. It increased blind hostile captures from
+6/9 to 8/9 and changed 15 of 495 rankings. The branch therefore ships measurement only.
+
+The reviewed clause-fit follow-up lives under `eval/vectorize/`.
+Its 2026-08-31 local-only finish completed and measured `FAIL` under both frozen contracts.
+The experiment changed no production search code. See `eval/vectorize/README.md` for the pins.
+
+The reviewed cross-encoder attempt two also completed on 2026-08-31 and measured a verified
+`FAIL`: every registered grid kept both frozen contracts at the lexical baseline while failing
+the routing gate. The experiment changed no production search code. Attempt three is spent.
+See `eval/vectorize/README.md` for the pins and tables.
+
+The reviewed cache-only attempt three, `clause-support-fit-v1`, completed on 2026-09-01.
+It measured a verified `FAIL`. Multi-clause aggregation raised blind top-five recall to 10/11.
+It also raised blind control captures to 7/9 and failed the routing gate.
+The experiment changed no production search code. The three-attempt box is spent.
+See `eval/vectorize/README.md` for the pins and table.
+
+PH2 completed on 2026-09-03 with additive v2 contracts. The v1 files remain byte-identical inputs
+for the three spent experiments and the historical lane inside `run-routing.mjs`. The standalone
+`npm run eval:protocol-history` command now uses the v2 contracts.
+
+The v2 contracts preserve all 19 required cases. They keep nine reviewed controls as forbidden and
+mark four disputed controls neutral. Neutral cases keep their questions and ranked output, but they
+never affect pass or fail. A v2 pass requires all 19 required cases in the top five and zero captures
+among the nine forbidden cases. The owner decision and review reconciliation are in
+`.agents/rounds/2026-09-03-owner-decisions.md`.
+
+The v2 contracts now pin a source epoch before scoring. Each contract pins the manifest and target
+source hashes. The target hashes cover all scored fields and the complete Scout `x-routing` block.
+
+The runner checks both contracts before the first search. Any mismatch writes a `source-expired`
+audit result without scored sets. Each audit result stamps the actual manifest and contract digests.
+
+The earlier 4/8 and 3/11 readings remain historical diagnostics. Later Scout source changes cannot
+turn those readings into product evidence. A new blind contract needs a new accepted source freeze.
+
+## Stellar-dev-only source acceptance (2026-09-09)
+
+The isolated `0472452a` skill pin corrects MPP scope, x402 facilitator scope, and the Mainnet SDK example.
+Scout stays at OpenAPI 1.9.1 with its accepted Stellar Light skill pin.
+The combined 1.9.48 candidate remains rejected because its RWA contract omits a live state.
+
+All accepted routing totals and thresholds remain unchanged.
+Legacy top-1/top-3/top-5 remain 213/279/312. Skills remain 16/23/23. Holdout remains 10/22/26.
+The catalog evidence fingerprint changes to `83d9998f984cae38c363524e0592c6d035e80ba09cc27003f7a65e11bb0350f9`.
+The passing root trace is `routing-2026-09-09T16-46-02-887Z.json`.
+The full 544-page comparison finds 19 changed pages, including seven ordered-identifier changes and six membership changes.
+No expected-service hit or forbidden-absence assertion regresses.
+The round ledger records the independent review and source-acceptance decision:
+`.agents/rounds/2026-09-09-truth-maintenance.md`.
+
+## Structured-intent selection on accepted Scout 1.9.1 (2026-09-09)
+
+The bounded #124 selector preserves coherent upstream intent within an existing service quota.
+Both original leaderboard queries now include `scout.getLeaderboard` in the default top five.
+The selector changes neither scorer admission nor scores.
+The generated catalog adds separate positive routing phrases to 26 existing Scout operations.
+All other catalog values remain unchanged.
+
+Independent comparison found zero changed pages or grades across all 544 frozen rows.
+The two original issue queries are outside those frozen rows and have separate regression tests.
+Legacy top-1/top-3/top-5 remain 213/279/312. Skills remain 16/23/23. Holdout remains 10/22/26.
+Holdout forbidden captures remain 11, with 21 cases passed.
+The protocol-history diagnostic remains unchanged at 4/8 targets and 2/4 control captures.
+
+The reviewed trace is `routing-2026-09-09T18-59-36-518Z.json`.
+Its sole gate failure was the expected new catalog fingerprint.
+The explicit acceptance updates that fingerprint to `0745b09421e0ad56e4398dcdabde8477a047c3852bb4c528567b8af0028abcfd`.
+The post-acceptance gate passed in `routing-2026-09-09T19-06-43-311Z.json`.
+All accepted totals, thresholds, labels, and other input fingerprints remain unchanged.
+The decision record is `.agents/rounds/2026-09-09-outstanding-closeout.md`.
+The independent review is `.agents/rounds/2026-09-09-search-124-final-grok.md`.
+This local acceptance does not establish production acceptance or close #124.

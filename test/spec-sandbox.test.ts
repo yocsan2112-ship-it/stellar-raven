@@ -1,5 +1,5 @@
 /**
- * Spec-sandbox tests (todo 801) — the code-shaped spec-search machinery that
+ * Spec-sandbox tests for the code-shaped spec-search machinery that
  * mirrors @cloudflare/codemode@0.4.2's openApiMcpServer internals. Since
  * ADR-0001 (research/decisions/0001-search-tool-shape.md) this is no longer
  * a top-level tool: resolveSpecRefs feeds `execute`'s codemode.spec(), and
@@ -146,6 +146,12 @@ describe("generated wrapper — evaluated behavior", () => {
         "utf8"
       )
     );
+    const manifest = JSON.parse(
+      readFileSync(
+        join(dirname(fileURLToPath(import.meta.url)), "..", "catalog", "manifest.json"),
+        "utf8"
+      )
+    ) as { entries: Array<{ kind: string }> };
     const result = (await runWrapped(
       `async () => {
         const spec = await codemode.spec();
@@ -169,7 +175,7 @@ describe("generated wrapper — evaluated behavior", () => {
     };
     expect(parsed.services).toEqual(["lumenloop", "scout", "skills", "stellarDocs"]);
     expect(parsed.qParam.in).toBe("query"); // $ref → resolved parameter object
-    expect(parsed.skillCount).toBe(18);
+    expect(parsed.skillCount).toBe(manifest.entries.filter((entry) => entry.kind === "skill").length);
   });
 });
 

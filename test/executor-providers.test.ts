@@ -8,13 +8,12 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadManifest, type Catalog } from "../src/catalog/search.ts";
-import { buildSandbox } from "../src/executor/providers.ts";
+import { buildSandbox, hasServiceData, type OpLedgerCall } from "../src/executor/providers.ts";
 import type { FetchLike } from "../src/adapters/types.ts";
+import { MemoryR2Bucket } from "./helpers/memory-r2.ts";
 import { lazyPinnedSkillSource as skillSource } from "./helpers/skill-source.ts";
 import type { SkillSource } from "../src/skills/source.ts";
 import {
-  ARTIFACT_CUSTOM_METADATA_MAX_BYTES,
-  artifactCustomMetadataByteLength,
   put as putArtifact,
   type ArtifactPutInput
 } from "../src/artifacts/store.ts";
@@ -31,62 +30,6 @@ const env = {
   ALGOLIA_APPLICATION_ID_DOCS: "TESTAPPID",
   ALGOLIA_API_KEY_DOCS: "test-algolia-key-1234"
 };
-
-type Stored = {
-  body: string;
-  customMetadata: Record<string, string>;
-  httpMetadata?: Headers | R2HTTPMetadata;
-};
-
-class MemoryR2Object {
-  constructor(
-    readonly key: string,
-    private readonly body: string,
-    readonly customMetadata: Record<string, string>,
-    readonly httpMetadata?: Headers | R2HTTPMetadata
-  ) {}
-
-  async text(): Promise<string> {
-    return this.body;
-  }
-}
-
-class MemoryR2Bucket {
-  readonly objects = new Map<string, Stored>();
-
-  async put(key: string, body: string, options?: R2PutOptions): Promise<R2Object> {
-    const customMetadata = options?.customMetadata ? { ...options.customMetadata } : {};
-    if (artifactCustomMetadataByteLength(customMetadata) > ARTIFACT_CUSTOM_METADATA_MAX_BYTES) {
-      const error = new Error("MetadataTooLarge: custom metadata exceeds 8192 bytes");
-      error.name = "MetadataTooLarge";
-      throw error;
-    }
-    this.objects.set(key, { body, customMetadata, httpMetadata: options?.httpMetadata });
-    return new MemoryR2Object(key, body, customMetadata, options?.httpMetadata) as unknown as R2Object;
-  }
-
-  async get(key: string): Promise<R2ObjectBody | null> {
-    const stored = this.objects.get(key);
-    if (!stored) return null;
-    return new MemoryR2Object(
-      key,
-      stored.body,
-      stored.customMetadata,
-      stored.httpMetadata
-    ) as unknown as R2ObjectBody;
-  }
-
-  async head(key: string): Promise<R2Object | null> {
-    const stored = this.objects.get(key);
-    if (!stored) return null;
-    return new MemoryR2Object(
-      key,
-      stored.body,
-      stored.customMetadata,
-      stored.httpMetadata
-    ) as unknown as R2Object;
-  }
-}
 
 function artifactInput(overrides: Partial<ArtifactPutInput> = {}): ArtifactPutInput {
   return {
@@ -107,6 +50,89 @@ function fnsOf(providers: Sandbox, name: string) {
   if (!p) throw new Error(`missing provider ${name}`);
   return p.fns;
 }
+
+describe("host structural service evidence", () => {
+  it.each([
+    ["positive rows", { projects: [{ slug: "soroswap" }], meta: { total: 1 } }, true],
+    ["detail data with an empty auxiliary collection", { name: "Reflector", tags: [] }, true],
+    ["empty array", [], false],
+    ["metadata with empty row containers", { projects: [], repos: [], meta: { total: 0 } }, false],
+    [
+      "metadata with populated arrays",
+      { projects: [], meta: { facets: ["defi"] }, pagination: { pages: [1, 2] } },
+      false
+    ],
+    ["mixed row containers", { projects: [], repos: [{ fullName: "example/repo" }] }, true]
+  ])("classifies %s without changing the service payload", (_label, payload, expected) => {
+    expect(hasServiceData(payload)).toBe(expected);
+  });
+
+  it("keeps error and soft-empty envelopes out of successful payload evidence", async () => {
+    const calls: OpLedgerCall[] = [];
+    const fetchImpl: FetchLike = async (_url, init) => {
+      const { query } = JSON.parse(String(init?.body)) as { query: string };
+      return query === "error"
+        ? new Response(JSON.stringify({ success: false, error: "upstream failure" }), {
+            status: 500,
+            headers: { "content-type": "application/json" }
+          })
+        : new Response(
+            JSON.stringify({ success: true, data: { text: "unknown project" }, meta: { format: "text" } }),
+            { status: 200, headers: { "content-type": "application/json" } }
+          );
+    };
+    const providers = buildSandbox(catalog, skillSource, env, {
+      fetchImpl,
+      onOpCall: (call) => calls.push(call)
+    });
+    await fnsOf(providers, "lumenloop").search_directory!({ query: "error" });
+    await fnsOf(providers, "lumenloop").search_directory!({ query: "soft-empty" });
+    expect(calls).toMatchObject([
+      { outcome: "error", hasServiceData: undefined },
+      { outcome: "soft-empty", hasServiceData: undefined }
+    ]);
+  });
+
+  it("captures only the named source-metadata locations", async () => {
+    const calls: OpLedgerCall[] = [];
+    const fetchImpl: FetchLike = async () =>
+      Response.json({
+        rfps: [],
+        meta: {
+          generatedAt: "2026-08-26T12:00:00Z",
+          counts: { returned: 0, total: 14 },
+          scfRound: {
+            asOf: "2026-08-26",
+            currentRound: 40,
+            currentPhase: "submission",
+            submissionWindow: { closes: "2026-09-01T00:00:00Z", secret: "excluded" }
+          },
+          arbitrary: { generatedAt: "excluded" }
+        },
+        rows: [{ asOf: "excluded" }]
+      });
+    const providers = buildSandbox(catalog, skillSource, env, {
+      fetchImpl,
+      onOpCall: (call) => calls.push(call)
+    });
+
+    await fnsOf(providers, "scout").getRfps!({});
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.sourceMetadata).toEqual([
+      { path: "data.meta.generatedAt", value: "2026-08-26T12:00:00Z" },
+      { path: "data.meta.counts.total", value: 14 },
+      { path: "data.meta.scfRound.asOf", value: "2026-08-26" },
+      { path: "data.meta.scfRound.currentRound", value: 40 },
+      { path: "data.meta.scfRound.currentPhase", value: "submission" },
+      {
+        path: "data.meta.scfRound.submissionWindow.closes",
+        value: "2026-09-01T00:00:00Z"
+      }
+    ]);
+    expect(JSON.stringify(calls[0]?.sourceMetadata)).not.toContain("excluded");
+  });
+});
 
 describe("sandbox surface shape", () => {
   const providers = buildSandbox(catalog, skillSource, env);
@@ -157,24 +183,7 @@ describe("sandbox surface shape", () => {
     expect(codemode.prelude).toContain("codemode.artifact =");
   });
 
-  it("can expose exact-id describe without broader codemode discovery", async () => {
-    const demoProviders = buildSandbox(catalog, skillSource, env, {
-      codemodeDiscovery: false,
-      codemodeDescribe: true
-    });
-    const codemode = demoProviders.find((p) => p.name === "codemode")!;
-    expect(Object.keys(codemode.fns).sort()).toEqual(["artifact_info", "artifact_read", "describe", "skill_read", "skill_run"]);
-    expect(codemode.fns.search).toBeUndefined();
-    const described = (await codemode.fns.describe!("scout.searchProjects")) as {
-      ok: boolean;
-      id?: string;
-      usage?: string;
-    };
-    expect(described).toMatchObject({ ok: true, id: "scout.searchProjects" });
-    expect(described.usage).toContain("call it exactly as the signature");
-  });
-
-  it("keeps broad codemode discovery enabled by default when describeOnly is omitted", () => {
+  it("keeps broad codemode discovery enabled by default", () => {
     const defaultProviders = buildSandbox(catalog, skillSource, env);
     const codemode = defaultProviders.find((p) => p.name === "codemode")!;
     expect(codemode.fns.search).toBeTypeOf("function");
@@ -249,7 +258,7 @@ describe("codemode.artifact provider", () => {
     );
 
     for (let i = 0; i < 4; i++) {
-      await expect(codemode.artifact_read!(written.artifact.id)).resolves.toMatchObject({
+      await expect(codemode.artifact_read!(written.artifact.id)).resolves.toEqual({
         ok: true,
         data: { rows: [{ id: 1, value: "full" }] }
       });
@@ -276,7 +285,8 @@ describe("codemode.artifact provider", () => {
     );
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
-      await expect(codemode.artifact_info!(written.artifact.id)).resolves.toMatchObject({
+      const infoResult = await codemode.artifact_info!(written.artifact.id);
+      expect(infoResult).toMatchObject({
         ok: true,
         data: {
           id: written.artifact.id,
@@ -284,6 +294,7 @@ describe("codemode.artifact provider", () => {
           rayId: "ray-info"
         }
       });
+      expect(infoResult).not.toHaveProperty("data.key");
       await expect(codemode.artifact_info!(crypto.randomUUID())).resolves.toMatchObject({
         ok: false,
         error: { kind: "error", message: "artifact not found" }
@@ -385,6 +396,23 @@ describe("dispatch behavior (error-as-data, exposure, parallelism)", () => {
     expect(fetched).toBe(0);
   });
 
+  it("refuses an unknown Lumenloop document sort before any network call", async () => {
+    let fetched = 0;
+    const fetchImpl: FetchLike = async () => {
+      fetched += 1;
+      return new Response("{}", { status: 200 });
+    };
+    const providers = buildSandbox(catalog, skillSource, env, { fetchImpl });
+    const r = (await fnsOf(providers, "lumenloop").list_documents!({
+      collection: "jobs",
+      sort: "definitely_not_a_real_sort_key"
+    })) as { ok: boolean; error: { kind: string; message: string } };
+    expect(r.ok).toBe(false);
+    expect(r.error.kind).toBe("error");
+    expect(r.error.message).toContain("no call was made");
+    expect(fetched).toBe(0);
+  });
+
   it("runs independent calls concurrently (Promise.all fan-out is safe)", async () => {
     let inFlight = 0;
     let maxInFlight = 0;
@@ -433,13 +461,27 @@ describe("dispatch behavior (error-as-data, exposure, parallelism)", () => {
 // preludes over them exactly as the executor module does. Shared by the
 // envelope-guard and skill.read-guard suites so the scope reconstruction
 // cannot drift from itself.
-function guardedNamespaces(fetchImpl?: FetchLike) {
+function guardedNamespaces(
+  fetchImpl?: FetchLike,
+  beforePrelude?: (namespaces: Record<string, Record<string, unknown>>) => void
+) {
   const providers = buildSandbox(catalog, skillSource, env, fetchImpl ? { fetchImpl } : undefined);
   const ns: Record<string, Record<string, unknown>> = {};
   for (const p of providers) ns[p.name] = { ...p.fns };
+  beforePrelude?.(ns);
   const preludes = providers.map((p) => p.prelude ?? "").join("\n");
   new Function(...Object.keys(ns), preludes)(...Object.values(ns));
   return ns as Record<string, Record<string, (args?: unknown) => Promise<unknown>>>;
+}
+
+async function guardSyntheticPayload<T>(payload: T): Promise<{ ok: true; data: T }> {
+  const ns = guardedNamespaces(undefined, (namespaces) => {
+    namespaces.lumenloop!.search_directory = async () => ({ ok: true, data: payload });
+  });
+  return (await ns.lumenloop!.search_directory!({ query: "synthetic" })) as {
+    ok: true;
+    data: T;
+  };
 }
 
 describe("envelope guard prelude (fail-loud wrong-level access)", () => {
@@ -465,6 +507,43 @@ describe("envelope guard prelude (fail-loud wrong-level access)", () => {
     expect(r.data.projects[0]!.slug).toBe("soroswap"); // correct path untouched
     expect(() => (r as Record<string, unknown>).projects).toThrow(/use r\.data\.projects/);
     expect(() => (r as Record<string, unknown>).count).toThrow(/use r\.data\.count/);
+  });
+
+  it("object payload: direct object and nested array access stay unchanged", async () => {
+    const docsFetch: FetchLike = async () =>
+      Response.json({
+        hits: [
+          {
+            url: "https://developers.stellar.org/docs/learn/fundamentals/fees",
+            hierarchy: { lvl0: "Learn", lvl1: "Fees" }
+          }
+        ],
+        nbHits: 1,
+        page: 0,
+        nbPages: 1,
+        hitsPerPage: 5
+      });
+    const ns = guardedNamespaces(docsFetch);
+    const r = (await ns.stellarDocs!.search_docs!({ query: "fees" })) as {
+      data: Record<string, unknown> & { hits: Array<{ url: string }> };
+    };
+
+    expect(r.data.hits.map((hit) => hit.url)).toEqual([
+      "https://developers.stellar.org/docs/learn/fundamentals/fees"
+    ]);
+    expect(r.data.nbHits).toBe(1);
+  });
+
+  it("array payload: map, filter, length, and iteration stay unchanged", async () => {
+    const arrayFetch: FetchLike = async () =>
+      Response.json({ success: true, data: ["payments", "defi"], error: null });
+    const ns = guardedNamespaces(arrayFetch);
+    const r = (await ns.lumenloop!.get_categories!({})) as { data: string[] };
+
+    expect(r.data.map((value) => value.toUpperCase())).toEqual(["PAYMENTS", "DEFI"]);
+    expect(r.data.filter((value) => value.startsWith("d"))).toEqual(["defi"]);
+    expect(r.data.length).toBe(2);
+    expect([...r.data]).toEqual(["payments", "defi"]);
   });
 
   it("payload meta is trapped too: r.meta on a scout-shaped envelope points at r.data.meta", async () => {
@@ -517,12 +596,78 @@ describe("envelope guard prelude (fail-loud wrong-level access)", () => {
 
   it("traps are non-enumerable: keys/JSON/structured clone (Workers RPC serialization) stay clean", async () => {
     const ns = guardedNamespaces(directoryFetch);
-    const r = (await ns.lumenloop!.search_directory!({ query: "soroswap" })) as object;
+    const r = (await ns.lumenloop!.search_directory!({ query: "soroswap" })) as {
+      data: object;
+    };
     expect(Object.keys(r).sort()).toEqual(["data", "ok"]);
+    expect(r.data).toBeInstanceOf(Object);
     expect(JSON.stringify(r)).toContain('"count":1'); // stringify never hits a trap
     // A script returning the raw envelope must still serialize across RPC.
     expect(() => structuredClone(r)).not.toThrow();
     expect((structuredClone(r) as { data: { count: number } }).data.count).toBe(1);
+  });
+
+  it("keeps class prototypes and instanceof behavior", async () => {
+    class Payload {
+      hits = [{ id: 1 }];
+      label = "class-payload";
+
+      describe() {
+        return this.label;
+      }
+    }
+
+    const payload = new Payload();
+    const r = await guardSyntheticPayload(payload);
+
+    expect(r.data).toBe(payload);
+    expect(r.data).toBeInstanceOf(Payload);
+    expect(r.data).toBeInstanceOf(Object);
+    expect(r.data.describe()).toBe("class-payload");
+    expect(Object.getPrototypeOf(r.data)).toBe(Payload.prototype);
+  });
+
+  it("keeps a null-prototype payload outside the Object prototype chain", async () => {
+    const payload = Object.assign(Object.create(null) as Record<string, unknown>, {
+      hits: [{ id: 1 }]
+    });
+    const r = await guardSyntheticPayload(payload);
+
+    expect(r.data).toBe(payload);
+    expect(r.data instanceof Object).toBe(false);
+    expect(r.data.toString).toBeUndefined();
+    expect(Object.getPrototypeOf(r.data)).toBeNull();
+  });
+
+  it("keeps Map and Set internal-slot operations available", async () => {
+    const map = new Map([["project", "soroswap"]]);
+    const set = new Set(["payments"]);
+    const mapResult = await guardSyntheticPayload(map);
+    const setResult = await guardSyntheticPayload(set);
+
+    expect(mapResult.data).toBeInstanceOf(Map);
+    expect(mapResult.data.get("project")).toBe("soroswap");
+    mapResult.data.set("network", "stellar");
+    expect(mapResult.data.size).toBe(2);
+    expect(setResult.data).toBeInstanceOf(Set);
+    expect(setResult.data.has("payments")).toBe(true);
+    setResult.data.add("defi");
+    expect(setResult.data.size).toBe(2);
+    expect(() => structuredClone(mapResult)).not.toThrow();
+    expect(() => structuredClone(setResult)).not.toThrow();
+  });
+
+  it("passes through frozen payloads and keeps them structured-clone safe", async () => {
+    const payload = Object.freeze({ hits: [{ id: 1 }] });
+    const originalPrototype = Object.getPrototypeOf(payload);
+    const r = await guardSyntheticPayload(payload);
+
+    expect(r.data).toBe(payload);
+    expect(Object.isFrozen(r.data)).toBe(true);
+    expect(Object.getPrototypeOf(r.data)).toBe(originalPrototype);
+    expect(r.data.hits).toEqual([{ id: 1 }]);
+    expect((r.data as unknown as { map?: unknown }).map).toBeUndefined();
+    expect(() => structuredClone(r)).not.toThrow();
   });
 
   it("codemode discovery fns are not guarded — their own shapes (hits at top level) stay accessible", async () => {
@@ -716,12 +861,14 @@ describe("codemode fns", () => {
     expect(r2.hits.some((h) => h.id === "scout.submitPartnerListing")).toBe(false);
   });
 
-  it("search returns honest total/truncated and tier-marked hits (todos 838/840)", async () => {
+  it("search returns honest total/truncated and tier-marked hits", async () => {
     const r = (await codemode.search!({ query: "stellar soroban contract", limit: 5 })) as {
       ok: boolean;
       hits: { tier: string }[];
       total: number;
       truncated: boolean;
+      confidence: { hitCount: number; topScoreGap: number | null };
+      recoveryMetadata: { serviceFilterExcludedSkills: unknown[] };
     };
     expect(r.ok).toBe(true);
     expect(r.hits).toHaveLength(5);
@@ -730,6 +877,24 @@ describe("codemode fns", () => {
     // over the real manifest matches far more than one page.
     expect(r.total).toBeGreaterThan(r.hits.length);
     expect(r.truncated).toBe(true);
+    expect(r.confidence.hitCount).toBe(r.hits.length);
+    expect(r.confidence.topScoreGap).toBeGreaterThanOrEqual(0);
+    expect(r.recoveryMetadata.serviceFilterExcludedSkills).toEqual([]);
+  });
+
+  it("search returns service-filter recovery metadata inside the sandbox", async () => {
+    const r = (await codemode.search!({
+      query: "agentic payments MPP",
+      service: "lumenloop",
+      limit: 5
+    })) as {
+      ok: boolean;
+      recoveryMetadata: { serviceFilterExcludedSkills: Array<{ id: string }> };
+    };
+    expect(r.ok).toBe(true);
+    expect(r.recoveryMetadata.serviceFilterExcludedSkills.map((entry) => entry.id)).toContain(
+      "skills.stellar-dev.agentic-payments"
+    );
   });
 
   it("search returns exact-ID recovery separately and leaves ranking unchanged", async () => {
@@ -804,7 +969,14 @@ describe("codemode fns", () => {
   it("search logs the shared privacy-bounded page telemetry shape", async () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
-      const r = (await codemode.search!({ query: "stellar soroban contract", limit: 5 })) as {
+      const r = (await codemode.search!({
+        query: "Tomer Weller",
+        kind: "operation",
+        service: "lumenloop",
+        limit: 5,
+        recoverFrom: ["scout.getBuilders"],
+        reason: "empty"
+      })) as {
         hits: unknown[];
       };
       const event = logSpy.mock.calls
@@ -818,23 +990,27 @@ describe("codemode fns", () => {
         .find((candidate) => candidate?.evt === "search" && candidate.source === "codemode");
 
       expect(event).toMatchObject({
-        queryChars: 24,
+        queryChars: 12,
         requestedLimit: 5,
         effectiveLimit: 5,
         truncated: true,
-        hits: r.hits.length
+        hits: r.hits.length,
+        recovery: 2,
+        recoveryTop: ["lumenloop.search_content_semantic", "scout.searchResearch"],
+        widerCandidates: 2,
+        widerCandidateTop: ["lumenloop.find_av_passages", "lumenloop.search_content_semantic"]
       });
       expect(event).not.toHaveProperty("query");
       expect(event).not.toHaveProperty("queryPreview");
       expect(event).not.toHaveProperty("queryHash");
-      expect(JSON.stringify(event)).not.toContain("stellar soroban contract");
+      expect(JSON.stringify(event)).not.toContain("Tomer Weller");
       expect(Number(event?.gatedHits) + Number(event?.backfillHits)).toBe(r.hits.length);
     } finally {
       logSpy.mockRestore();
     }
   });
 
-  it("search honors a VALID kind filter — every hit carries it (todo 839)", async () => {
+  it("search honors a VALID kind filter — every hit carries it", async () => {
     const r = (await codemode.search!({ query: "stellar project dossier", kind: "skill" })) as {
       ok: boolean;
       hits: { kind: string }[];
@@ -844,7 +1020,7 @@ describe("codemode fns", () => {
     expect(r.hits.every((h) => h.kind === "skill")).toBe(true);
   });
 
-  it("search treats explicit null kind/service as 'no filter', like limit (todo 839)", async () => {
+  it("search treats explicit null kind/service as 'no filter', like limit", async () => {
     const r = (await codemode.search!({ query: "docs search", kind: null, service: null, limit: null })) as {
       ok: boolean;
       hits: { id: string }[];
@@ -853,7 +1029,7 @@ describe("codemode fns", () => {
     expect(r.hits.length).toBeGreaterThan(0);
   });
 
-  it("search rejects near-miss service filters with the valid set (todo 839)", async () => {
+  it("search rejects near-miss service filters with the valid set", async () => {
     for (const service of ["stellardocs", "stellar-docs", "scoutt"]) {
       const r = (await codemode.search!({ query: "docs search", service })) as {
         ok: boolean;
@@ -870,7 +1046,7 @@ describe("codemode fns", () => {
     }
   });
 
-  it("search rejects an unknown kind with the valid set (todo 839)", async () => {
+  it("search rejects an unknown kind with the valid set", async () => {
     const r = (await codemode.search!({ query: "docs search", kind: "operations" })) as {
       ok: boolean;
       error: { kind: string; message: string };
@@ -984,10 +1160,25 @@ describe("codemode fns", () => {
     expect(miss.error.message).toContain("exact-match");
   });
 
-  it("describe on an operation: FULL signature + raw schemas + usage (todo 841)", async () => {
+  it("describe preserves the full output after the super spec compacts it", async () => {
     // scout.searchProjects is the motivating monster: its search hit stubs
     // the ~12.7KB output type; describe must carry the whole thing.
     const entry = catalog.entries.find((e) => e.id === "scout.searchProjects")!;
+    const superSpec = JSON.parse(readFileSync(join(ROOT, "specs", "super-spec.json"), "utf8")) as {
+      paths: Record<
+        string,
+        Record<
+          string,
+          { responses?: Record<string, { content?: Record<string, { schema?: Record<string, unknown> }> }> }
+        >
+      >;
+    };
+    const compactSchema = superSpec.paths["/scout/searchProjects"]!.get!.responses?.["200"]
+      ?.content?.["application/json"]?.schema;
+    expect(compactSchema?.["x-codemode-describe"]).toBe(
+      'codemode.describe("scout.searchProjects")'
+    );
+    expect(compactSchema?.properties).toEqual({ codeReferences: {}, meta: {}, projects: {} });
     const r = (await codemode.describe!("scout.searchProjects")) as {
       ok: boolean;
       signature: string;
@@ -1008,12 +1199,15 @@ describe("codemode fns", () => {
     // Raw schemas as plain data — the same projection codemode.catalog() uses.
     expect(r.inputSchema).toEqual(entry.inputSchema);
     expect(r.outputSchema).toEqual(entry.outputSchema);
+    expect(JSON.stringify(r.outputSchema).length).toBeGreaterThan(
+      JSON.stringify(compactSchema).length
+    );
     // One-line envelope reminder.
     expect(r.usage).toContain("callable line");
     expect(r.usage).toContain("r.data");
   });
 
-  it("describe is a strict superset of the search hit: the hit stubs, describe carries the full type (todo 841)", async () => {
+  it("describe is a strict superset of the search hit: the hit stubs, describe carries the full type", async () => {
     const s = (await codemode.search!({ query: "scout.searchProjects" })) as {
       hits: { id: string; signature?: string }[];
     };
@@ -1025,8 +1219,8 @@ describe("codemode fns", () => {
     expect(d.signature).toContain("codeReferences?:");
   });
 
-  it("describe on a prose skill: availableSections (same derivation as search hits) + skill.read usage (todo 841)", async () => {
-    // A NON-runnable skill — the dossier's runner was retired (todo 849), so
+  it("describe on a prose skill: availableSections (same derivation as search hits) + skill.read usage", async () => {
+    // A non-runnable skill. The dossier runner was retired, so
     // its entry is back to read-only and pins the reversion here.
     const skillId = "skills.lumenloop.stellar-project-dossier";
     expect(catalog.entries.find((e) => e.id === skillId)?.runnable).toBeUndefined();
@@ -1055,7 +1249,7 @@ describe("codemode fns", () => {
   it("describe on a RUNNABLE skill: full skill.run signature + both schemas + dual usage naming both calls (design §5)", async () => {
     const skillId = "skills.lumenloop.stellar-ecosystem-digest";
     const entry = catalog.entries.find((e) => e.id === skillId)!;
-    expect(entry.runnable).toBe(true); // manifest precondition (Phase B build)
+    expect(entry.runnable).toBe(true); // manifest precondition
     const r = (await codemode.describe!(skillId)) as {
       ok: boolean;
       kind: string;
@@ -1104,7 +1298,7 @@ describe("codemode fns", () => {
     );
   });
 
-  it("describe on a skill section: parent skill id + section key + exact skill.read call (todo 841)", async () => {
+  it("describe on a skill section: parent skill id + section key + exact skill.read call", async () => {
     const section = catalog.entries.find((e) => e.kind === "skill-section")!;
     const hash = section.id.indexOf("#");
     const parentId = section.id.slice(0, hash);

@@ -55,9 +55,12 @@ jobs:
       # only surfacing at the manual `npm run deploy`. Offline — `--dry-run` exits
       # before any upload, so no secrets or network are needed.
       - run: npm run build
+      - run: npm run build:usage
+      - run: npm run test:usage-report
+      - run: npm run build:usage-report
       # Pin .gitleaks.toml semantics in CI too: without the binary the
       # test/scan-secrets-gitleaks.test.mjs suite self-skips and the config is
-      # only exercised on dev machines (Solo todo 1257, reviewer note 3a).
+      # only exercised on developer machines.
       # Version pinned to the release the suite was written against.
       - name: install gitleaks
         run: |
@@ -84,7 +87,7 @@ jobs:
           path: ecosystem-skills/.cache
           key: skill-bodies-${{ hashFiles('ecosystem-skills/MANIFEST.json') }}
       - run: npm test
-      # workerd smoke lane (test/smoke/, Solo todo 833): the assembled router
+      # workerd smoke lane (test/smoke/): the assembled router
       # + real Dynamic Worker executor boundary via vitest-pool-workers.
       # Offline enforced (miniflare outboundService wall) — auth/keys are
       # test-only fakes from its config, so no repo secrets are needed.
@@ -97,7 +100,7 @@ jobs:
       # the live `claude` CLI to grade fixtures, so it is a run-evals manual gate,
       # not an offline CI step — see .agents/skills/run-evals/SKILL.md.)
       - run: npm run eval:selftest
-      - run: npm run eval:qa:lint -- --stale
+      - run: npm run eval:qa:lint -- --stale --enforce-floors
       - run: npm run eval:qa:register -- --check
       - name: lint frozen canonical live contract
         run: |
@@ -135,10 +138,11 @@ jobs:
           # stale (or carry a false claim) without any other check noticing —
           # check-mirrors only asserts the file exists.
           node ecosystem-skills/build-index.mjs
+          node eval/corpus/raven-next/research/golden/_meta/compile.mjs
           node eval/compile-routing.mjs
           node eval/qa/compile-qa.mjs
           node eval/plan/build-op-classes.mjs
-          if ! git diff --exit-code --stat -- catalog specs src/mcp/micro-map.ts src/demo/globe.ts src/consent-globe.ts ecosystem-skills/INDEX.md eval/routing-cases.json eval/qa/cases.json eval/qa/sample.json eval/plan/op-classes.json; then
+          if ! git diff --exit-code --stat -- catalog specs src/mcp/micro-map.ts src/demo/globe.ts src/consent-globe.ts ecosystem-skills/INDEX.md eval/corpus/raven-next/research/golden/compiled/golden.json eval/routing-cases.json eval/qa/cases.json eval/qa/sample.json eval/qa/lifecycle-registry.json eval/plan/op-classes.json; then
             echo "::error::generated artifacts out of sync — run the build scripts locally and commit the result"
             exit 1
           fi

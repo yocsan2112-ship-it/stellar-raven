@@ -1,14 +1,13 @@
 #!/usr/bin/env node
 /**
- * build-super-spec.mjs — deterministic unified "super spec" builder
- * (todo 800; design rationale: research/super-spec-design.md).
+ * build-super-spec.mjs — deterministic unified "super spec" builder.
+ * Design rationale: research/super-spec-design.md.
  *
  * Emits specs/super-spec.json: ONE OpenAPI-3.1-STYLE document covering every
  * service this MCP fronts — lumenloop, scout, stellarDocs — plus a synthetic
- * `skills` core service. This is the document the code-shaped `search` tool
- * injects into its Dynamic Worker sandbox as `codemode.spec()` (mirroring
- * @cloudflare/codemode's openApiMcpServer), and that `execute` exposes via
- * the same `codemode.spec()` call.
+ * `skills` core service. `execute` exposes this document in its Dynamic
+ * Worker sandbox as `codemode.spec()`. The retired code-shaped search runner
+ * keeps the same document available for controlled A/B work.
  *
  * Dialect (see design doc §1):
  *  - paths keyed by namespaced callable name: `/{service}/{operation}`
@@ -40,20 +39,31 @@ import { fileURLToPath } from "node:url";
 import {
   LUMENLOOP_DESCRIPTION_NOTES,
   SCOUT_DESCRIPTION_NOTES,
+  assertSkillDescriptionOverrideIdsResolve,
   scoutRefRewrites,
   rewriteScoutRefs,
-  scrubScoutDescription
+  skillDescription,
+  scrubScoutDescription,
+  scrubNonExposedScoutSchemaRefs
 } from "./description-notes.mjs";
 import { writeFileAtomic } from "./lib/shared.mjs";
 import { loadSkillTexts } from "./lib/skill-mirror.mjs";
-import { RETIRED_ONBOARDING_SKILLS, scrubRetiredSkillRefs } from "./exposure.mjs";
+import { compactResponseSchema } from "./lib/super-spec-compaction.ts";
+import { RETIRED_ONBOARDING_SKILLS, scrubNonExposedRefs } from "./exposure.mjs";
 import { assertNoNonExposedRefsInText } from "./emitted-text-guard.mjs";
+import { applyModelContractCorrection } from "./catalog-data/model-contract-corrections.mjs";
 // The runnable-skill allowlist-as-data (research/skill-run-design.md §5):
 // the SAME registry scripts/build-catalog.mjs attaches to the manifest, so
 // the two model-facing surfaces cannot drift (native type stripping, as for
 // build-catalog.mjs's src/ imports).
 import { RUNNERS } from "../src/skills/runners/index.ts";
-import { lumenloopOutputSchema } from "../src/adapters/lumenloop-shape.ts";
+import { lumenloopInputSchema, lumenloopOutputSchema } from "../src/adapters/lumenloop-shape.ts";
+import { isOversizedOutputBlock } from "../src/catalog/output-compaction.ts";
+import {
+  jsonSchemaToType,
+  sanitizeToolName,
+  toPascalCase
+} from "../src/catalog/vendor/json-schema-types.ts";
 import { parseFrontmatter, plainText, slugify } from "./lib/skill-markdown.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -93,6 +103,45 @@ function exposedIds(manifest) {
   return new Set(manifest.entries.map((e) => e.id));
 }
 
+/**
+ * Replace only oversized success-response schemas in codemode.spec().
+ *
+ * The decision uses the same rendered-output threshold as compact search
+ * signatures. The compact schema keeps the exact top-level property names
+ * and required list. The catalog remains the full-schema source used by
+ * codemode.describe(id).
+ */
+function compactOversizedResponseSchemas(paths, manifest) {
+  const entries = new Map(
+    manifest.entries.filter((entry) => entry.kind === "operation").map((entry) => [entry.id, entry])
+  );
+  const compacted = [];
+
+  for (const item of Object.values(paths)) {
+    for (const op of Object.values(item)) {
+      const entry = entries.get(op.operationId);
+      if (!entry?.outputSchema) continue;
+
+      const operationName = entry.id.slice(entry.id.lastIndexOf(".") + 1);
+      const typeName = `${toPascalCase(sanitizeToolName(operationName))}Output`;
+      const outputBlock = jsonSchemaToType(entry.outputSchema, typeName);
+      if (!isOversizedOutputBlock(outputBlock)) continue;
+
+      const media = op.responses?.["200"]?.content?.["application/json"];
+      if (!media?.schema) {
+        throw new Error(
+          `super-spec: oversized output schema for ${entry.id} has no application/json 200 response`
+        );
+      }
+
+      media.schema = compactResponseSchema(entry);
+      compacted.push(entry.id);
+    }
+  }
+
+  return compacted.sort();
+}
+
 // ---------------------------------------------------------------------------
 // lumenloop — exactly the cataloged tools (exclusions never reach the spec)
 // ---------------------------------------------------------------------------
@@ -106,29 +155,35 @@ function buildLumenloopPaths(inv, exposed) {
   for (const tool of inv.tools) {
     const id = `lumenloop.${tool.name}`;
     if (!exposed.has(id)) continue;
-    const descriptionParts = [tool.description];
+    const contract = applyModelContractCorrection(id, {
+      description: tool.description,
+      returns: tool.returns,
+      inputSchema: lumenloopInputSchema(id, tool.input_schema ?? null),
+      outputSchema: lumenloopOutputSchema(id, tool.output_schema ?? null)
+    });
+    const descriptionParts = [contract.description];
     if (tool.when_to_use) descriptionParts.push(`When to use: ${tool.when_to_use}`);
-    if (tool.returns) descriptionParts.push(`Returns: ${tool.returns}`);
+    if (contract.returns) descriptionParts.push(`Returns: ${contract.returns}`);
     const note = LUMENLOOP_DESCRIPTION_NOTES[tool.name];
     if (note !== undefined) {
       descriptionParts.push(note);
       consumedNotes.add(tool.name);
     }
-    const outputSchema = lumenloopOutputSchema(id, tool.output_schema ?? null);
+    const { inputSchema, outputSchema } = contract;
     const op = {
       operationId: id,
-      summary: firstSentence(tool.description),
+      summary: firstSentence(contract.description),
       description: descriptionParts.join("\n\n"),
       tags: ["lumenloop", ...(tool.category ? [tool.category] : [])],
-      requestBody: tool.input_schema
+      requestBody: inputSchema
         ? {
             required: true,
-            content: { "application/json": { schema: tool.input_schema } }
+            content: { "application/json": { schema: inputSchema } }
           }
         : undefined,
       responses: {
         200: {
-          description: tool.returns ? plainText(tool.returns) : "Tool result",
+          description: contract.returns ? plainText(contract.returns) : "Tool result",
           ...(outputSchema
             ? { content: { "application/json": { schema: outputSchema } } }
             : {})
@@ -284,7 +339,7 @@ function pruneUnreachableComponents(paths, components) {
   return { components: pruned, dropped };
 }
 
-function buildScout(inv, exposed) {
+function buildScout(inv, exposed, manifest) {
   const openapi = inv.openapi;
   const paths = {};
   const HTTP_METHODS = ["get", "post", "put", "patch", "delete"];
@@ -303,7 +358,10 @@ function buildScout(inv, exposed) {
       if (!exposed.has(id)) continue;
       // pathItem-level parameters are merged into the op so nothing is lost
       // when re-keying the path to the callable name.
-      const parameters = [...(pathItem.parameters ?? []), ...(upstream.parameters ?? [])];
+      const correctedContract = applyModelContractCorrection(id, {
+        parameters: [...(pathItem.parameters ?? []), ...(upstream.parameters ?? [])]
+      });
+      const parameters = correctedContract.parameters;
       // Same boundary guidance the catalog manifest carries (shared data map
       // in description-notes.mjs) so codemode.spec() readers see it too.
       const note = SCOUT_DESCRIPTION_NOTES[opName];
@@ -319,14 +377,21 @@ function buildScout(inv, exposed) {
       const description = [cleanDescription, note ? plainText(note) : undefined]
         .filter(Boolean)
         .join("\n\n");
+      let responses = upstream.responses
+        ? scrubNonExposedScoutSchemaRefs(namespaceRefs(upstream.responses, "scout"))
+        : undefined;
       const op = {
         operationId: id,
         ...(summary ? { summary } : {}),
         ...(description ? { description } : {}),
         tags: ["scout", ...(upstream.tags ?? [])],
-        ...(parameters.length > 0 ? { parameters: namespaceRefs(parameters, "scout") } : {}),
-        ...(upstream.requestBody ? { requestBody: namespaceRefs(upstream.requestBody, "scout") } : {}),
-        ...(upstream.responses ? { responses: namespaceRefs(upstream.responses, "scout") } : {}),
+        ...(parameters.length > 0
+          ? { parameters: scrubNonExposedScoutSchemaRefs(namespaceRefs(parameters, "scout")) }
+          : {}),
+        ...(upstream.requestBody
+          ? { requestBody: scrubNonExposedScoutSchemaRefs(namespaceRefs(upstream.requestBody, "scout")) }
+          : {}),
+        ...(responses ? { responses } : {}),
         "x-service": "scout",
         "x-upstream": { method: method.toUpperCase(), path },
         "x-execute": `await scout.${opName}(args)`
@@ -352,7 +417,9 @@ function buildScout(inv, exposed) {
   for (const [group, defs] of Object.entries(openapi.components ?? {})) {
     components[group] = {};
     for (const [name, def] of Object.entries(defs)) {
-      components[group][`scout.${name}`] = namespaceRefs(def, "scout");
+      components[group][`scout.${name}`] = scrubNonExposedScoutSchemaRefs(
+        namespaceRefs(def, "scout")
+      );
     }
   }
 
@@ -377,7 +444,14 @@ function buildStellarDocs(spec, exposed) {
           required: true,
           content: { "application/json": { schema: op.params } }
         },
-        responses: { 200: { description: op.returns ?? "Search result" } },
+        responses: {
+          200: {
+            description: op.returns ?? "Search result",
+            ...(op.outputSchema
+              ? { content: { "application/json": { schema: op.outputSchema } } }
+              : {})
+          }
+        },
         "x-service": "stellarDocs",
         // The exact Algolia query mapping the host adapter applies — kept as a
         // vendor extension so spec-grepping code can see what each intent op
@@ -414,7 +488,7 @@ function buildSkillIndex(manifest, exposed, texts) {
       const loaded = texts.get(key);
       if (loaded === undefined) throw new Error(`skill file ${key} was not loaded`);
       const raw = loaded.text;
-      const { attrs, body } = parseFrontmatter(scrubRetiredSkillRefs(raw, key));
+      const { attrs, body } = parseFrontmatter(scrubNonExposedRefs(raw, key));
       const sections = [];
       const usedSlugs = new Set();
       for (const line of body.split("\n")) {
@@ -433,7 +507,7 @@ function buildSkillIndex(manifest, exposed, texts) {
       index.push({
         id: skillId,
         source: source.id,
-        description: attrs.description || skill.name,
+        description: skillDescription(skillId, attrs.description || skill.name),
         sections
       });
     }
@@ -541,7 +615,7 @@ function buildSkillsPaths(skillIndex, runnableIndex) {
         responses: {
           200: {
             description:
-              "{ ok: true, id, url (pinned upstream source), content? (whole skill) | sections?: [{section, content}], availableSections } or { ok: false, error }."
+              "{ ok: true, id, url (main SKILL.md pinned address), content? (whole skill) | sections?: [{section, content, url (exact pinned address for that section)}], availableSections } or { ok: false, error }."
           }
         },
         "x-service": "skills",
@@ -627,11 +701,11 @@ function buildSkillsPaths(skillIndex, runnableIndex) {
         responses: {
           200: {
             description:
-              "{ ok: true, hits: [{ id, service, kind, score, tier, description }], total, truncated } or " +
+              "{ ok: true, hits: [{ id, service, kind, score, tier, description }], total, truncated, confidence, recoveryMetadata } or " +
               "{ ok: false, error } (an unknown kind/service filter value is rejected with the valid names — " +
               "filters are exact-match). Each hit's tier is \"gated\" (strict primary scorer) or \"backfill\" " +
               "(gate-relaxed page fill). Scores share one scale; gated hits lead except a backfill hit may be " +
-              "promoted when it decisively dominates (>=1.6x), so hit order is authoritative. " +
+              "promoted when it decisively dominates (>=1.6x), so hit order is authoritative. confidence reports hit count, the absolute top-two score gap, and both tiers. recoveryMetadata reports relevant skills excluded only by a service filter. " +
               "truncated: true means more entries matched (total) than returned — raise limit, try a different family, or vary vocabulary."
           }
         },
@@ -653,8 +727,12 @@ async function main() {
   const skillsManifest = readJson("ecosystem-skills/MANIFEST.json");
   const catalogManifest = readJson("catalog/manifest.json");
   const exposed = exposedIds(catalogManifest);
+  assertSkillDescriptionOverrideIdsResolve(
+    catalogManifest.entries.filter((entry) => entry.kind === "skill").map((entry) => entry.id),
+    "build-super-spec"
+  );
 
-  const scout = buildScout(stellarLight, exposed);
+  const scout = buildScout(stellarLight, exposed, catalogManifest);
   const skillTexts = await loadSkillTexts(skillsManifest, {
     skip: (name) => RETIRED_ONBOARDING_SKILLS.has(name)
   });
@@ -685,6 +763,8 @@ async function main() {
       throw new Error(`cataloged operation ${entry.id} missing from the super spec`);
     }
   }
+
+  const compactedResponseSchemas = compactOversizedResponseSchemas(paths, catalogManifest);
 
   const serviceTags = [
     {
@@ -793,7 +873,7 @@ async function main() {
   writeFileAtomic(OUT_PATH, pretty);
 
   // Size report (design doc §4): the compact form is what ships into the
-  // sandbox per search — that's the number that matters.
+  // sandbox, so that is the number that matters.
   const compactBytes = Buffer.byteLength(JSON.stringify(sorted), "utf8");
   const prettyBytes = Buffer.byteLength(pretty, "utf8");
   const counts = {};
@@ -806,6 +886,11 @@ async function main() {
   console.log(`specs/super-spec.json — ${Object.keys(sorted.paths).length} paths (all callable)`);
   if (droppedComponents.length) {
     console.log(`  pruned ${droppedComponents.length} unreachable component(s): ${droppedComponents.join(", ")}`);
+  }
+  if (compactedResponseSchemas.length) {
+    console.log(
+      `  compacted ${compactedResponseSchemas.length} oversized response schema(s): ${compactedResponseSchemas.join(", ")}`
+    );
   }
   for (const [svc, c] of Object.entries(counts).sort()) {
     console.log(`  ${svc}: ${c} operations`);

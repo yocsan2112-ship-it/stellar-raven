@@ -59,16 +59,12 @@ export function lumenloopOpExcluded(tool) {
 //                                     the weekly partner digest (per upstream
 //                                     OpenAPI); scout.matchPartners is the
 //                                     side-effect-free ranking alternative
-// POST /api/partners/match and /api/partners/onboard stay exposed: their
-// OpenAPI descriptions declare pure AI ranking/extraction over published
-// partners ("nothing is invented", persistence happens only via the separate
-// submit-listing endpoint) — no write or logging is documented.
-export const EXCLUDED_SCOUT_OPS = new Set([
-  "POST /api/feedback",
-  "GET /api/feedback",
-  "POST /api/partners/submit-listing",
-  "POST /api/partners/assistant"
-]);
+//  POST /api/partners/onboard         upstream marks the AI interview/extraction
+//                                     helper x-side-effecting as of Scout 1.8.70;
+//                                     Raven has no approval or budget gate for it
+//  POST /api/partners/match stays exposed: its OpenAPI description declares
+//                                     pure AI ranking over published partners
+export { EXCLUDED_SCOUT_OPS, SCOUT_PATHS_ABSENT_FROM_SPEC } from "../src/policy/scout-exposure.ts";
 
 // Retired skills — exclusion as DATA (ADR-0003; decision 2026-07-03).
 // The Lumenloop onboarding skills teach RAW HTTP/REST or MCP-connector access
@@ -80,7 +76,7 @@ export const EXCLUDED_SCOUT_OPS = new Set([
 //
 // Only lumenloop-mcp-connect (from the PUBLIC lumenloop source) still exists
 // in the mirror. The six lumenloop-api-* partner skills were retired here
-// 2026-07-03 (Solo todo 825) and then REMOVED from the mirror entirely
+// and were removed from the mirror entirely
 // 2026-07-06 (go-public cleanup): their description harvest was complete and
 // partner-tier content must not live in this public repo. Their names live on
 // only in the scrub regex in src/skills/scrub.ts, which removes the public
@@ -134,9 +130,12 @@ export const SKILL_EXPOSURE_CLASSIFICATION_BY_ID = new Map(
   SKILL_EXPOSURE_CLASSIFICATIONS.map((entry) => [entry.id, entry])
 );
 
-// The retired-skill scrub lives in src/skills/scrub.ts because it now runs at
-// READ time too: skill bodies are fetched from upstream at the pinned commit
-// rather than vendored, so every served body is scrubbed on the way out. One
-// implementation, re-exported here so the builders keep importing exposure
-// data from one place.
-export { scrubRetiredSkillRefs, RETIRED_SKILL_REF_RE } from "../src/skills/scrub.ts";
+// Skill-body exposure scrubs live in src/skills/scrub.ts because they also run
+// at READ time. One implementation removes retired skill references and
+// complete Markdown blocks for excluded Scout paths. The builders import that
+// implementation here.
+export {
+  scrubNonExposedRefs,
+  scrubRetiredSkillRefs,
+  RETIRED_SKILL_REF_RE
+} from "../src/skills/scrub.ts";

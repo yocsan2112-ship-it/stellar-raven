@@ -13,9 +13,22 @@ evidence:
   - correct service-owner record confirmed 2026-07-13: https://github.com/Stellar-Light/stellarlight/issues/494 documents the additive lifecycle-provenance fields and their zero-migration legacy-row boundary; the residual population gap remains tracked by the source issue above
   - 2026-07-14 live Fluxity residual follow-up: https://github.com/Stellar-Light/stellarlight/issues/494#issuecomment-4971408499
   - partial-fix verification posted and read back 2026-07-15: https://github.com/Stellar-Light/stellarlight/issues/494#issuecomment-4982290048
+  - 2026-08-10 Scout OpenAPI 1.8.40 adds Repo activityState and activitySignals as a partial upstream response, but does not populate project statusBasis or statusSourceUrl; its activity semantics say dormant is a known commit older than 180 days (an observation, not a death verdict) and unknown is no commit date held
 recurrences:
   - date: 2026-07-15
     evidence: Scout 1.7.26 gives Fluxity and Freighter dated source-inherited statusBasis values, but statusSourceUrl remains null and supportedNetworks remains empty
+  - date: 2026-08-10
+    evidence: OpenAPI 1.8.40 adds Repo activityState/activitySignals, but this is only a partial response: it does not supply the requested project statusBasis/statusSourceUrl or deployment scope, and explicitly defines dormant/unknown as non-defunct observations rather than lifecycle death verdicts
+  - date: 2026-08-11
+    evidence: Production API 1.8.41 returns Fluxity as Live with statusBasis source-inherited, but statusSourceUrl remains null and supportedNetworks remains empty; issue #494 is open and issue stellar-scout#9 is open without comments
+  - date: 2026-08-19
+    evidence: Production API 1.8.73 returns OrbitCDP as Inactive with statusAsOf 2026-03-10T15:16:46.523Z and statusBasis unverified, but statusSourceUrl remains null, supportedNetworks and products remain empty, and deployments and oracleDeployments remain null; this is a partial improvement, not resolution
+  - date: 2026-08-25
+    evidence: Production API 1.8.87 fixed the nightly restamp and populated statusAsOf, statusBasis, and statusConfidence across all 583 rows reachable through the five documented status filters; however, 86 rows still lacked statusSourceUrl, 241 lacked supportedNetworks/networksBasis, and 582 lacked product deployment records, while /api/status reported 1025 total projects, so provenance coverage and testnet/mainnet product scope remain incomplete
+  - date: 2026-08-28
+    evidence: Production API 1.9.1 gives Slender, Laina, K2 Lend, and OrbitCDP dated status, statusBasis, and statusSourceUrl. K2 Lend still has null supportedNetworks, and all four have null products and deployments. Issue stellar-scout#9 and service-owner issue #494 are closed as completed, but the deployment-qualifier part of the finding still reproduces.
+  - date: 2026-09-08
+    evidence: Production API 1.9.48 gives the five named fixtures dated lifecycle provenance and a separate deployment object. A seven-category scan covered all 981 searchable rows. Five rows retain human-verified or source-inherited statusBasis with null statusSourceUrl: Scam Flagging System, Stellar Pulse, Pactta, The Blue Marble, and ChainCred. MyDataCoin correctly pairs unverified with a null source. All 887 unknown deployments consistently use null evidence fields, so those fields are explicit unknown semantics rather than defects. The duplicate QCAD and GLOUSD rows also retain unknown deployment and no canonical product link even though the RWA registry proves QCAD under stablecorp and USDGLO under glo-dollar. The separate undocumented package-release statusBasis defect is sls-084. Population review: .agents/rounds/2026-09-08-improvements-followups/sls024-review-sol.md.
 ---
 
 ## Finding
@@ -31,6 +44,12 @@ The label is not necessarily wrong when it conflicts with an operator surface:
 an operator page can be stale, an app can remain reachable after abandonment,
 and a project can be active without a mainnet product. The missing qualifiers
 make those distinct states indistinguishable.
+
+Scout 1.8.40's Repo `activityState` and `activitySignals` are a useful partial
+response, but they cannot replace project lifecycle provenance: `dormant` is a
+known commit older than 180 days and `unknown` has no commit date, neither a
+defunct verdict. They provide neither a project `statusBasis` nor a
+`statusSourceUrl`, nor a deployment qualifier.
 
 ## Evidence
 

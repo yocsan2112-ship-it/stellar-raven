@@ -9,6 +9,11 @@ evidence:
   - exact-name probes could retrieve Benji, WisdomTree, Figure, Spiko, and Etherfuse records
   - Solo scratchpad 575 GT-11 primary process 3231
   - https://github.com/lumenloop/lumenloop-backend/issues/29
+recurrences:
+  - date: 2026-08-11
+    evidence: "Broad RWA search still omits five exact-name records and lacks product state; issue #29 remains open."
+  - date: 2026-08-14
+    evidence: "Content-absence instance for a live RWA product. lumenloop.search_content_semantic('WisdomTree CRDT tokenized private credit fund on Stellar', types articles/research/av/events, limit 6) returned 24 rows and no CRDT or CRDYX row. lumenloop.search_documents({collection:'articles', query:'CRDT'}) and the same call for 'CRDYX' each returned zero items. lumenloop.get_project({slug:'wisdomtree'}) returns only the WisdomTree Prime record, with empty mainnet.tokens. scout.searchResearch for both terms returned no exact match. The product is canonically confirmed: WisdomTree IR release 2025-09-12, the SEC prospectus, and https://stellar.wisdomtree.com/.well-known/stellar.toml. Issue #29 remains open."
 ---
 
 ## Finding

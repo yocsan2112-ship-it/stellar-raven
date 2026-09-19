@@ -2,60 +2,17 @@
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { compactHit, loadDiscoveryCases, normalizeUrl, parseSearchPayload, postMcp } from "./lib.mjs";
 
 const DISCOVERY_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(DISCOVERY_DIR, "../..");
 const DEFAULT_CASES = path.join(DISCOVERY_DIR, "cases.json");
 const DEFAULT_URL = "http://localhost:8788";
-const FAMILIES = new Set(["lumenloop", "scout", "stellarDocs", "skills"]);
 
 const argValue = (flag) => {
   const i = process.argv.indexOf(flag);
   return i === -1 ? undefined : process.argv[i + 1];
 };
-
-function normalizeUrl(url) {
-  const trimmed = url.replace(/\/+$/, "");
-  return trimmed.endsWith("/mcp") ? trimmed : `${trimmed}/mcp`;
-}
-
-function authHeaders() {
-  const token = process.env.RAVEN_MCP_BEARER_TOKEN;
-  return token ? { authorization: `Bearer ${token}` } : {};
-}
-
-function parseMcpResponse(text) {
-  const trimmed = text.trim();
-  if (!trimmed) throw new Error("empty MCP response");
-  if (!trimmed.startsWith("event:") && !trimmed.startsWith("data:")) return JSON.parse(trimmed);
-  const dataLines = [];
-  for (const line of trimmed.split(/\r?\n/)) {
-    if (!line.startsWith("data:")) continue;
-    const data = line.slice(5).trim();
-    if (data && data !== "[DONE]") dataLines.push(data);
-  }
-  if (!dataLines.length) throw new Error(`SSE response had no data frame: ${trimmed.slice(0, 200)}`);
-  return JSON.parse(dataLines.join("\n"));
-}
-
-async function postMcp(url, body) {
-  const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...authHeaders() }, body: JSON.stringify(body) });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`${url} HTTP ${res.status}: ${text.slice(0, 300)}`);
-  const message = parseMcpResponse(text);
-  if (message.error) {
-    const code = message.error.code !== undefined ? ` ${message.error.code}` : "";
-    throw new Error(`MCP JSON-RPC error${code}: ${message.error.message ?? "unknown error"}`);
-  }
-  return message;
-}
-
-function parseSearchPayload(message) {
-  if (Array.isArray(message.result?.structuredContent?.hits)) return message.result.structuredContent;
-  const text = (message.result?.content ?? []).find((c) => c.type === "text")?.text;
-  if (!text) throw new Error("search response missing structuredContent.hits and JSON text content");
-  return JSON.parse(text);
-}
 
 async function preflight(url) {
   await postMcp(url, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "discovery-eval", version: "0" } } });
@@ -65,37 +22,19 @@ async function preflight(url) {
 }
 
 function loadCases(casesPath) {
-  const data = JSON.parse(readFileSync(casesPath, "utf8"));
-  const cases = Array.isArray(data) ? data : data.cases;
-  if (!Array.isArray(cases)) throw new Error(`${casesPath} must contain an array or { cases: [] }`);
-  const seen = new Set();
+  const { meta, cases } = loadDiscoveryCases(casesPath);
   for (const c of cases) {
     for (const field of ["id", "question", "expectedFamilies", "acceptableOps", "seed", "groundTruth", "notes"]) if (c[field] === undefined) throw new Error(`case ${c.id ?? "<unknown>"} missing ${field}`);
-    if (seen.has(c.id)) throw new Error(`duplicate case id ${c.id}`);
-    seen.add(c.id);
-    if (!Array.isArray(c.expectedFamilies) || !c.expectedFamilies.length) throw new Error(`case ${c.id} expectedFamilies must be a non-empty array`);
-    for (const family of c.expectedFamilies) if (!FAMILIES.has(family)) throw new Error(`case ${c.id} has invalid expected family ${family}`);
-    if (!Array.isArray(c.acceptableOps) || !c.acceptableOps.length) throw new Error(`case ${c.id} acceptableOps must be a non-empty array`);
     if (!c.seed?.pool || !c.seed?.ref) throw new Error(`case ${c.id} seed must include pool and ref`);
     if (!["authored", "provisional"].includes(c.groundTruth)) throw new Error(`case ${c.id} groundTruth must be authored or provisional`);
     if (c.groundTruth === "provisional" && !c.groundTruthNote) throw new Error(`case ${c.id} provisional ground truth needs groundTruthNote`);
   }
-  return { meta: Array.isArray(data) ? null : { schemaVersion: data.schemaVersion, authoredAt: data.authoredAt }, cases };
+  return { meta, cases };
 }
 
-function validateManifestIds(cases) {
+function manifestSummary() {
   const manifest = JSON.parse(readFileSync(path.join(REPO, "catalog", "manifest.json"), "utf8"));
-  const ids = new Set((manifest.entries ?? []).map((e) => e.id));
-  const missing = [];
-  for (const c of cases) for (const id of c.acceptableOps) if (!ids.has(id)) missing.push(`${c.id}: ${id}`);
-  if (missing.length) throw new Error(`acceptableOps not present in catalog/manifest.json:\n${missing.join("\n")}`);
-  return { generatedAt: manifest.generatedAt, version: manifest.version, entryCount: ids.size };
-}
-
-function compactHit(hit, rank) {
-  const out = { rank, id: hit.id, service: hit.service, kind: hit.kind };
-  for (const k of ["tier", "score", "normalizedScore", "keywordScore", "semanticScore"]) if (hit[k] !== undefined) out[k] = hit[k];
-  return out;
+  return { generatedAt: manifest.generatedAt, version: manifest.version, entryCount: manifest.entries.length };
 }
 
 async function runCase(url, c, index) {
@@ -127,7 +66,7 @@ async function main() {
   const url = normalizeUrl(argValue("--url") ?? DEFAULT_URL);
   const casesPath = path.resolve(argValue("--cases") ?? DEFAULT_CASES);
   const { meta, cases } = loadCases(casesPath);
-  const manifest = validateManifestIds(cases);
+  const manifest = manifestSummary();
   await preflight(url);
   const rows = [];
   for (const [i, c] of cases.entries()) {

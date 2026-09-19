@@ -30,8 +30,10 @@ import {
   catalogServices,
   recoveryCandidates,
   type RecoveryCandidate,
+  type SearchConfidence,
   type SearchHit,
   type SearchPage,
+  type SearchRecoveryMetadata,
   type WiderCandidate
 } from "../catalog/search.ts";
 import type { RetrievalReason } from "../catalog/types.ts";
@@ -46,6 +48,7 @@ import {
   createExecuteRunner,
   type ExecuteEvidenceSummary,
   type ExecuteOperationSummary,
+  type ExecuteOutcome,
   type ExecuteRunner
 } from "../executor/run.ts";
 import { logEvent } from "../observability.ts";
@@ -55,7 +58,7 @@ import {
   truncateForModel,
   truncateLogsForModel
 } from "../policy/truncate.ts";
-import type { BuildSourceBasisManifestInput, SourceBasisCall } from "../policy/source-basis.ts";
+import { projectSourceBasisTelemetry } from "../policy/source-basis.ts";
 import {
   candidateEvidenceBlock,
   evidenceCheckpointBlock,
@@ -88,62 +91,50 @@ type SearchStructured = {
   truncated: boolean;
   recovery: RecoveryCandidate[];
   widerCandidates: WiderCandidate[];
+  confidence: SearchConfidence;
+  recoveryMetadata: SearchRecoveryMetadata;
   nextSteps: string;
 };
 
 const SOURCE_BASIS_CALL_LIMIT = 8;
 
-function sourceBasisCallTotals(calls: SourceBasisCall[]): Record<SourceBasisCall["outcome"], number> {
-  const totals = { ok: 0, error: 0, "soft-empty": 0 };
-  for (const call of calls) totals[call.outcome] += 1;
-  return totals;
-}
-
-function sourceBasisSignals(sourceBasis: BuildSourceBasisManifestInput | undefined): unknown {
-  if (!sourceBasis) return null;
-  const calls = sourceBasis.calls ?? [];
-  return {
-    shape: sourceBasis.shape.kind,
-    calls: {
-      first: calls.slice(0, SOURCE_BASIS_CALL_LIMIT),
-      total: calls.length,
-      omitted: Math.max(0, calls.length - SOURCE_BASIS_CALL_LIMIT),
-      totals: sourceBasisCallTotals(calls)
-    },
-    canonicalUrlCount: sourceBasis.canonicalUrls?.length ?? 0,
-    artifactState: sourceBasis.artifact?.state ?? "absent",
-    skillSectionAdvice: sourceBasis.skillSectionAdvice === true
-  };
-}
-
-function evidenceOutcome(
-  outcome: { ok: boolean; operationSummary?: ExecuteOperationSummary }
-): "execute-error" | "not-observed" | "no-operations" | "data" | "soft-empty" | "error" | "mixed" {
+export function evidenceOutcome(
+  outcome: {
+    ok: boolean;
+    operationSummary: ExecuteOperationSummary;
+    evidenceSummary: ExecuteEvidenceSummary;
+  }
+):
+  | "execute-error"
+  | "no-operations"
+  | "data"
+  | "empty-success"
+  | "soft-empty"
+  | "error"
+  | "mixed" {
   if (!outcome.ok) return "execute-error";
   const summary = outcome.operationSummary;
-  if (!summary) return "not-observed";
   if (summary.total === 0) return "no-operations";
   const problemCount = summary.error + summary.softEmpty;
   if (summary.ok > 0 && problemCount > 0) return "mixed";
+  if (summary.ok > 0 && outcome.evidenceSummary?.kind === "service-inconclusive") {
+    return "empty-success";
+  }
   if (summary.ok > 0) return "data";
   if (summary.error > 0 && summary.softEmpty > 0) return "mixed";
   return summary.error > 0 ? "error" : "soft-empty";
 }
 
 function hostEvidenceSummary(
-  operations: ExecuteOperationSummary | undefined,
-  evidence: ExecuteEvidenceSummary | undefined,
+  operations: ExecuteOperationSummary,
+  evidence: ExecuteEvidenceSummary,
   truncated: boolean
 ): string {
-  const op = operations ?? { total: 0, ok: 0, error: 0, softEmpty: 0 };
-  const kind =
-    evidence?.kind ??
-    (op.ok > 0 ? "service-data" : op.total > 0 ? "service-inconclusive" : "none");
   return [
     "--- host evidence summary ---",
-    `evidence: ${kind}`,
-    `service operations: total=${op.total} ok=${op.ok} error=${op.error} soft-empty=${op.softEmpty}`,
-    `skill content read: ${evidence?.skillRead === true ? "yes" : "no"}; artifact reads: ${evidence?.artifactReads ?? 0}`,
+    `evidence: ${evidence.kind}`,
+    `service operations: total=${operations.total} ok=${operations.ok} error=${operations.error} soft-empty=${operations.softEmpty}`,
+    `skill content read: ${evidence.skillRead ? "yes" : "no"}; artifact reads: ${evidence.artifactReads}`,
     `model boundary: ${truncated ? "truncated; inspect the source-basis manifest above" : "complete"}`
   ].join("\n");
 }
@@ -258,7 +249,12 @@ function demoExecutePreflightError(code: string): string | null {
   }
 }
 
-export function buildDemoTools(opts: { env: Env; emit: (f: DemoFrame) => void; budget?: DemoToolBudget }): {
+export function buildDemoTools(opts: {
+  env: Env;
+  emit: (f: DemoFrame) => void;
+  budget?: DemoToolBudget;
+  runExecute?: ExecuteRunner;
+}): {
   tools: Record<string, unknown>;
   budgetReport: () => DemoToolBudget;
 } {
@@ -278,7 +274,7 @@ export function buildDemoTools(opts: { env: Env; emit: (f: DemoFrame) => void; b
       const t0 = Date.now();
       const catalog = getCatalog();
 
-      // Mirror of the MCP handler (src/mcp/tools.ts, todo 839): a near-miss
+      // Mirror the MCP handler: a near-miss
       // `service` keeps the zero-hit response SHAPE with the diagnosis in
       // nextSteps. Same event fields under a demo-distinguishable evt name.
       const services = catalogServices(catalog);
@@ -287,16 +283,9 @@ export function buildDemoTools(opts: { env: Env; emit: (f: DemoFrame) => void; b
           ...searchEventFields({
             query: args.query,
             requestedLimit: args.limit ?? null,
-            page
+            page,
+            summary: structured
           }),
-          hits: structured.hits.length,
-          total: structured.total,
-          truncated: structured.truncated,
-          top: structured.hits.slice(0, 3).map((h) => h.id),
-          recovery: structured.recovery.length,
-          recoveryTop: structured.recovery.slice(0, 3).map((candidate) => candidate.id),
-          widerCandidates: structured.widerCandidates.length,
-          widerCandidateTop: structured.widerCandidates.slice(0, 3).map((candidate) => candidate.id),
           responseChars: JSON.stringify(structured).length,
           ms: Date.now() - t0
         });
@@ -312,6 +301,8 @@ export function buildDemoTools(opts: { env: Env; emit: (f: DemoFrame) => void; b
           truncated: false,
           recovery: [],
           widerCandidates: [],
+          confidence: { hitCount: 0, topScoreGap: null, topScoreTiers: null },
+          recoveryMetadata: { serviceFilterExcludedSkills: [] },
           nextSteps: "Search call limit reached for this demo turn. Earlier hits are navigation only; use an exact discovered id in execute if an execute call remains, then summarize only from factual tool evidence."
         };
         logEvent("demo-search-refused", {
@@ -319,7 +310,8 @@ export function buildDemoTools(opts: { env: Env; emit: (f: DemoFrame) => void; b
           ...searchEventFields({
             query: args.query,
             requestedLimit: args.limit ?? null,
-            page: null
+            page: null,
+            summary: null
           }),
           searchCalls: budget.searchCalls,
           searchRefusals: budget.searchRefusals
@@ -337,6 +329,8 @@ export function buildDemoTools(opts: { env: Env; emit: (f: DemoFrame) => void; b
           truncated: false,
           recovery: [],
           widerCandidates: [],
+          confidence: { hitCount: 0, topScoreGap: null, topScoreTiers: null },
+          recoveryMetadata: { serviceFilterExcludedSkills: [] },
           nextSteps: `Unknown service "${args.service}" — service filter values are exact-match. Valid services: ${services.join(", ")}. Retry with one of those exact values, or drop the \`service\` filter.`
         }, null);
       }
@@ -352,6 +346,8 @@ export function buildDemoTools(opts: { env: Env; emit: (f: DemoFrame) => void; b
           truncated: false,
           recovery: [],
           widerCandidates: [],
+          confidence: { hitCount: 0, topScoreGap: null, topScoreTiers: null },
+          recoveryMetadata: { serviceFilterExcludedSkills: [] },
           nextSteps: `Unknown recoverFrom operation id(s): ${unknownRecoveryIds.map((id) => JSON.stringify(id)).join(", ")}. Recovery ids are exact-match; discover valid operations with search first.`
         }, null);
       }
@@ -388,12 +384,23 @@ export function buildDemoTools(opts: { env: Env; emit: (f: DemoFrame) => void; b
             ? `No navigation hits. Use another candidate family or varied vocabulary (${remainingSearches} searches remain), or use codemode.search inside execute; do not conclude the capability or fact is absent from one empty catalog search.`
             : "No navigation hits and no top-level search calls remain. You may use codemode.search inside execute; do not conclude the capability or fact is absent from an empty catalog search, and qualify if factual evidence cannot be recovered.";
       const nextSteps =
-        widerCandidates.length > 0
+        widerCandidates.some((candidate) => candidate.basis === "short-query-directory")
+          ? `${baseNextSteps} This query has one content token without an operation-name token match. Use the advisory directory candidate for a bounded name lookup when the ranked hits do not identify the requested entity.${widerCandidates.some((candidate) => candidate.lane !== "directory") ? " If that lookup does not answer the question, use one relevant broad advisory for a bounded pass." : ""}`
+          : widerCandidates.length > 0
           ? hits.length > 0
             ? `${baseNextSteps} This page has no gated operation match, so the ranked hits are lexical-only candidates; prefer the leading hit that fits the question, and if none does, run one bounded broad pass over the advisory widerCandidates.`
             : `${baseNextSteps} No gated operation matched either; run one bounded broad pass over the advisory widerCandidates before retrying, and still do not conclude absence.`
           : baseNextSteps;
-      return respond({ hits, total, truncated, recovery, widerCandidates, nextSteps }, page);
+      return respond({
+        hits,
+        total,
+        truncated,
+        recovery,
+        widerCandidates,
+        confidence: page.confidence,
+        recoveryMetadata: page.recoveryMetadata,
+        nextSteps
+      }, page);
     }
   });
 
@@ -432,33 +439,40 @@ export function buildDemoTools(opts: { env: Env; emit: (f: DemoFrame) => void; b
       budget.executeCalls += 1;
 
       const t0 = Date.now();
-      let outcome;
+      let outcome: ExecuteOutcome;
       try {
-        outcome = await getRunner(env)(args.code);
+        outcome = await (opts.runExecute ?? getRunner(env))(args.code);
       } catch (e) {
         // The runner is designed never to throw; belt-and-braces anyway.
         outcome = {
           ok: false as const,
           error: e instanceof Error ? e.message : String(e),
-          logs: []
+          logs: [],
+          operationSummary: { total: 0, ok: 0, error: 0, softEmpty: 0 },
+          evidenceSummary: {
+            kind: "none",
+            skillRead: false,
+            buildAuthoritySkillIds: [],
+            buildAuthorityRoles: [],
+            skillRuns: 0,
+            artifactReads: 0
+          }
         };
       }
       if (!outcome.ok) budget.executeFailures += 1;
       if (outcome.ok && outcome.truncated) budget.executeResultTruncated += 1;
-      if (outcome.operationSummary) {
-        budget.operationTotal += outcome.operationSummary.total;
-        budget.operationOk += outcome.operationSummary.ok;
-        budget.operationError += outcome.operationSummary.error;
-        budget.operationSoftEmpty += outcome.operationSummary.softEmpty;
-      }
-      const latest = outcome.operationSummary ?? { total: 0, ok: 0, error: 0, softEmpty: 0 };
-      budget.latestOperationTotal = latest.total;
-      budget.latestOperationOk = latest.ok;
-      budget.latestOperationError = latest.error;
-      budget.latestOperationSoftEmpty = latest.softEmpty;
-      budget.latestExecuteEvidence =
-        outcome.evidenceSummary?.kind ??
-        (latest.ok > 0 ? "service-data" : latest.total > 0 ? "service-inconclusive" : "none");
+      budget.operations.total += outcome.operationSummary.total;
+      budget.operations.ok += outcome.operationSummary.ok;
+      budget.operations.error += outcome.operationSummary.error;
+      budget.operations.softEmpty += outcome.operationSummary.softEmpty;
+      const latest = outcome.operationSummary;
+      budget.latestOperations = {
+        total: latest.total,
+        ok: latest.ok,
+        error: latest.error,
+        softEmpty: latest.softEmpty
+      };
+      budget.latestExecuteEvidence = outcome.evidenceSummary.kind;
       const recoveryHint = outcome.ok ? (outcome.recoveryHint ?? null) : null;
       let visibleRecoveryHint: EvidenceRecoveryHint | null = null;
       if (recoveryHint) {
@@ -502,16 +516,18 @@ export function buildDemoTools(opts: { env: Env; emit: (f: DemoFrame) => void; b
         logLines: outcome.logs.length,
         logsTruncated: shapedLogs.truncated,
         errorTruncated: shapedError ? shapedError.truncated : null,
-        artifactReadCount: outcome.artifactReadCount ?? 0,
+        artifactReadCount: outcome.evidenceSummary.artifactReads,
         artifactReadBytes: outcome.artifactReadBytes ?? 0,
-        operationSummary: outcome.operationSummary ?? null,
-        evidenceSummary: outcome.evidenceSummary ?? null,
+        operationSummary: outcome.operationSummary,
+        evidenceSummary: outcome.evidenceSummary,
         evidenceOutcome: evidenceOutcome(outcome),
         recoveryHint,
         recoveryAdviceVisible: visibleRecoveryHint !== null,
         recoveryAdviceDelivered: budget.recoveryAdviceDelivered,
         recoveryAdviceSuppressed: budget.recoveryAdviceSuppressed,
-        sourceBasis: outcome.ok ? sourceBasisSignals(outcome.sourceBasis) : null
+        sourceBasis: outcome.ok
+          ? projectSourceBasisTelemetry(outcome.sourceBasis, SOURCE_BASIS_CALL_LIMIT)
+          : null
       });
 
       const logsBlock =
@@ -531,11 +547,11 @@ export function buildDemoTools(opts: { env: Env; emit: (f: DemoFrame) => void; b
         ? evidenceCheckpointBlock(visibleRecoveryHint ?? undefined)
         : "";
       const hasPriorArtPreflight = Boolean(
-        outcome.operationSummary?.priorArtCandidates &&
-          outcome.evidenceSummary?.buildAuthoritySkillIds?.length
+        outcome.operationSummary.priorArtCandidates &&
+          outcome.evidenceSummary.buildAuthoritySkillIds?.length
       );
       const candidateBlock = outcome.ok
-        ? candidateEvidenceBlock(outcome.operationSummary?.candidateEvidence, hasPriorArtPreflight)
+        ? candidateEvidenceBlock(outcome.operationSummary.candidateEvidence, hasPriorArtPreflight)
         : "";
 
       const text = outcome.ok
@@ -548,6 +564,10 @@ export function buildDemoTools(opts: { env: Env; emit: (f: DemoFrame) => void; b
 
   return {
     tools: { search, execute },
-    budgetReport: () => ({ ...budget })
+    budgetReport: () => ({
+      ...budget,
+      operations: { ...budget.operations },
+      latestOperations: { ...budget.latestOperations }
+    })
   };
 }

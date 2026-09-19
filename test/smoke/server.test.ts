@@ -1,5 +1,5 @@
 /**
- * Offline smoke of src/server.ts — the ASSEMBLED router (Solo todo 833).
+ * Offline smoke of src/server.ts — the assembled router.
  * Its building blocks (gate.ts bypass logic, provider options, site pages)
  * are unit-tested in plain Node; what plain Node cannot exercise is this
  * file's dispatch wiring: bypass-before-provider ordering, the hostname
@@ -17,6 +17,7 @@ import { env, SELF } from "cloudflare:test";
 import { canaryPins } from "../../src/skills/canary.ts";
 import { getCatalog } from "../../src/catalog/load.ts";
 import { beforeAll, describe, expect, it } from "vitest";
+import { EXPECTED_TOOL_METADATA } from "../helpers/mcp-tool-metadata";
 
 const PUBLIC = "https://raven.stellar.org";
 const LOCAL = "http://localhost";
@@ -84,6 +85,8 @@ async function lastEventJson(res: Response): Promise<{
     serverInfo?: { name?: string };
     instructions?: string;
     tools?: { name: string }[];
+    content?: Array<{ type?: string; text?: string }>;
+    isError?: boolean;
     structuredContent?: { hits?: unknown[] };
   };
 }> {
@@ -141,6 +144,22 @@ describe("defaultHandler routes", () => {
     expect(res.headers.get("content-type")).toContain("text/html");
   });
 
+  it("GET and HEAD /docs serve the public documentation surface", async () => {
+    const get = await SELF.fetch(`${PUBLIC}/docs`);
+    expect(get.status).toBe(200);
+    expect(get.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(await get.text()).toContain("Stellar Raven documentation");
+
+    const head = await SELF.fetch(`${PUBLIC}/docs`, { method: "HEAD" });
+    expect(head.status).toBe(200);
+    expect((await head.arrayBuffer()).byteLength).toBe(0);
+    expect(head.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(head.headers.get("cache-control")).toBe("public, max-age=300");
+    expect(head.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(head.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(head.headers.get("content-security-policy")).not.toContain("script-src");
+  });
+
   it("unknown paths fall through to 404", async () => {
     const res = await SELF.fetch(`${PUBLIC}/definitely-not-a-route`);
     expect(res.status).toBe(404);
@@ -184,10 +203,14 @@ describe("/mcp auth dispatch", () => {
 
     const listed = await postRpc(`${PUBLIC}/mcp`, rpcBody("tools/list", {}, 1), headers);
     expect(listed.status).toBe(200);
-    expect((await lastEventJson(listed)).result?.tools?.map((tool) => tool.name).sort()).toEqual([
-      "execute",
-      "search"
-    ]);
+    const listedTools = (await lastEventJson(listed)).result?.tools ?? [];
+    expect(listedTools.map((tool) => tool.name).sort()).toEqual(["execute", "search"]);
+    expect(listedTools.find((tool) => tool.name === "search")).toMatchObject(
+      EXPECTED_TOOL_METADATA.search
+    );
+    const execute = listedTools.find((tool) => tool.name === "execute");
+    expect(execute).toMatchObject(EXPECTED_TOOL_METADATA.execute);
+    expect(execute).not.toHaveProperty("outputSchema");
 
     const called = await postRpc(
       `${PUBLIC}/mcp`,
@@ -200,6 +223,22 @@ describe("/mcp auth dispatch", () => {
     );
     expect(called.status).toBe(200);
     expect((await lastEventJson(called)).result?.structuredContent?.hits?.length).toBeGreaterThan(0);
+
+    const executed = await postRpc(
+      `${PUBLIC}/mcp`,
+      rpcBody(
+        "tools/call",
+        { name: "execute", arguments: { code: "async (codemode) => 1 + 1" } },
+        3
+      ),
+      headers
+    );
+    expect(executed.status).toBe(200);
+    const executeResult = (await lastEventJson(executed)).result;
+    expect(executeResult?.isError).toBeFalsy();
+    expect(executeResult?.content).toHaveLength(1);
+    expect(executeResult?.content?.[0]).toMatchObject({ type: "text", text: "2" });
+    expect(executeResult).not.toHaveProperty("structuredContent");
   });
 
   it("allows configured public Origins, rejects foreign Origins, and permits no Origin", async () => {

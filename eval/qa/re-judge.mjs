@@ -5,27 +5,64 @@
  * Usage:
  *   node eval/qa/re-judge.mjs <results.json> --ids id-a,id-b
  *   node eval/qa/re-judge.mjs <results.json> --flips-vs <baseline.json>
+ *   node eval/qa/re-judge.mjs <results.json> --ids id-a --cases-ref worktree
  *
  * A saved QA result records the full selected input snapshot. Before spending
  * on a re-judge, this tool reconstructs that snapshot from meta.casesPath and
- * refuses if it no longer hashes to the recorded value. --allow-non-identical
- * makes that exceptional decision explicit in the output artifact.
+ * refuses if it no longer hashes to the recorded value. --flips-vs holds its
+ * baseline to the same snapshot and judge-tuple contract, and additionally
+ * compares case content for every id the two artifacts share, because the
+ * baseline decides which rows get paid for. That baseline guard is absolute.
+ * --allow-non-identical makes an exceptional SOURCE decision explicit in the
+ * output artifact; it never waives a baseline mismatch.
+ * --cases-ref worktree selects current compiled cases without a revision pin.
+ * The ordinary identity and golden-time guards still apply in that mode.
  */
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { buildTranscriptEvidence, JUDGE_MODEL, JUDGE_RUBRIC, judgeCase } from "./judge.mjs";
+import {
+  buildAgentErrorVerdict,
+  buildTranscriptEvidence,
+  hasSuccessfulAnswer,
+  judgeInputSha256,
+  judgeCase,
+  judgeCasePanel,
+  JUDGE_MODEL,
+  JUDGE_RUBRIC
+} from "./judge.mjs";
 import { PACK_VERSION } from "./evidence-pack.mjs";
 import {
   PLAYGROUND_ARTIFACT_CONTRACT,
   assertNotPlaygroundQuarantine,
   assertPlaygroundArtifactMeta
 } from "../playground/artifact-contract.mjs";
+import { sha256Text } from "./five-track.mjs";
+import {
+  BudgetAuthorizationExceededError,
+  BudgetExhaustedError,
+  MissingReportedCostError,
+  authorizeSpend,
+  createSpendLedger,
+  parseMaxBudgetUsd,
+  recordSpend,
+  spendLedgerRecord
+} from "./spend-budget.mjs";
+import {
+  agentEnvironmentIdentity,
+  assertExpectedAgentEnvironment,
+  assertExpectedExecutable,
+  executableIdentity
+} from "../lib/executable-identity.mjs";
 
 const QA_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(QA_DIR, "..", "..");
-const TOOL_VERSION = "re-judge/v2";
+const TOOL_VERSION = "re-judge/v7";
+export const REJUDGE_RESULT_SCHEMA = "qa-rejudge-v1";
+const GIT_MAX_BUFFER = 32 * 1024 * 1024;
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -65,14 +102,45 @@ function requireVerdictScore(row, label) {
   }
 }
 
-function parseArgs(argv) {
+export function effectiveVerdictScore(verdict) {
+  return verdict?.score === "error" && typeof verdict.judgeScore === "string"
+    ? verdict.judgeScore
+    : verdict?.score;
+}
+
+/**
+ * Whether two verdicts agree on the grade — `null` when the question does not
+ * apply. `agreement` measures grade variance between two judge calls, so it
+ * needs a grade on both sides. An effective "error" is not a grade: the CLI
+ * crashed, or the reply was unparseable, and nothing about the candidate was
+ * measured. Reporting that as `false` would count a missing measurement as a
+ * disagreement and inflate every disagreement rate computed from the artifact.
+ */
+export function verdictAgreement(original, next) {
+  const before = effectiveVerdictScore(original);
+  const after = effectiveVerdictScore(next);
+  if (typeof before !== "string" || typeof after !== "string") return null;
+  if (before === "error" || after === "error") return null;
+  return before === after;
+}
+
+export function parseArgs(argv) {
   const positional = [];
   let ids;
   let flipsVs;
   let judgeModel = JUDGE_MODEL;
+  let casesRef;
+  let judgePanel = 1;
   let allowNonIdentical = false;
+  let allowGoldenDrift = false;
   let allowEmpty = false;
   let dryRun = false;
+  let maxBudgetUsd = null;
+  let maxBudgetFlags = 0;
+  let claudePath;
+  let expectedAgentBinarySha256;
+  let expectedAgentEnvironmentSha256;
+  const identityFlagCounts = new Map();
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -87,14 +155,45 @@ function parseArgs(argv) {
     } else if (arg === "--judge-model") {
       judgeModel = argv[++i];
       if (!judgeModel || judgeModel.startsWith("--")) fail("--judge-model requires a model name");
+    } else if (arg === "--cases-ref") {
+      if (casesRef !== undefined) fail("--cases-ref may be supplied only once");
+      casesRef = argv[++i];
+      if (!casesRef || casesRef.startsWith("--")) fail("--cases-ref requires a Git revision or worktree");
+    } else if (arg === "--judge-panel") {
+      const value = argv[++i];
+      judgePanel = Number(value);
+      if ((judgePanel !== 2 && judgePanel !== 3) || !Number.isInteger(judgePanel)) {
+        fail(`--judge-panel must be 2 or 3, got ${value}`);
+      }
     } else if (arg === "--allow-non-identical") {
       allowNonIdentical = true;
+    } else if (arg === "--allow-golden-drift") {
+      allowGoldenDrift = true;
     } else if (arg === "--allow-empty") {
       allowEmpty = true;
     } else if (arg === "--dry-run") {
       dryRun = true;
+    } else if (arg === "--max-budget-usd") {
+      maxBudgetFlags += 1;
+      if (maxBudgetFlags > 1) fail("--max-budget-usd must appear exactly once");
+      const value = argv[++i];
+      if (value === undefined || value.startsWith("--")) fail("--max-budget-usd requires a value");
+      maxBudgetUsd = parseMaxBudgetUsd(value);
+    } else if ([
+      "--claude-path",
+      "--expect-agent-binary-sha256",
+      "--expect-agent-environment-sha256"
+    ].includes(arg)) {
+      const count = (identityFlagCounts.get(arg) ?? 0) + 1;
+      identityFlagCounts.set(arg, count);
+      if (count > 1) fail(`${arg} may be supplied only once`);
+      const value = argv[++i];
+      if (!value || value.startsWith("--")) fail(`${arg} requires a spaced value`);
+      if (arg === "--claude-path") claudePath = value;
+      if (arg === "--expect-agent-binary-sha256") expectedAgentBinarySha256 = value;
+      if (arg === "--expect-agent-environment-sha256") expectedAgentEnvironmentSha256 = value;
     } else if (arg === "--help" || arg === "-h") {
-      console.log("usage: node eval/qa/re-judge.mjs <results.json> (--ids id-a,id-b | --flips-vs <baseline.json>) [--judge-model <model>] [--allow-non-identical] [--allow-empty] [--dry-run]");
+      console.log("usage: node eval/qa/re-judge.mjs <results.json> (--ids id-a,id-b | --flips-vs <baseline.json>) [--judge-model <model>] [--judge-panel <2|3>] [--max-budget-usd <usd>] [--claude-path <path> --expect-agent-binary-sha256 <sha256> --expect-agent-environment-sha256 <sha256>] [--cases-ref <git-revision|worktree>] [--allow-non-identical] [--allow-golden-drift] [--allow-empty] [--dry-run]");
       process.exit(0);
     } else if (arg.startsWith("--")) {
       fail(`unknown flag ${arg}`);
@@ -107,25 +206,257 @@ function parseArgs(argv) {
   if ((ids !== undefined) === (flipsVs !== undefined)) {
     fail("provide exactly one of --ids or --flips-vs <baseline-results.json>");
   }
-  return { resultsPath: positional[0], ids, flipsVs, judgeModel, allowNonIdentical, allowEmpty, dryRun };
+  if (!dryRun && maxBudgetFlags === 0) {
+    fail("re-judge requires --max-budget-usd for every paid run");
+  }
+  const identityFlagCount = [claudePath, expectedAgentBinarySha256, expectedAgentEnvironmentSha256]
+    .filter((value) => value !== undefined).length;
+  if ((!dryRun && identityFlagCount !== 3) || (dryRun && identityFlagCount !== 0 && identityFlagCount !== 3)) {
+    fail(
+      "paid re-judge requires --claude-path, --expect-agent-binary-sha256, and " +
+      "--expect-agent-environment-sha256 as spaced flags"
+    );
+  }
+  for (const [flag, value] of [
+    ["--expect-agent-binary-sha256", expectedAgentBinarySha256],
+    ["--expect-agent-environment-sha256", expectedAgentEnvironmentSha256]
+  ]) {
+    if (value !== undefined && !SHA256_PATTERN.test(value)) {
+      fail(`${flag} must be a 64-character lowercase SHA-256`);
+    }
+  }
+  return {
+    resultsPath: positional[0],
+    ids,
+    flipsVs,
+    judgeModel,
+    judgePanel,
+    casesRef,
+    allowNonIdentical,
+    allowGoldenDrift,
+    allowEmpty,
+    dryRun,
+    maxBudgetUsd,
+    claudePath,
+    expectedAgentBinarySha256,
+    expectedAgentEnvironmentSha256
+  };
 }
 
-export function verifySourceCases(results, sourceResultsPath) {
-  const casesPath = results?.meta?.casesPath;
-  const expectedCasesSha256 = results?.meta?.inputSnapshot?.casesSha256;
-  if (typeof casesPath !== "string" || !casesPath) fail("source results meta.casesPath is required for the identity guard");
-  if (typeof expectedCasesSha256 !== "string" || !expectedCasesSha256) {
-    fail("source results meta.inputSnapshot.casesSha256 is required for the identity guard");
+export function attestRejudgeIdentity(
+  { claudePath, expectedAgentBinarySha256, expectedAgentEnvironmentSha256 },
+  {
+    env = process.env,
+    executableIdentityImpl = executableIdentity,
+    environmentIdentityImpl = agentEnvironmentIdentity
+  } = {}
+) {
+  if (typeof claudePath !== "string" || !claudePath) {
+    throw new Error("re-judge Claude identity: --claude-path is required");
+  }
+  const binary = assertExpectedExecutable(
+    executableIdentityImpl(claudePath, { env }),
+    expectedAgentBinarySha256,
+    { label: "re-judge Claude CLI" }
+  );
+  const environment = assertExpectedAgentEnvironment(
+    environmentIdentityImpl(env),
+    expectedAgentEnvironmentSha256,
+    { label: "re-judge Claude environment" }
+  );
+  return { binary, environment };
+}
+
+export function assertStableRejudgeIdentity(before, after) {
+  const binaryFields = ["resolvedPath", "realPath", "sha256", "version"];
+  const binaryChanged = binaryFields.filter(
+    (field) => before?.binary?.[field] !== after?.binary?.[field]
+  );
+  const environmentChanged = before?.environment?.sha256 !== after?.environment?.sha256;
+  const guard = {
+    matches: binaryChanged.length === 0 && !environmentChanged,
+    attestationCompleted: true,
+    binaryChanged,
+    environmentChanged
+  };
+  if (binaryChanged.length) {
+    const error = new Error(`re-judge Claude binary identity changed during judging (${binaryChanged.join(", ")})`);
+    error.identityGuard = guard;
+    throw error;
+  }
+  if (environmentChanged) {
+    const error = new Error("re-judge Claude environment identity changed during judging");
+    error.identityGuard = guard;
+    throw error;
+  }
+  return guard;
+}
+
+function rejudgeErrorRecord(error) {
+  if (!error) return null;
+  return {
+    name: typeof error.name === "string" && error.name ? error.name : "Error",
+    ...(typeof error.code === "string" && error.code ? { code: error.code } : {}),
+    message: typeof error.message === "string" ? error.message : String(error)
+  };
+}
+
+export function finalizeRejudgeRun({
+  options,
+  baseMeta,
+  judgeIdentityBefore,
+  rows,
+  runState,
+  judgingError = null,
+  writeCheckpoint,
+  attestIdentity = attestRejudgeIdentity,
+  assertStableIdentity = assertStableRejudgeIdentity,
+  terminalAt = new Date().toISOString()
+}) {
+  let postflightError = null;
+  let postflightStatus = "passed";
+  try {
+    const judgeIdentityAfter = attestIdentity(options);
+    baseMeta.judgeIdentity.after = judgeIdentityAfter;
+    try {
+      baseMeta.judgeIdentity.guard = assertStableIdentity(
+        judgeIdentityBefore,
+        judgeIdentityAfter
+      );
+    } catch (error) {
+      postflightError = error;
+      postflightStatus = "identity-drifted";
+      baseMeta.judgeIdentity.guard = error.identityGuard ?? {
+        matches: false,
+        attestationCompleted: true,
+        binaryChanged: [],
+        environmentChanged: null
+      };
+    }
+  } catch (error) {
+    postflightError = error;
+    postflightStatus = "attestation-failed";
+    baseMeta.judgeIdentity.guard = {
+      matches: false,
+      attestationCompleted: false,
+      binaryChanged: null,
+      environmentChanged: null
+    };
   }
 
+  let judgingStatus = "completed";
+  if (judgingError) judgingStatus = "failed";
+  else if (runState.stopError) judgingStatus = "budget-stopped";
+
+  let status = "successful";
+  if (judgingError) status = "judging-failed";
+  else if (postflightStatus === "identity-drifted") status = "identity-drifted";
+  else if (postflightStatus === "attestation-failed") status = "attestation-failed";
+  else if (judgingStatus === "budget-stopped") status = "budget-stopped";
+  baseMeta.outcome = {
+    status,
+    terminalAt,
+    judging: {
+      status: judgingStatus,
+      error: rejudgeErrorRecord(judgingError ?? runState.stopError)
+    },
+    postflight: {
+      status: postflightStatus,
+      error: rejudgeErrorRecord(postflightError)
+    }
+  };
+  const finishedAt = status === "successful" || status === "budget-stopped" ? terminalAt : null;
+  writeCheckpoint(rows, finishedAt);
+  return { error: judgingError ?? postflightError, status };
+}
+
+function mappedRepositoryRelativePath(casesPath, repoRoot) {
+  const windowsAbsolute = /^(?:[A-Za-z]:[\\/]|\\\\)/;
+  if (windowsAbsolute.test(casesPath)) {
+    const portableRecordedPath = path.posix.normalize(casesPath.replaceAll("\\", "/"));
+    const marker = "/eval/qa/";
+    const markerIndex = portableRecordedPath.lastIndexOf(marker);
+    if (markerIndex === -1) return null;
+    const mapped = path.posix.normalize(`eval/qa/${portableRecordedPath.slice(markerIndex + marker.length)}`);
+    return mapped.startsWith("eval/qa/") ? mapped : null;
+  }
+  const portableRelativePath = casesPath.startsWith("eval\\qa\\")
+    ? path.posix.normalize(casesPath.replaceAll("\\", "/"))
+    : casesPath;
+  const absolutePath = path.isAbsolute(portableRelativePath)
+    ? path.resolve(portableRelativePath)
+    : path.resolve(repoRoot, portableRelativePath);
+  const relativePath = path.relative(repoRoot, absolutePath);
+  if (relativePath && relativePath !== ".." && !relativePath.startsWith(`..${path.sep}`) && !path.isAbsolute(relativePath)) {
+    return relativePath.split(path.sep).join("/");
+  }
+  const normalized = absolutePath.split(path.sep).join("/");
+  const marker = "/eval/qa/";
+  const markerIndex = normalized.lastIndexOf(marker);
+  return markerIndex === -1 ? null : `eval/qa/${normalized.slice(markerIndex + marker.length)}`;
+}
+
+function repositoryRelativePath(casesPath, repoRoot) {
+  const mapped = mappedRepositoryRelativePath(casesPath, repoRoot);
+  if (!mapped) fail(`source results meta.casesPath is outside the repository: ${casesPath}`);
+  return mapped;
+}
+
+function git(repoRoot, args, label) {
+  const result = spawnSync("git", ["-C", repoRoot, ...args], {
+    encoding: "utf8",
+    maxBuffer: GIT_MAX_BUFFER,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }
+  });
+  if (result.error || result.status !== 0) {
+    const error = result.error?.code === "ENOBUFS"
+      ? `Git output exceeded the ${GIT_MAX_BUFFER / (1024 * 1024)} MiB limit`
+      : result.stderr || result.error?.message || `git exited ${result.status}`;
+    fail(`${label}: ${error.trim()}`);
+  }
+  return result.stdout;
+}
+
+function readCasesAtRevision(casesPath, casesRef, repoRoot) {
+  const repositoryRelativeCasesPath = repositoryRelativePath(casesPath, repoRoot);
+  const resolvedCommit = git(repoRoot, ["rev-parse", "--verify", "--quiet", `${casesRef}^{commit}`], `cases revision ${casesRef} cannot be resolved`).trim();
+  const text = git(
+    repoRoot,
+    ["show", "--no-textconv", `${resolvedCommit}:${repositoryRelativeCasesPath}`],
+    `cases blob ${repositoryRelativeCasesPath} is missing from revision ${resolvedCommit}`
+  );
+  try {
+    return {
+      parsed: JSON.parse(text),
+      sourceCasesPath: `${resolvedCommit}:${repositoryRelativeCasesPath}`,
+      revision: { requested: casesRef, resolvedCommit, repositoryRelativeCasesPath }
+    };
+  } catch (error) {
+    fail(`source cases file is not valid JSON at ${resolvedCommit}:${repositoryRelativeCasesPath}: ${error.message}`);
+  }
+}
+
+export function verifySourceCases(results, sourceResultsPath, { casesRef, repoRoot = REPO_ROOT, label = "source results" } = {}) {
+  const casesPath = results?.meta?.casesPath;
+  const expectedCasesSha256 = results?.meta?.inputSnapshot?.casesSha256;
+  if (typeof casesPath !== "string" || !casesPath) fail(`${label} meta.casesPath is required for the identity guard`);
+  if (typeof expectedCasesSha256 !== "string" || !expectedCasesSha256) {
+    fail(`${label} meta.inputSnapshot.casesSha256 is required for the identity guard`);
+  }
+
+  const historical = casesRef === undefined ? null : readCasesAtRevision(casesPath, casesRef, repoRoot);
+  const mappedCasesPath = mappedRepositoryRelativePath(casesPath, repoRoot);
   const casePathCandidates = path.isAbsolute(casesPath)
-    ? [casesPath]
+    ? [
+        ...(mappedCasesPath ? [path.resolve(repoRoot, mappedCasesPath)] : []),
+        casesPath
+      ]
     : [
         path.resolve(path.dirname(sourceResultsPath), casesPath),
         path.resolve(REPO_ROOT, casesPath)
       ];
-  const resolvedCasesPath = casePathCandidates.find((candidate) => existsSync(candidate)) ?? casePathCandidates[0];
-  const { parsed: sourceCases } = readJson(resolvedCasesPath, "source cases file");
+  const resolvedCasesPath = historical ? historical.sourceCasesPath : casePathCandidates.find((candidate) => existsSync(candidate)) ?? casePathCandidates[0];
+  const sourceCases = historical ? historical.parsed : readJson(resolvedCasesPath, "source cases file").parsed;
   if (!Array.isArray(sourceCases?.cases)) fail(`source cases file ${resolvedCasesPath} is missing cases[]`);
 
   const recordedIds = results.rows.map((row) => row.id);
@@ -134,22 +465,80 @@ export function verifySourceCases(results, sourceResultsPath) {
   const missingCaseIds = recordedIds.filter((id) => !allCasesById.has(id));
   const selectedIds = selectedCases.filter(Boolean).map((kase) => kase.id);
   const actualCasesSha256 = sha256(JSON.stringify(selectedCases));
-  const orderMatches = JSON.stringify(recordedIds) === JSON.stringify(selectedIds);
+  const expectedCaseIdsSha256 = results?.meta?.inputSnapshot?.caseIdsSha256;
+  const actualCaseIdsSha256 = sha256(JSON.stringify(recordedIds));
+  const orderMatches = historical && typeof expectedCaseIdsSha256 === "string"
+    ? actualCaseIdsSha256 === expectedCaseIdsSha256
+    : JSON.stringify(recordedIds) === JSON.stringify(selectedIds);
   const matches = actualCasesSha256 === expectedCasesSha256 && missingCaseIds.length === 0 && orderMatches;
+
+  if (historical && !matches) {
+    fail(
+      `revision-pinned case identity guard failed: expected ${expectedCasesSha256}, got ${actualCasesSha256}; ` +
+        `missing ids: ${missingCaseIds.join(", ") || "none"}; order matches: ${orderMatches}`
+    );
+  }
 
   return {
     sourceResultsPath,
     sourceCasesPath: resolvedCasesPath,
     selectedCases,
     caseById: allCasesById,
+    ...(historical ? { revision: historical.revision } : {}),
     guard: {
       expectedCasesSha256,
       actualCasesSha256,
+      ...(historical && typeof expectedCaseIdsSha256 === "string" ? { expectedCaseIdsSha256, actualCaseIdsSha256 } : {}),
       missingCaseIds,
       orderMatches,
       matches
     }
   };
+}
+
+function goldenDates(kase) {
+  return [
+    ["truth.asOf", kase?.truth?.asOf],
+    ["truth.verified.date", kase?.truth?.verified?.date],
+    ["truth.verificationDate", kase?.truth?.verificationDate]
+  ].filter(([, value]) => typeof value === "string" && value);
+}
+
+export function resolveCasesRef(results, explicitCasesRef) {
+  if (explicitCasesRef === "worktree") return undefined;
+  if (explicitCasesRef !== undefined) return explicitCasesRef;
+  const recorded = results?.meta?.sourceIdentity?.runnerRevision;
+  return typeof recorded === "string" && recorded ? recorded : undefined;
+}
+
+export function isUngradeableSavedRow(row) {
+  const legacyAgentError =
+    row?.verdict?.score === "error" &&
+    row.verdict.promptSha256 == null &&
+    typeof row.verdict.judgeScore !== "string";
+  return !hasSuccessfulAnswer(row?.answer, row?.agent?.failure) || legacyAgentError;
+}
+
+export function goldenTimeConsistency(results, selectedRows, caseById) {
+  const finishedAt = results?.meta?.finishedAt;
+  const finishedAtMs = Date.parse(finishedAt);
+  const violations = [];
+  if (!Number.isFinite(finishedAtMs)) {
+    return { matches: true, finishedAt: finishedAt ?? null, checkedIds: [], violations };
+  }
+  const checkedIds = [];
+  for (const row of selectedRows) {
+    const kase = caseById.get(row.id);
+    if (kase?.tags?.freshness !== "live" && kase?.tags?.freshness !== "scheduled") continue;
+    checkedIds.push(row.id);
+    for (const [field, value] of goldenDates(kase)) {
+      const goldenMs = Date.parse(value);
+      if (Number.isFinite(goldenMs) && goldenMs > finishedAtMs) {
+        violations.push({ id: row.id, freshness: kase.tags.freshness, field, value });
+      }
+    }
+  }
+  return { matches: violations.length === 0, finishedAt, checkedIds, violations };
 }
 
 export function tupleGuard(results, judgeModel) {
@@ -176,7 +565,133 @@ export function tupleGuard(results, judgeModel) {
   };
 }
 
-function selectRows(results, { ids, flipsVs, allowEmpty }) {
+// The --flips-vs baseline decides which rows are worth paying to re-judge, so
+// it carries the same identity contract as the source: its recorded
+// selected-case snapshot must still reproduce, its judge tuple must be the
+// current one, and every case id it shares with the source must carry identical
+// content on both sides. Only then is a score difference a real flip rather
+// than an artifact of a drifted corpus, a different judge, or the same id
+// holding a different question. This guard is ABSOLUTE: --allow-non-identical
+// covers a source snapshot that no longer reproduces and never waives a
+// baseline mismatch. The caller refuses before selection and before the first
+// judge call, so --dry-run refuses too.
+export function verifyBaselineIdentity(baseline, baselinePath, { casesRef, judgeModel, sourceCaseById, sharedIds = [], repoRoot = REPO_ROOT } = {}) {
+  let cases;
+  let baselineCaseById;
+  try {
+    const verified = verifySourceCases(baseline, baselinePath, { casesRef, repoRoot, label: "baseline results" });
+    cases = verified.guard;
+    baselineCaseById = verified.caseById;
+  } catch (error) {
+    // A revision-pinned guard and a malformed snapshot both throw. Both mean
+    // the baseline cannot be trusted, so record the reason and fail closed.
+    cases = { matches: false, reason: error.message };
+  }
+  const tuple = tupleGuard(baseline, judgeModel);
+  // Each side reproducing its own snapshot is not enough: two cases files can
+  // each be self-consistent while the SAME id carries a different question or
+  // golden on each side. A score difference would then be a different question,
+  // not a flip, so every shared id is compared by content.
+  const mismatchedIds = [];
+  const comparedIds = [];
+  for (const id of sharedIds) {
+    comparedIds.push(id);
+    const sourceCase = sourceCaseById?.get(id);
+    const baselineCase = baselineCaseById?.get(id);
+    if (!baselineCaseById || JSON.stringify(sourceCase) !== JSON.stringify(baselineCase)) mismatchedIds.push(id);
+  }
+  const sharedCases = { comparedIds, mismatchedIds, matches: mismatchedIds.length === 0 };
+  return {
+    baselinePath,
+    cases,
+    tuple,
+    sharedCases,
+    matches: cases.matches && tuple.matches && sharedCases.matches
+  };
+}
+
+// Every reason a baseline is not comparable to the source. Reported together so
+// one refusal names all of them.
+export function baselineRefusalReasons(guard) {
+  const reasons = [];
+  if (!guard.cases.matches) {
+    reasons.push(
+      `baseline case input snapshot differs (${
+        guard.cases.reason ??
+        `expected ${guard.cases.expectedCasesSha256}, got ${guard.cases.actualCasesSha256}; ` +
+          `missing ids: ${guard.cases.missingCaseIds.join(", ") || "none"}; order matches: ${guard.cases.orderMatches}`
+      })`
+    );
+  }
+  if (!guard.tuple.matches) {
+    reasons.push(
+      `baseline judge tuple differs (baseline model ${guard.tuple.source.model ?? "missing"}/rubric ${guard.tuple.source.rubric ?? "missing"}/pack ${guard.tuple.source.packVersion ?? "missing"}; ` +
+        `current ${guard.tuple.current.model}/${guard.tuple.current.rubric}/${guard.tuple.current.packVersion})`
+    );
+  }
+  if (!guard.sharedCases.matches) {
+    reasons.push(
+      `shared case content differs between source and baseline for ${guard.sharedCases.mismatchedIds.length} of ` +
+        `${guard.sharedCases.comparedIds.length} shared ids: ${guard.sharedCases.mismatchedIds.join(", ")}`
+    );
+  }
+  return reasons;
+}
+export function judgeCostAccounting(rows, expectedJudgeCalls) {
+  const calls = rows.flatMap((row) => Array.isArray(row.attempts?.judgeCalls) ? row.attempts.judgeCalls : []);
+  const reportedCosts = calls.length
+    ? calls.map((call) => call.costUsd).filter((cost) => Number.isFinite(cost))
+    : rows.map((row) => row.new?.costUsd).filter((cost) => Number.isFinite(cost));
+  const reportedJudgeCosts = calls.length
+    ? reportedCosts.length
+    : rows.reduce(
+        (sum, row) => sum + (Number.isInteger(row.new?.meta?.panelReportedCostCount)
+          ? row.new.meta.panelReportedCostCount
+          : Number.isFinite(row.new?.costUsd) ? 1 : 0),
+        0
+      );
+  return {
+    expectedAgentCalls: 0,
+    reportedAgentCosts: 0,
+    missingAgentCosts: 0,
+    expectedJudgeCalls,
+    reportedJudgeCosts,
+    missingJudgeCosts: expectedJudgeCalls - reportedJudgeCosts,
+    complete: expectedJudgeCalls === reportedJudgeCosts
+  };
+}
+
+function totalRejudgeCostUsd(rows) {
+  const calls = rows.flatMap((row) => Array.isArray(row.attempts?.judgeCalls) ? row.attempts.judgeCalls : []);
+  const costs = calls.length
+    ? calls.map((call) => call.costUsd).filter((cost) => Number.isFinite(cost))
+    : rows.map((row) => row.new?.costUsd).filter((cost) => Number.isFinite(cost));
+  return Number(costs.reduce((sum, cost) => sum + cost, 0).toFixed(12));
+}
+
+export function buildRejudgeArtifact({ baseMeta, rows, spendLedger, runState, finishedAt = null }) {
+  const actualJudgeCalls = rows.reduce(
+    (sum, row) => sum + (Array.isArray(row.attempts?.judgeCalls) ? row.attempts.judgeCalls.length : 0),
+    0
+  );
+  return {
+    meta: {
+      ...baseMeta,
+      resultSchema: REJUDGE_RESULT_SCHEMA,
+      completedIds: rows.map((row) => row.id),
+      promptSha256ById: Object.fromEntries(rows.map((row) => [row.id, row.new.promptSha256 ?? null])),
+      costAccounting: judgeCostAccounting(rows, actualJudgeCalls),
+      totalJudgeCostUsd: totalRejudgeCostUsd(rows),
+      budget: spendLedgerRecord(spendLedger),
+      incompleteIds: runState.incompleteIds,
+      unattemptedIds: runState.unattemptedIds,
+      finishedAt
+    },
+    rows
+  };
+}
+
+function selectRows(results, { ids, flipsVs, allowEmpty, casesRef, judgeModel }, identity) {
   if (ids !== undefined) {
     const wanted = ids.split(",").map((id) => id.trim()).filter(Boolean);
     if (!wanted.length) fail("--ids requires at least one non-empty id");
@@ -201,18 +716,165 @@ function selectRows(results, { ids, flipsVs, allowEmpty }) {
   if (sourceOnly.length) {
     fail(`baseline results is missing source result ids: ${sourceOnly.join(", ")}`);
   }
+
+  // The baseline is what makes a score difference mean anything, so its guard
+  // is absolute: --allow-non-identical covers a source snapshot that no longer
+  // reproduces, never a baseline that is not comparable. Refused here, before
+  // selection and before any judge call, so --dry-run refuses too.
+  const baselineGuard = verifyBaselineIdentity(baseline, baselinePath, {
+    casesRef,
+    judgeModel,
+    sourceCaseById: identity?.caseById,
+    sharedIds: results.rows.map((row) => row.id).filter((id) => baselineById.has(id))
+  });
+  if (!baselineGuard.matches) {
+    fail(
+      `refusing re-judge against a non-comparable baseline: ${baselineRefusalReasons(baselineGuard).join("; ")}. ` +
+        "--allow-non-identical does not waive a baseline mismatch; re-judge the baseline under the current tuple instead."
+    );
+  }
   const selected = results.rows.filter((row) => {
     requireVerdictScore(row, "source results");
     const baselineRow = baselineById.get(row.id);
     requireVerdictScore(baselineRow, "baseline results");
-    return row.verdict.score !== baselineRow.verdict.score;
+    return effectiveVerdictScore(row.verdict) !== effectiveVerdictScore(baselineRow.verdict);
   });
   if (!selected.length) {
     const message = "--flips-vs found no score changes; refusing to create an empty re-judge artifact (pass --allow-empty to override)";
     if (!allowEmpty) fail(message);
     console.warn(`warning: ${message}`);
   }
-  return { mode: "flips-vs", rows: selected, baselinePath, baselineSha256, initialJudging: false };
+  return { mode: "flips-vs", rows: selected, baselinePath, baselineSha256, baselineGuard, initialJudging: false };
+}
+
+export async function rejudgeRows({
+  selectedRows,
+  caseById,
+  judgeModel,
+  judgePanel = 1,
+  judge = judgeCase,
+  checkpoint,
+  log = console.log,
+  spendLedger = createSpendLedger(),
+  runState = {}
+}) {
+  const rows = [];
+  for (const [index, row] of selectedRows.entries()) {
+    const kase = caseById.get(row.id);
+    if (!kase) fail(`source cases file no longer contains selected case ${row.id}`);
+
+    log(`[${index + 1}/${selectedRows.length}] ${row.id} …`);
+    if (isUngradeableSavedRow(row)) {
+      const verdict = row.verdict?.score === "error"
+        ? row.verdict
+        : buildAgentErrorVerdict(row.agent?.failure);
+      rows.push({
+        id: row.id,
+        original: row.verdict,
+        new: verdict,
+        agreement: verdictAgreement(row.verdict, verdict),
+        skipped: { reason: "unsuccessful-answer" },
+        evidencePack: { packVersion: PACK_VERSION, chars: 0, sha256: null }
+      });
+      await checkpoint(rows);
+      log(`${effectiveVerdictScore(row.verdict) ?? "unjudged"} → skipped (unsuccessful answer)`);
+      continue;
+    }
+    if (!Array.isArray(row.transcript)) fail(`source results row ${row.id} has no saved transcript array`);
+    const calls = [];
+    const inputSha256 = judgeInputSha256({
+      ...kase,
+      candidateAnswer: row.answer,
+      transcript: row.transcript
+    });
+    const budgetedJudge = async (input, options) => {
+      const authorization = authorizeSpend(spendLedger, {
+        method: "re-judge",
+        id: row.id,
+        attempt: calls.length + 1
+      });
+      const verdict = await judge(input, {
+        ...options,
+        maxBudgetUsd: authorization.maxBudgetUsd
+      });
+      const call = {
+        number: calls.length + 1,
+        inputSha256: verdict?.promptSha256 ?? inputSha256,
+        answerSha256: sha256Text(row.answer),
+        failureClass: verdict?.failureClass ?? null,
+        costUsd: Number.isFinite(verdict?.costUsd) ? verdict.costUsd : null,
+        verdict
+      };
+      calls.push(call);
+      try {
+        recordSpend(spendLedger, authorization, verdict?.costUsd);
+      } catch (error) {
+        error.rejudgeCall = call;
+        throw error;
+      }
+      return verdict;
+    };
+    let verdict;
+    try {
+      verdict = await judgeCasePanel(
+        { ...kase, candidateAnswer: row.answer, transcript: row.transcript },
+        { model: judgeModel, panelSize: judgePanel, judge: budgetedJudge }
+      );
+    } catch (error) {
+      const budgetEnforcementError =
+        error instanceof BudgetExhaustedError ||
+        error instanceof MissingReportedCostError ||
+        error instanceof BudgetAuthorizationExceededError;
+      if (error instanceof BudgetExhaustedError && calls.length === 0) {
+        runState.stopError = error;
+        runState.unattemptedIds = selectedRows.slice(index).map((item) => item.id);
+        break;
+      }
+      if (calls.length > 0) {
+        if (budgetEnforcementError) {
+          runState.stopError = error;
+          runState.incompleteIds = [row.id];
+          runState.unattemptedIds = selectedRows.slice(index + 1).map((item) => item.id);
+        }
+        const preserved = {
+          score: "error",
+          failureClass: error.code ?? "budget-cost",
+          rationale: error.message
+        };
+        rows.push({
+          id: row.id,
+          original: row.verdict,
+          new: preserved,
+          agreement: verdictAgreement(row.verdict, preserved),
+          attempts: { judgeCalls: calls },
+          evidencePack: { packVersion: PACK_VERSION, chars: 0, sha256: null }
+        });
+        await checkpoint(rows);
+      }
+      if (error instanceof BudgetExhaustedError) break;
+      throw error;
+    }
+    const transcriptEvidence = buildTranscriptEvidence({
+      ...kase,
+      candidateAnswer: row.answer,
+      transcript: row.transcript
+    });
+    rows.push({
+      id: row.id,
+      original: row.verdict,
+      new: verdict,
+      agreement: verdictAgreement(row.verdict, verdict),
+      attempts: { judgeCalls: calls },
+      evidencePack: {
+        packVersion: PACK_VERSION,
+        chars: transcriptEvidence.length,
+        sha256: transcriptEvidence ? sha256(transcriptEvidence) : null
+      }
+    });
+    await checkpoint(rows);
+    log(`${effectiveVerdictScore(row.verdict) ?? "unjudged"} → ${effectiveVerdictScore(verdict)}`);
+  }
+  return rows;
 }
 
 async function main() {
@@ -225,11 +887,41 @@ async function main() {
     assertPlaygroundArtifactMeta(results.meta);
   }
 
-  const identity = verifySourceCases(results, sourceResultsPath);
+  const casesRef = resolveCasesRef(results, options.casesRef);
+  const casesMode = casesRef === undefined ? "worktree" : "revision";
+  const effectiveOptions = { ...options, casesRef };
+  const identity = verifySourceCases(results, sourceResultsPath, { casesRef });
   const tuple = tupleGuard(results, options.judgeModel);
-  const selection = selectRows(results, options);
+  const selection = selectRows(results, effectiveOptions, identity);
+  const goldenTime = goldenTimeConsistency(results, selection.rows, identity.caseById);
+  if (!goldenTime.matches && !options.allowGoldenDrift) {
+    const details = goldenTime.violations
+      .map((item) => `${item.id} ${item.field}=${item.value}`)
+      .join(", ");
+    fail(
+      `refusing time-inconsistent re-judge: source run finished at ${goldenTime.finishedAt}, but selected live/scheduled goldens are newer: ${details}. ` +
+        "Pass --allow-golden-drift to acknowledge this golden drift explicitly."
+    );
+  }
   const nonIdentical = !identity.guard.matches || !tuple.matches;
-  const guards = { cases: identity.guard, tuple, allowNonIdentical: options.allowNonIdentical, wouldRefuse: nonIdentical && !options.allowNonIdentical };
+  const guards = {
+    cases: identity.guard,
+    casesMode,
+    ...(identity.revision
+      ? {
+          historicalCases: {
+            ...identity.revision,
+            selectedCasesSha256: identity.guard.actualCasesSha256,
+            guard: identity.guard
+          }
+        }
+      : {}),
+    tuple,
+    goldenTime: { ...goldenTime, allowGoldenDrift: options.allowGoldenDrift },
+    ...(selection.baselineGuard ? { baseline: selection.baselineGuard } : {}),
+    allowNonIdentical: options.allowNonIdentical,
+    wouldRefuse: nonIdentical && !options.allowNonIdentical
+  };
 
   if (options.dryRun) {
     console.log(
@@ -263,67 +955,98 @@ async function main() {
     fail(`refusing non-identical re-judge: ${reasons.join("; ")}. Pass --allow-non-identical to create a loudly labeled artifact.`);
   }
 
+  const judgeIdentityBefore = attestRejudgeIdentity(options);
   const startedAt = new Date().toISOString();
-  const rows = [];
-  for (const [index, row] of selection.rows.entries()) {
-    const kase = identity.caseById.get(row.id);
-    if (!kase) fail(`source cases file no longer contains selected case ${row.id}`);
-    if (typeof row.answer !== "string") fail(`source results row ${row.id} has no saved answer string`);
-    if (!Array.isArray(row.transcript)) fail(`source results row ${row.id} has no saved transcript array`);
-
-    process.stdout.write(`[${index + 1}/${selection.rows.length}] ${row.id} … `);
-    const verdict = await judgeCase(
-      { ...kase, candidateAnswer: row.answer, transcript: row.transcript },
-      { model: options.judgeModel }
-    );
-    const transcriptEvidence = buildTranscriptEvidence({ ...kase, candidateAnswer: row.answer, transcript: row.transcript });
-    rows.push({
-      id: row.id,
-      original: row.verdict,
-      new: verdict,
-      agreement: typeof row.verdict?.score === "string" ? row.verdict.score === verdict.score : null,
-      evidencePack: {
-        packVersion: PACK_VERSION,
-        chars: transcriptEvidence.length,
-        sha256: transcriptEvidence ? sha256(transcriptEvidence) : null
-      }
-    });
-    console.log(`${row.verdict?.score ?? "unjudged"} → ${verdict.score}`);
-  }
-
-  const reportedCosts = rows.map((row) => row.new.costUsd).filter((cost) => typeof cost === "number");
+  const spendLedger = createSpendLedger(options.maxBudgetUsd);
+  const runState = { stopError: null, incompleteIds: [], unattemptedIds: [] };
   const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   const resultsDir = path.join(QA_DIR, "results");
   const outPath = path.join(resultsDir, `${stamp}-rejudge.json`);
-  const promptSha256ById = Object.fromEntries(rows.map((row) => [row.id, row.new.promptSha256 ?? null]));
-  const artifact = {
-    meta: {
+  const baseMeta = {
       sourceResultsPath,
       sourceResultsSha256,
       ...(selection.baselinePath ? { baselinePath: selection.baselinePath, baselineSha256: selection.baselineSha256 } : {}),
       mode: selection.mode,
       initialJudging: selection.initialJudging,
-      selectedIds: rows.map((row) => row.id),
-      emptySelection: rows.length === 0,
+      selectedIds: selection.rows.map((row) => row.id),
+      emptySelection: selection.rows.length === 0,
       sourceCasesPath: identity.sourceCasesPath,
+      casesMode,
       casesSha256: identity.guard.actualCasesSha256,
       inputSnapshotCasesSha256: identity.guard.expectedCasesSha256,
+      ...(identity.revision
+        ? {
+            historicalCases: {
+              ...identity.revision,
+              selectedCasesSha256: identity.guard.actualCasesSha256,
+              guard: identity.guard
+            }
+          }
+        : {}),
       nonIdentical,
       identity: identity.guard,
       tuple,
+      goldenTime: { ...goldenTime, allowGoldenDrift: options.allowGoldenDrift },
+      ...(selection.baselineGuard ? { baselineGuard: selection.baselineGuard } : {}),
       judgeModel: options.judgeModel,
+      ...(options.judgePanel > 1 ? { judgePanel: options.judgePanel } : {}),
       judgeRubric: JUDGE_RUBRIC,
       packVersion: PACK_VERSION,
-      promptSha256ById,
-      ...(reportedCosts.length ? { costs: { reportedJudgeCalls: reportedCosts.length, totalJudgeCostUsd: reportedCosts.reduce((sum, cost) => sum + cost, 0) } } : {}),
+      judgeIdentity: {
+        before: judgeIdentityBefore,
+        after: null,
+        guard: null
+      },
+      outcome: {
+        status: "running",
+        terminalAt: null,
+        judging: { status: "running", error: null },
+        postflight: { status: "pending", error: null }
+      },
       startedAt,
-      finishedAt: new Date().toISOString(),
       toolVersion: TOOL_VERSION
-    },
-    rows
   };
   mkdirSync(resultsDir, { recursive: true });
-  writeFileSync(outPath, JSON.stringify(artifact, null, 2) + "\n");
+  let checkpointRows = [];
+  const writeCheckpoint = (rows, finishedAt = null) => {
+    checkpointRows = rows;
+    const artifact = buildRejudgeArtifact({ baseMeta, rows, spendLedger, runState, finishedAt });
+    const tmpPath = `${outPath}.tmp`;
+    writeFileSync(tmpPath, JSON.stringify(artifact, null, 2) + "\n");
+    renameSync(tmpPath, outPath);
+  };
+  writeCheckpoint([]);
+  let rows;
+  let judgingError;
+  try {
+    rows = await rejudgeRows({
+      selectedRows: selection.rows,
+      caseById: identity.caseById,
+      judgeModel: options.judgeModel,
+      judgePanel: options.judgePanel,
+      judge: (input, judgeOptions) => judgeCase(input, {
+        ...judgeOptions,
+        command: judgeIdentityBefore.binary.resolvedPath,
+        safeMode: true
+      }),
+      checkpoint: (completedRows) => writeCheckpoint(completedRows),
+      log: (message) => console.log(message),
+      spendLedger,
+      runState
+    });
+  } catch (error) {
+    judgingError = error;
+  }
+  const final = finalizeRejudgeRun({
+    options,
+    baseMeta,
+    judgeIdentityBefore,
+    rows: rows ?? checkpointRows,
+    runState,
+    judgingError,
+    writeCheckpoint
+  });
+  if (final.error) throw final.error;
   console.log(`wrote ${outPath}`);
 }
 

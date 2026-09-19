@@ -14,16 +14,29 @@ import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { assertNoNonExposedRefs } from "../../scripts/build-catalog.mjs";
+import { validateCaseFile, validateTombstoneFile } from "./compile-qa.mjs";
 import { QA_CATEGORIES, QA_SERVICES } from "./lib.mjs";
+import {
+  COMPILED_LIFECYCLE_STATES,
+  LIFECYCLE_REGISTRY_SCHEMA,
+  contentSha256,
+  lifecyclePolicyProblems,
+  lifecycleProblems,
+  tombstoneProblems
+} from "./lifecycle.mjs";
 
 const ROOT = process.env.QA_REPO_ROOT
   ? realpathSync(process.env.QA_REPO_ROOT)
   : path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const DEFAULTS = {
   corpusDir: path.join(ROOT, "eval/qa/corpus/battery"),
+  proposedDir: path.join(ROOT, "eval/qa/corpus/proposed"),
+  retiredDir: path.join(ROOT, "eval/qa/corpus/retired"),
   manifestPath: path.join(ROOT, "catalog/manifest.json"),
   registerPath: path.join(ROOT, "eval/qa/consistency-register.json"),
-  ledgerPath: path.join(ROOT, "eval/qa/corpus/migration-ledger.json")
+  ledgerPath: path.join(ROOT, "eval/qa/corpus/migration-ledger.json"),
+  lifecycleRegistryPath: path.join(ROOT, "eval/qa/lifecycle-registry.json"),
+  lifecyclePolicyPath: path.join(ROOT, "eval/qa/corpus/lifecycle-policy.json")
 };
 
 const CATEGORY_FLOORS = {
@@ -38,7 +51,6 @@ const CATEGORY_FLOORS = {
   "retail-consumer": 33,
   "edge-behavior": 40
 };
-const PARTNER_ONBOARD_RE = /(?:^|\.)partnerOnboard$/;
 const DIGEST_SKILL = "skills.lumenloop.stellar-ecosystem-digest";
 const LEDGER_SOURCE_COUNTS = {
   "battery-2026-07": 493,
@@ -78,6 +90,10 @@ const AVOID_PATTERNS = [
 const JUDGE_BLIND_RE = /\b(corpus|reviewer|golden|source data|cited records?|catalog|directory|transcripts?)\b/i;
 const NUMERIC_RE = /(?:\$\s*\d|\b\d+(?:\.\d+)?\s*(?:%|bps?|ms|seconds?|minutes?|hours?|days?|weeks?|months?|years?|xlm|usdc|usd|million|billion|k|m|b)\b|\b(?:v|version\s*)\d+(?:\.\d+)*\b|\b(?:protocol|cap-|sep-)\s*\d+\b|\b20\d{2}-\d{2}(?:-\d{2})?\b)/i;
 const NEGATIVE_RE = /\b(?:no|none|not|never|without|cannot|can't|doesn't|isn't|aren't|unavailable|absent)\b/i;
+const KEY_FACT_PREDICATE_RE = /\b(?:is|are|was|were|has|have|uses?|states?|explains?|identifies?|distinguishes?|separates?|rejects?|dates?|keeps?|preserves?|gives?|names?|describes?|reports?|requires?|mentions?|covers?|includes?|adds?|defines?|warns?|notes?|compares?|lists?|clarifies?|treats?|calls?|recommends?|shows?|attributes?|acknowledges?|frames?|presents?|omits?|can|must|should)\b/i;
+const NON_CONTENT_AVOID_RE = /^(?:omits?|skips?|frames?|phrases?|words?|portrays?|characterizes?|presents?)\b|^fail(?:s)?\s+to\b|\b(?:without|unless)\b[^.;]*\b(?:date|dating|mention|stating|including|presenting|framing|phrasing)\b|\bdates?\s+(?:its|the)\b/i;
+const ANSWER_VISIBLE_SOURCING_AVOID_RE = /\bwithout\b[^.;]*\b(?:dated?\s+(?:source|citation|evidence)|source|citation|provider|scope|(?:observation|as-of)\s+date|date)\b|(?:^|;\s*)date\s+the\s+changeable\s+part\b/i;
+const NEGATIVE_PREDICATE_RE = /\b(?:rejects?|separates?|distinguishes?)\s+(.+?)(?=\s+(?:from|and)\b|[.,;]|$)/i;
 const LIVE_CONTRACT_VERSION_RE = /-v(\d+)$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const REVERIFY_BY_REFERENCE_RE = /\b(q-[a-z0-9-]+)\s+reverifyBy\s+(\d{4}-\d{2}-\d{2})\b/g;
@@ -142,6 +158,142 @@ function walkJsonFiles(dir) {
 
 export function loadCases(corpusDir) {
   return walkJsonFiles(corpusDir).map((file) => ({ ...json(file), __file: file }));
+}
+
+export function loadLifecycleLane(dir, lane) {
+  const cases = [];
+  const findings = [];
+  for (const file of walkJsonFiles(dir)) {
+    try {
+      const value = lane === "retired"
+        ? validateTombstoneFile(file)
+        : validateCaseFile(file, { allowedLifecycleStates: new Set(["proposed"]) });
+      cases.push({ ...value, __file: file });
+    } catch (error) {
+      findings.push(finding("error", `lifecycle-${lane}`, path.basename(file, ".json"), error.message));
+      try { cases.push({ ...json(file), __file: file }); } catch { /* The validation error already identifies invalid JSON. */ }
+    }
+  }
+  return { cases, findings };
+}
+
+export function lintLifecycle(
+  cases,
+  lifecycleRegistry,
+  lifecyclePolicy,
+  today,
+  { proposedCases = [], tombstones = [], laneFindings = [] } = {}
+) {
+  const findings = [];
+  findings.push(...laneFindings);
+  const ids = new Set();
+  for (const kase of cases) {
+    if (ids.has(kase.id)) findings.push(finding("error", "lifecycle", kase.id, "duplicate compiled case id"));
+    ids.add(kase.id);
+    for (const problem of lifecycleProblems(kase, { allowedStates: COMPILED_LIFECYCLE_STATES, today })) {
+      findings.push(finding("error", "lifecycle", kase.id, problem));
+    }
+  }
+  for (const kase of proposedCases) {
+    if (ids.has(kase.id)) findings.push(finding("error", "lifecycle", kase.id, "id appears in more than one lifecycle lane"));
+    ids.add(kase.id);
+    for (const problem of lifecycleProblems(kase, { allowedStates: new Set(["proposed"]), today })) {
+      findings.push(finding("error", "lifecycle-proposed", kase.id, problem));
+    }
+  }
+  for (const tombstone of tombstones) {
+    if (ids.has(tombstone.id)) findings.push(finding("error", "lifecycle", tombstone.id, "id appears in more than one lifecycle lane"));
+    ids.add(tombstone.id);
+    for (const problem of tombstoneProblems(tombstone)) {
+      findings.push(finding("error", "lifecycle-retired", tombstone.id, problem));
+    }
+  }
+  if (!lifecycleRegistry) {
+    findings.push(finding("error", "lifecycle-registry", "-", "lifecycle registry is missing"));
+  } else {
+    if (lifecycleRegistry.schema !== LIFECYCLE_REGISTRY_SCHEMA) {
+      findings.push(finding("error", "lifecycle-registry", "-", `schema must be ${LIFECYCLE_REGISTRY_SCHEMA}`));
+    }
+    if (lifecycleRegistry.digestSchema !== "canonical-json-sha256-v1") {
+      findings.push(finding("error", "lifecycle-registry", "-", "digestSchema must be canonical-json-sha256-v1"));
+    }
+    const entries = Array.isArray(lifecycleRegistry.entries) ? lifecycleRegistry.entries : [];
+    const entryById = new Map();
+    for (const entry of entries) {
+      if (entryById.has(entry.id)) findings.push(finding("error", "lifecycle-registry", entry.id, "duplicate reserved id"));
+      entryById.set(entry.id, entry);
+    }
+    const reservedIds = Array.isArray(lifecycleRegistry.reservedIds) ? lifecycleRegistry.reservedIds : [];
+    if (
+      new Set(reservedIds).size !== reservedIds.length ||
+      reservedIds.some((id) => !entryById.has(id)) ||
+      entries.some((entry) => !reservedIds.includes(entry.id))
+    ) {
+      findings.push(finding("error", "lifecycle-registry", "-", "reservedIds must contain every entry id exactly once"));
+    }
+    const expectedRecords = [
+      ...cases.map((value) => ({ id: value.id, value, lane: "battery" })),
+      ...proposedCases.map((value) => ({ id: value.id, value, lane: "proposed" })),
+      ...tombstones.map((value) => ({ id: value.id, value, lane: "retired" }))
+    ];
+    for (const record of expectedRecords) {
+      const entry = entryById.get(record.id);
+      if (!entry) {
+        findings.push(finding("error", "lifecycle-registry", record.id, `${record.lane} id is not permanently reserved`));
+      } else {
+        const { __file, ...value } = record.value;
+        if (path.isAbsolute(__file ?? "")) {
+          const expectedPath = path.relative(ROOT, __file).split(path.sep).join("/");
+          if (!expectedPath.startsWith("../") && entry.path !== expectedPath) {
+            findings.push(finding("error", "lifecycle-registry", record.id, "registry path does not match the lifecycle lane file"));
+          }
+        }
+        if (record.lane === "retired") {
+          if (entry.state !== "retired" || entry.reviewState !== "resolved") {
+            findings.push(finding("error", "lifecycle-registry", record.id, "registry lifecycle does not match the retired tombstone"));
+          }
+          if (entry.tombstoneContentSha256 !== contentSha256(value)) {
+            findings.push(finding("error", "lifecycle-registry", record.id, "registry tombstoneContentSha256 is stale"));
+          }
+          if (entry.lastCaseContentSha256 !== value.retired?.lastCaseContentSha256) {
+            findings.push(finding("error", "lifecycle-registry", record.id, "registry lastCaseContentSha256 is stale"));
+          }
+          if (!same(entry.replacementIds, [...(value.retired?.replacementIds ?? [])].sort())) {
+            findings.push(finding("error", "lifecycle-registry", record.id, "registry replacementIds are stale"));
+          }
+        } else {
+          if (entry.state !== value.truth?.lifecycle?.state) {
+            findings.push(finding("error", "lifecycle-registry", record.id, "registry state does not match the case file"));
+          }
+          if (entry.reviewState !== value.truth?.lifecycle?.reviewState) {
+            findings.push(finding("error", "lifecycle-registry", record.id, "registry reviewState does not match the case file"));
+          }
+          if (entry.caseContentSha256 !== contentSha256(value)) {
+            findings.push(finding("error", "lifecycle-registry", record.id, "registry caseContentSha256 is stale"));
+          }
+        }
+      }
+    }
+    for (const entry of entries) {
+      if (!expectedRecords.some((record) => record.id === entry.id)) {
+        findings.push(finding("error", "lifecycle-registry", entry.id, "reserved id has no battery, proposal, or retired file"));
+      }
+    }
+    const expectedCounts = Object.fromEntries(["proposed", "active", "quarantined", "retired"].map((state) => [
+      state,
+      entries.filter((entry) => entry.state === state).length
+    ]));
+    if (!same(lifecycleRegistry.counts, expectedCounts)) {
+      findings.push(finding("error", "lifecycle-registry", "-", "counts do not match registry entries"));
+    }
+  }
+  if (!lifecyclePolicy) {
+    findings.push(finding("error", "mass-review", "-", "lifecycle policy is missing"));
+  } else {
+    const { problems } = lifecyclePolicyProblems(cases, lifecyclePolicy, today);
+    for (const problem of problems) findings.push(finding("error", "mass-review", "-", problem));
+  }
+  return findings;
 }
 
 export function lintSurface(cases, manifest) {
@@ -325,6 +477,67 @@ export function lintAvoidPhrases(cases) {
   return findings;
 }
 
+function hasMultiplePredicates(fact) {
+  const clauses = String(fact).split(/\s+(?:and|but|while|whereas)\s+|;\s*/i);
+  return clauses.filter((clause) => KEY_FACT_PREDICATE_RE.test(clause)).length > 1;
+}
+
+function significantTerms(text) {
+  const stop = new Set(["a", "an", "and", "from", "its", "of", "or", "the", "to", "with"]);
+  return (String(text).toLowerCase().match(/[a-z0-9][a-z0-9-]{2,}/g) ?? [])
+    .filter((term) => !stop.has(term));
+}
+
+function questionContainsObject(question, object) {
+  const questionText = String(question).toLowerCase();
+  const objectTerms = significantTerms(object);
+  return objectTerms.length > 0 && objectTerms.some((term) => questionText.includes(term));
+}
+
+function hasSymmetricCaution(notes) {
+  const text = String(notes ?? "");
+  return /\b(?:canonical|official|upstream)\b[^.!?]{0,80}\b(?:source|page|documentation)\b/i.test(text)
+    && /\bnot (?:a )?wrong claim\b/i.test(text)
+    && /\b(?:cap|caps|capped|grade)\b[^.!?]{0,60}\bpartial\b/i.test(text);
+}
+
+export function lintGoldenAuthoring(cases) {
+  const findings = [];
+  for (const kase of cases) {
+    const snapshotDates = new Set([kase.truth?.asOf, kase.truth?.verified?.date].filter((date) => DATE_RE.test(date ?? "")));
+    for (const fact of kase.golden?.keyFacts ?? []) {
+      if (fact.length > 90) {
+        findings.push(finding("warn", "key-fact", kase.id, `key fact exceeds 90 characters (${fact.length}): ${fact}`));
+      }
+      if (hasMultiplePredicates(fact)) {
+        findings.push(finding("warn", "key-fact", kase.id, `key fact contains multiple predicates: ${fact}`));
+      }
+      const match = NEGATIVE_PREDICATE_RE.exec(fact);
+      if (match && !questionContainsObject(kase.question, match[1])) {
+        findings.push(finding("warn", "key-fact", kase.id, `negative predicate object is absent from the question; consider moving it to golden.avoid: ${fact}`));
+      }
+      for (const date of snapshotDates) {
+        if (fact.includes(date)) {
+          findings.push(finding("warn", "snapshot-date", kase.id, `key fact requires the golden snapshot date ${date}: ${fact}`));
+        }
+      }
+    }
+    for (const item of kase.golden?.avoid ?? []) {
+      const body = item.replace(/^\s*do\s+not\b/i, "").trim();
+      if (NON_CONTENT_AVOID_RE.test(body) && !ANSWER_VISIBLE_SOURCING_AVOID_RE.test(body)) {
+        findings.push(finding("warn", "avoid", kase.id, `presentation, omission, or phrasing requirement is not a concrete false-content avoid item: ${item}`));
+      }
+    }
+    const hasImprovementRootCause = (kase.truth?.verified?.rootCause ?? [])
+      .some((item) => [...String(item).matchAll(/(?:^|[\s`"'([,;])(improvements\/[^\s`"'<>()\[\],;]+)/gi)]
+        .some((match) => !/^improvements\/resolved\.json\.?$/i.test(match[1])));
+    if (hasImprovementRootCause && !hasSymmetricCaution(kase.golden?.notes)) {
+      findings.push(finding("warn", "symmetric-caution", kase.id, "improvements/ rootCause has no symmetric canonical-source grading caution in golden.notes"));
+    }
+  }
+  return findings;
+}
+
 function numericFragments(text) {
   return String(text).match(/\$?\d+(?:\.\d+)?%?|(?:v|version\s*)\d+(?:\.\d+)*|(?:CAP|SEP)-?\d+/gi) ?? [];
 }
@@ -409,9 +622,7 @@ export function lintCoverage(cases, manifest, enforceFloors = false) {
   }
   for (const entry of (manifest.entries ?? []).filter((item) => item.kind === "operation")) {
     const count = counts.get(entry.id) ?? 0;
-    if (PARTNER_ONBOARD_RE.test(entry.id)) {
-      if (count > 1) findings.push(finding(level, "coverage", entry.id, `partner onboarding exclusion allows at most 1 mention; found ${count}`));
-    } else if (count < 2) findings.push(finding(level, "coverage", entry.id, `operation floor 2; found ${count}`));
+    if (count < 2) findings.push(finding(level, "coverage", entry.id, `operation floor 2; found ${count}`));
   }
   for (const entry of (manifest.entries ?? []).filter((item) => item.kind === "skill")) {
     const floor = entry.id === DIGEST_SKILL ? 2 : 1;
@@ -606,7 +817,7 @@ export function lintLiveContract(contract, previousContract) {
   if (!digest) findings.push(finding("error", "live-contract", "-", "contractProvenance.caseContentDigest must be sha256(JSON.stringify(cases))=<hex>"));
   else if (digest !== contractDigest(cases)) findings.push(finding("error", "live-contract", "-", "contractProvenance.caseContentDigest does not match case content"));
   for (const kase of cases) findings.push(...liveCaseSchemaFindings(kase));
-  findings.push(...lintCorroboration(cases, {}), ...liveBehavioralGoldenFindings(cases));
+  findings.push(...lintGoldenAuthoring(cases), ...lintCorroboration(cases, {}), ...liveBehavioralGoldenFindings(cases));
 
   if (!previousContract) return findings;
   const previousCases = Array.isArray(previousContract.cases) ? previousContract.cases : [];
@@ -630,9 +841,13 @@ function parseArgs(argv) {
     if (arg === "--coverage") options.coverage = true;
     else if (arg === "--enforce-floors") { options.coverage = true; options.enforceFloors = true; }
     else if (arg === "--stale") options.stale = true;
-    else if (["--since", "--corpus", "--manifest", "--register", "--ledger", "--today", "--live-contract"].includes(arg)) {
+    else if (["--since", "--corpus", "--proposed", "--retired", "--manifest", "--register", "--ledger", "--today", "--live-contract", "--lifecycle-registry", "--lifecycle-policy"].includes(arg)) {
       if (!argv[index + 1]) throw new Error(`${arg} requires a value`);
-      const option = arg === "--live-contract" ? "liveContract" : arg.slice(2);
+      const option = {
+        "--live-contract": "liveContract",
+        "--lifecycle-registry": "lifecycleRegistry",
+        "--lifecycle-policy": "lifecyclePolicy"
+      }[arg] ?? arg.slice(2);
       options[option] = argv[++index];
     } else throw new Error(`unknown argument: ${arg}`);
   }
@@ -708,12 +923,14 @@ function printFindings(findings) {
   return errors;
 }
 
-export function runLint({ cases, manifest, register = {}, ledger, previousCases, coverage = false, enforceFloors = false, stale = false, today }) {
+export function runLint({ cases, proposedCases = [], tombstones = [], laneFindings = [], manifest, register = {}, ledger, lifecycleRegistry, lifecyclePolicy, previousCases, coverage = false, enforceFloors = false, stale = false, today }) {
   const findings = [
+    ...lintLifecycle(cases, lifecycleRegistry, lifecyclePolicy, today, { proposedCases, tombstones, laneFindings }),
     ...lintSurface(cases, manifest),
     ...lintNumericInvariants(cases, register),
     ...lintDateContingentTraps(cases, register),
     ...lintAvoidPhrases(cases),
+    ...lintGoldenAuthoring(cases),
     ...lintCorroboration(cases, register),
     ...lintLedger(cases, ledger, enforceFloors)
   ];
@@ -734,9 +951,13 @@ function main() {
     return;
   }
   const corpusDir = path.resolve(options.corpus ?? DEFAULTS.corpusDir);
+  const proposedDir = path.resolve(options.proposed ?? DEFAULTS.proposedDir);
+  const retiredDir = path.resolve(options.retired ?? DEFAULTS.retiredDir);
   const manifestPath = path.resolve(options.manifest ?? DEFAULTS.manifestPath);
   const registerPath = path.resolve(options.register ?? DEFAULTS.registerPath);
   const ledgerPath = path.resolve(options.ledger ?? DEFAULTS.ledgerPath);
+  const lifecycleRegistryPath = path.resolve(options.lifecycleRegistry ?? DEFAULTS.lifecycleRegistryPath);
+  const lifecyclePolicyPath = path.resolve(options.lifecyclePolicy ?? DEFAULTS.lifecyclePolicyPath);
   if (isPullRequestCI(process.env) && !since) {
     // Fail closed for PRs only: the gospel lane is a required PR gate, so an
     // unresolvable base ref there is an error, never a silent skip. Push events
@@ -758,11 +979,18 @@ function main() {
   } else {
     console.log("[lint-corpus] NOTE gospel lane skipped: no --since ref");
   }
+  const proposed = loadLifecycleLane(proposedDir, "proposed");
+  const retired = loadLifecycleLane(retiredDir, "retired");
   const findings = runLint({
     cases: loadCases(corpusDir),
+    proposedCases: proposed.cases,
+    tombstones: retired.cases,
+    laneFindings: [...proposed.findings, ...retired.findings],
     manifest: json(manifestPath),
     register: existsSync(registerPath) ? json(registerPath) : {},
     ledger: existsSync(ledgerPath) ? json(ledgerPath) : undefined,
+    lifecycleRegistry: existsSync(lifecycleRegistryPath) ? json(lifecycleRegistryPath) : undefined,
+    lifecyclePolicy: existsSync(lifecyclePolicyPath) ? json(lifecyclePolicyPath) : undefined,
     previousCases,
     coverage: options.coverage,
     enforceFloors: options.enforceFloors,

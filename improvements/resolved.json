@@ -16,6 +16,20 @@
       "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/29557089d9a315aeeff2ae9f5b01bf201e55aed1/improvements/lumenloop/ll-021-scf-43-recap-discoverability.md"
     },
     {
+      "id": "sd-001",
+      "title": "The Stellar Docs crawler dropped /docs/networks/software-versions because its 1,319 extracted records exceeded the 750-record page cap",
+      "service": "stellar-docs",
+      "discovered": "2026-07-03",
+      "resolved": "2026-09-01",
+      "repo": "stellar/stellar-docs",
+      "upstreamRefs": [],
+      "resolvingRefs": [],
+      "liveRecheck": "2026-09-01T18:26:25Z live Algolia recheck on the settled index: full reindex 2026-09-01T12:00:01.677Z-12:04:05.299Z (crawler 79c5d36e, stats/urls shows 660 DONE and no extracted_too_many_records bucket); both crawler_Stellar Docs - Docusaurus and docs_replica_agent hold 14,761 entries at updatedAt 2026-09-01T12:04:00.150Z; Protocol 22/23/24/24 release/25/26/27/28 and 'software versions' each rank a /docs/networks/software-versions anchor #1 in both indexes; controls 'brew install stellar-cli', 'publish event contract events', 'fee bump transaction inner outer envelope' hold #1 in both and 'stellar cli install command' holds #1 on the primary Raven queries; residual natural-language and table-cell misses persist as the recorded accepted trade-off",
+      "reviewEvidence": "Distinct reviewer Opus 5 high (pane w1H:p3), 2026-09-01: re-derived the fix without the author transcript; cleared the 2026-08-25 DO-NOT-RETIRE blockers 2 (settled full reindex) and 3 (reference cleanup); confirmed blocker 1 is the own-repo routing gap already tracked in .agents/TODO.md and not an upstream defect; verified the replica's rank-5 install-cli result equals the primary rules-disabled control and Raven serves the primary index only; scanned residuals and found no successor warranted",
+      "sourceCommit": "5e23340be0da63630f86e662f010219cf0458eef",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/5e23340be0da63630f86e662f010219cf0458eef/improvements/stellar-docs/sd-001-protocol-n-vs-sep-n-tokenization.md"
+    },
+    {
       "id": "sd-002",
       "title": "Operation-level protocol vocabulary is under-represented in the docs search surface relative to how users phrase questions. Terms in the…",
       "service": "stellar-docs",
@@ -66,6 +80,26 @@
       "reviewEvidence": "distinct reviewer: Lane C read-only review 2026-07-27 (Solo todo 1205, scratchpad improvements-upstream-review-2026-07-27) independently re-ran each trigger against the live surface rather than accepting the maintainer handoff; Lane E (todo 1208) re-verified before retirement",
       "sourceCommit": "773857262d462506947a324b7437b8499f886287",
       "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/773857262d462506947a324b7437b8499f886287/improvements/stellar-docs/sd-007-state-archival-auto-restore-ambiguity.md"
+    },
+    {
+      "id": "sd-008",
+      "title": "The Software Versions page presented Protocol 27 as Testnet-only after Mainnet activation. It retained Protocol 26 as the latest Mainnet…",
+      "service": "stellar-docs",
+      "discovered": "2026-07-09",
+      "resolved": "2026-08-28",
+      "repo": "stellar/stellar-docs",
+      "upstreamRefs": [
+        "https://github.com/stellar/stellar-docs/issues/2574",
+        "https://github.com/stellar/stellar-docs/pull/2743"
+      ],
+      "resolvingRefs": [
+        "https://github.com/stellar/stellar-docs/issues/2574",
+        "https://github.com/stellar/stellar-docs/pull/2743"
+      ],
+      "liveRecheck": "2026-08-28T13:16:46Z GET software-versions HTTP 200, Protocol 27 Mainnet July 8 2026 section and JS SDK v16.2.0 present",
+      "reviewEvidence": "Lane C distinct read-only reviewer 2026-08-28 re-ran page trigger and verified issue 2574 closed-completed and PR 2743 merged 64ca6f6 resolution posted and read back 2026-08-28: https://github.com/stellar/stellar-docs/issues/2574#issuecomment-5455030136",
+      "sourceCommit": "f313bf27b53b1f28a2ab2771452188ef6000c755",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/f313bf27b53b1f28a2ab2771452188ef6000c755/improvements/stellar-docs/sd-008-protocol-27-mainnet-status-lag.md"
     },
     {
       "id": "sd-010",
@@ -357,6 +391,24 @@
       "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/f5260f91537c83998658149dd03d24b4565bc968/improvements/stellar-docs/sd-024-transaction-resource-xdr-drift.md"
     },
     {
+      "id": "sd-025",
+      "title": "The Horizon-to-RPC migration guide still describes CAP-67 unified asset events as future work, even though CAP-0067 is Final for Protocol…",
+      "service": "stellar-docs",
+      "discovered": "2026-07-11",
+      "resolved": "2026-08-28",
+      "repo": "stellar/stellar-docs",
+      "upstreamRefs": [
+        "https://github.com/stellar/stellar-docs/issues/2699"
+      ],
+      "resolvingRefs": [
+        "https://github.com/stellar/stellar-docs/issues/2699"
+      ],
+      "liveRecheck": "2026-08-28T13:16:48Z GET migrate-from-horizon-to-rpc HTTP 200, near future/when available/when expanded counts all zero; CAP-67 P23 wording live",
+      "reviewEvidence": "Lane C distinct read-only reviewer 2026-08-28 re-ran page trigger and verified issue 2699 closed-completed resolution posted and read back 2026-08-28: https://github.com/stellar/stellar-docs/issues/2699#issuecomment-5455030350",
+      "sourceCommit": "90d0ba75eb529c6a1cf6fe276f16cf4f1da4f9f0",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/90d0ba75eb529c6a1cf6fe276f16cf4f1da4f9f0/improvements/stellar-docs/sd-025-horizon-rpc-migration-cap67-drift.md"
+    },
+    {
       "id": "sd-026",
       "title": "Current contract-build documentation still presents the standalone optimize command as an active workflow even though CLI v23.2.0…",
       "service": "stellar-docs",
@@ -459,6 +511,25 @@
       "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/bb8731b3e09ac56fe0a2429e56beb583b84158b3/improvements/stellar-docs/sd-033-python-sdk-rpc-capability-omitted.md"
     },
     {
+      "id": "sd-036",
+      "title": "Fix CAP-0075 protocol-version and field-selector contradictions",
+      "service": "stellar-docs",
+      "discovered": "2026-07-11",
+      "resolved": "2026-09-01",
+      "repo": "stellar/stellar-protocol",
+      "upstreamRefs": [
+        "https://github.com/stellar/stellar-protocol/issues/1980",
+        "https://github.com/stellar/stellar-protocol/pull/1996"
+      ],
+      "resolvingRefs": [
+        "https://github.com/stellar/stellar-protocol/pull/1996"
+      ],
+      "liveRecheck": "2026-09-01 source recheck of stellar/stellar-protocol core/cap-0075.md on main: both interface blocks declare field: Symbol (lines 52, 69), both docs strings name BLS12_381/BN254, both keep min_supported_protocol 25, no Protocol 24 string remains, and Semantics states the field parameter is a Symbol; cross-checked against stellar/rs-soroban-env main soroban-env-common/env.json lines 2696-2726 where both permutations declare field: Symbol at min_supported_protocol 25. Issue 1980 closed completed 2026-08-20T16:31:15Z by merged PR 1996 (merge commit d186cf3187722ebcdbd647e782449e543f9d0ef3). Residual S-box-degree erratum in the same block carried to successor sd-048.",
+      "reviewEvidence": "Distinct reviewer Opus 5 high (pane w1H:p3), 2026-09-01: independently fetched the CAP and env.json; read issue 1980 and PR 1996; found the residual Poseidon2 degree conflict and required successor sd-048; filed successor https://github.com/stellar/stellar-protocol/issues/2010; reconciled q-protocol-bn254-poseidon-xray and generated corpus; posted and read back resolution comment https://github.com/stellar/stellar-protocol/issues/1980#issuecomment-5499757126 on issue 1980 only; did not comment on third-party PR 1996",
+      "sourceCommit": "5e23340be0da63630f86e662f010219cf0458eef",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/5e23340be0da63630f86e662f010219cf0458eef/improvements/stellar-docs/sd-036-cap-0075-protocol-version-field-selector-errata.md"
+    },
+    {
       "id": "sd-038",
       "title": "The StellarAssetInterface doc-comments in soroban-sdk/src/token.rs describe pre-CAP-67 Stellar Asset Contract event shapes. CAP-0067…",
       "service": "stellar-docs",
@@ -480,6 +551,192 @@
       "reviewEvidence": "distinct reviewer: gpt-5.6-sol xhigh (Solo 4137, scratchpad sol-review-2026-07-31) independently re-derived each trigger from the finding rather than the reporter-supplied greps, re-ran it against the live surface and normative sources, and returned CONFIRMED-FIXED, matching CAP-0067's normative shapes; resolution posted and read back 2026-07-31: https://github.com/stellar/rs-soroban-sdk/issues/1955#issuecomment-5145421677",
       "sourceCommit": "f5260f91537c83998658149dd03d24b4565bc968",
       "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/f5260f91537c83998658149dd03d24b4565bc968/improvements/stellar-docs/sd-038-stellar-asset-interface-cap67-event-doc-comments.md"
+    },
+    {
+      "id": "sd-039",
+      "title": "The September 9 crawl ingested the correction from PR #2723 into both serving indexes. The live pages, current source, and original…",
+      "service": "stellar-docs",
+      "discovered": "2026-07-27",
+      "resolved": "2026-09-09",
+      "repo": "stellar/stellar-docs",
+      "upstreamRefs": [
+        "https://github.com/stellar/stellar-docs/issues/2707",
+        "https://github.com/stellar/stellar-docs/pull/2723"
+      ],
+      "resolvingRefs": [
+        "https://github.com/stellar/stellar-docs/issues/2707",
+        "https://github.com/stellar/stellar-docs/pull/2723"
+      ],
+      "liveRecheck": "2026-09-09: live Tools pages, current source, both serving indexes, and production stellarDocs.search_sdk_cli_tools_docs({query:\"managed Channels\",hitsPerPage:15,includeContent:true}) distinguish self-hosted Relayer from managed Channels. Corrected positive records exist for both affected pages; strict old-alias searches return zero hits.",
+      "reviewEvidence": "Independent Grok 4.6 high freshly re-derived all original triggers without the Sol matrix and passed the pre-retirement four-case, generated-artifact, and register diff. See .agents/rounds/2026-09-09-docs-retirement-review-grok.md and .agents/rounds/2026-09-09-docs-golden-matrix-sol.md. Root reconciled current references and preserved historical evidence.",
+      "sourceCommit": "176513cc5e058fa12ad81f607ea4ca0d514a659a",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/176513cc5e058fa12ad81f607ea4ca0d514a659a/improvements/stellar-docs/sd-039-openzeppelin-relayer-conflated-with-managed-channels.md"
+    },
+    {
+      "id": "sd-040",
+      "title": "The smart-contract address conversion example accepts Bytes and calls Address::from_xdr(&env, &bytes).unwrap()",
+      "service": "stellar-docs",
+      "discovered": "2026-08-11",
+      "resolved": "2026-09-16",
+      "repo": "stellar/stellar-docs",
+      "upstreamRefs": [
+        "https://github.com/stellar/stellar-docs/issues/2768"
+      ],
+      "resolvingRefs": [
+        "https://github.com/stellar/stellar-docs/pull/2849"
+      ],
+      "liveRecheck": "2026-09-16: The rendered page and the affected indexed section contain the fallible conversion example without unwrap. The complete index read returned 7 sections. The text distinguishes conversion errors from malformed-XDR panics.",
+      "reviewEvidence": "Grok 4.6 high, independent from Sol author and Astra coordinator; .agents/rounds/2026-09-16-docs-resolutions/docs-review.md",
+      "sourceCommit": "81ba59a695f45f413e0a7b8dd1c444bfb56ed051",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/81ba59a695f45f413e0a7b8dd1c444bfb56ed051/improvements/stellar-docs/sd-040-address-from-xdr-unwrap-malformed-input.md"
+    },
+    {
+      "id": "sd-041",
+      "title": "The pooled-accounts guide opens with a past-tense statement about memos. The same page later tells the reader to keep supporting memos",
+      "service": "stellar-docs",
+      "discovered": "2026-08-14",
+      "resolved": "2026-09-16",
+      "repo": "stellar/stellar-docs",
+      "upstreamRefs": [
+        "https://github.com/stellar/stellar-docs/issues/2769"
+      ],
+      "resolvingRefs": [
+        "https://github.com/stellar/stellar-docs/pull/2853"
+      ],
+      "liveRecheck": "2026-09-16: The rendered page and the indexed lead retain current memo support. The complete index read returned 15 sections. The old past-tense lead is absent.",
+      "reviewEvidence": "Grok 4.6 high, independent from Sol author and Astra coordinator; .agents/rounds/2026-09-16-docs-resolutions/docs-review.md",
+      "sourceCommit": "81ba59a695f45f413e0a7b8dd1c444bfb56ed051",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/81ba59a695f45f413e0a7b8dd1c444bfb56ed051/improvements/stellar-docs/sd-041-pooled-accounts-memo-past-tense-lead.md"
+    },
+    {
+      "id": "sd-042",
+      "title": "The September 9 crawl ingested the EVM guide correction from PR #2806. The current source, rendered guide, and original production search…",
+      "service": "stellar-docs",
+      "discovered": "2026-08-14",
+      "resolved": "2026-09-09",
+      "repo": "stellar/stellar-docs",
+      "upstreamRefs": [
+        "https://github.com/stellar-experimental/stellar-raven/issues/130",
+        "https://github.com/stellar/stellar-docs/issues/2770",
+        "https://github.com/stellar/stellar-docs/pull/2806"
+      ],
+      "resolvingRefs": [
+        "https://github.com/stellar/stellar-docs/issues/2770",
+        "https://github.com/stellar/stellar-docs/pull/2806"
+      ],
+      "liveRecheck": "2026-09-09: the rendered EVM guide, current source, four canonical Horizon controls, and the original production search agree on Horizon API (nearing end-of-life). Both serving indexes contain corrected EVM object 21 after the 12:03:55.702Z completed crawl. Strict old-phrase searches return zero hits.",
+      "reviewEvidence": "Independent Grok 4.6 high freshly re-derived all original triggers without the Sol matrix and passed the pre-retirement four-case, generated-artifact, and register diff. See .agents/rounds/2026-09-09-docs-retirement-review-grok.md and .agents/rounds/2026-09-09-docs-golden-matrix-sol.md. Root reconciled current references and preserved historical evidence.",
+      "sourceCommit": "176513cc5e058fa12ad81f607ea4ca0d514a659a",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/176513cc5e058fa12ad81f607ea4ca0d514a659a/improvements/stellar-docs/sd-042-horizon-deprecated-present-tense-regression.md"
+    },
+    {
+      "id": "sd-043",
+      "title": "The sponsored-reserves guide states this minimum-balance formula under \"Effect on minimum balance\":",
+      "service": "stellar-docs",
+      "discovered": "2026-08-14",
+      "resolved": "2026-09-08",
+      "repo": "stellar/stellar-docs",
+      "upstreamRefs": [
+        "https://github.com/stellar/stellar-docs/issues/2771"
+      ],
+      "resolvingRefs": [
+        "https://github.com/stellar/stellar-docs/issues/2771",
+        "https://github.com/stellar/stellar-docs/pull/2806"
+      ],
+      "liveRecheck": "2026-09-08T15:50:00Z rendered Sponsored Reserves and Lumens pages matched the corrected minimum-balance formula and separate available-balance identity; stellar-core 7e64393b independently confirmed the same split.",
+      "reviewEvidence": "Independent Codex GPT-5.6 Sol high review: .agents/rounds/2026-09-08-improvements-docs-fixes/verify-sd-043-sol.md; it repeated the live trigger, checked current source and Core, scanned adjacent Docs, and reconciled every repository reference. Resolution comment read back at https://github.com/stellar/stellar-docs/issues/2771#issuecomment-5588559296.",
+      "sourceCommit": "767c981a9304bd74b167357ffdf9a39dd017cce4",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/767c981a9304bd74b167357ffdf9a39dd017cce4/improvements/stellar-docs/sd-043-sponsored-reserves-min-balance-liabilities.md"
+    },
+    {
+      "id": "sd-044",
+      "title": "The Quickstart container supports a manual ledger-close mode. The stellar/quickstart start script parses --enable-core-manual-close and…",
+      "service": "stellar-docs",
+      "discovered": "2026-08-14",
+      "resolved": "2026-09-16",
+      "repo": "stellar/stellar-docs",
+      "upstreamRefs": [
+        "https://github.com/stellar/stellar-docs/issues/2772"
+      ],
+      "resolvingRefs": [
+        "https://github.com/stellar/stellar-docs/pull/2850",
+        "https://github.com/stellar/stellar-docs/pull/2859"
+      ],
+      "liveRecheck": "2026-09-16: The original search returns two Quickstart records with the flag. Operation Modes documents its default, setting, and limits. The rendered Run Commands example contains the flag and Core port mapping. That example page remains unindexed.",
+      "reviewEvidence": "Grok 4.6 high, independent from Sol author and Astra coordinator; .agents/rounds/2026-09-16-docs-resolutions/docs-review.md",
+      "sourceCommit": "50bf5518860584ec1e5d352acbe11033515a0b7f",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/50bf5518860584ec1e5d352acbe11033515a0b7f/improvements/stellar-docs/sd-044-quickstart-manual-close-flag-undocumented.md"
+    },
+    {
+      "id": "sd-045",
+      "title": "The dapp frontend guide states one unqualified requirement: \"Freighter wallet requires a secure connection (HTTPS) to interact with your…",
+      "service": "stellar-docs",
+      "discovered": "2026-08-14",
+      "resolved": "2026-09-16",
+      "repo": "stellar/stellar-docs",
+      "upstreamRefs": [
+        "https://github.com/stellar/stellar-docs/issues/2773"
+      ],
+      "resolvingRefs": [
+        "https://github.com/stellar/stellar-docs/pull/2851"
+      ],
+      "liveRecheck": "2026-09-16: The rendered frontend guide and its indexed HTTPS section qualify HTTP localhost and 127.0.0.1 as secure contexts. The complete index read returned 35 sections. The old unqualified HTTPS requirement is absent. HTTPS is now an optional local setup.",
+      "reviewEvidence": "Grok 4.6 high, independent source/index recheck and golden claim matrix; .agents/rounds/2026-09-16-docs-resolutions/docs-review.md",
+      "sourceCommit": "b53f62d3e6370231103b221e5474ecb6cbfd5627",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/b53f62d3e6370231103b221e5474ecb6cbfd5627/improvements/stellar-docs/sd-045-freighter-https-requirement-unqualified.md"
+    },
+    {
+      "id": "sd-047",
+      "title": "The September 9 crawl ingested the Validators correction from PR #2806. Both canonical pages and their positive production search records…",
+      "service": "stellar-docs",
+      "discovered": "2026-08-31",
+      "resolved": "2026-09-09",
+      "repo": "stellar/stellar-docs",
+      "upstreamRefs": [
+        "https://github.com/stellar-experimental/stellar-raven/issues/132",
+        "https://github.com/stellar/stellar-docs/issues/2805",
+        "https://github.com/stellar/stellar-docs/pull/2806"
+      ],
+      "resolvingRefs": [
+        "https://github.com/stellar/stellar-docs/issues/2805",
+        "https://github.com/stellar/stellar-docs/pull/2806"
+      ],
+      "liveRecheck": "2026-09-09: live Validators and Stellar Stack pages, current source, and both positive production search records say every 5-7 seconds. The original 3-5 seconds query no longer returns the stale Validators sentence. Both serving indexes return zero strict old-phrase hits after the completed crawl.",
+      "reviewEvidence": "Independent Grok 4.6 high freshly re-derived all original triggers without the Sol matrix and passed the pre-retirement four-case, generated-artifact, and register diff. See .agents/rounds/2026-09-09-docs-retirement-review-grok.md and .agents/rounds/2026-09-09-docs-golden-matrix-sol.md. Root reconciled current references and preserved historical evidence.",
+      "sourceCommit": "176513cc5e058fa12ad81f607ea4ca0d514a659a",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/176513cc5e058fa12ad81f607ea4ca0d514a659a/improvements/stellar-docs/sd-047-validators-ledger-close-cadence-conflict.md"
+    },
+    {
+      "id": "sd-049",
+      "title": "The claimed conflict does not reproduce on the Laboratory default branch. The current writer passes each saved keypair array through…",
+      "service": "stellar-docs",
+      "discovered": "2026-09-03",
+      "resolved": "2026-09-09",
+      "repo": "stellar/stellar-docs",
+      "upstreamRefs": [],
+      "resolvingRefs": [],
+      "liveRecheck": "2026-09-09: default main bbbe48c79b8a90bbc548115a0573c912b1e9fa9e and served lab.stellar.org writer use reversible XOR/base64; Docs and public UI agree on unprotected Testnet/Futurenet storage. The original conflict used obsolete master; this is not a new upstream fix.",
+      "reviewEvidence": "Independent Grok 4.6 high re-derived source, served bundle, Docs and public UI; final golden/retirement PASS 2026-09-09T03:24:18Z and wording PASS 03:26:25Z in .agents/rounds/2026-09-08-maintenance-independent-review-grok.md. Root reconciled both cases, clusters 023/137, and active queue references. Never filed; no upstream comment applies.",
+      "sourceCommit": "8af90c173d8f41a7d2fdc6cf32b7a0b1d83c9e7d",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/8af90c173d8f41a7d2fdc6cf32b7a0b1d83c9e7d/improvements/stellar-docs/sd-049-lab-saved-keypairs-obfuscation-conflict.md"
+    },
+    {
+      "id": "sd-051",
+      "title": "The software-versions page labels a February 5 entry as Mainnet Edition. Sibling headings on the same page use the Mainnet token for a…",
+      "service": "stellar-docs",
+      "discovered": "2026-09-04",
+      "resolved": "2026-09-16",
+      "repo": "stellar/stellar-docs",
+      "upstreamRefs": [
+        "https://github.com/stellar/stellar-docs/issues/2843"
+      ],
+      "resolvingRefs": [
+        "https://github.com/stellar/stellar-docs/pull/2845"
+      ],
+      "liveRecheck": "2026-09-16: The rendered page and the indexed Phase 0 section distinguish Mainnet activation from the software release. Mainnet activation occurred on February 20, 2024. The Core release date was February 5, 2024. The complete index read returned 159 sections. The incorrect Mainnet Edition heading is absent.",
+      "reviewEvidence": "Grok 4.6 high, independent from Sol author and Astra coordinator; .agents/rounds/2026-09-16-docs-resolutions/docs-review.md",
+      "sourceCommit": "8ab7b88f95177022cd24c0d0acb6e619b19ea23c",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/8ab7b88f95177022cd24c0d0acb6e619b19ea23c/improvements/stellar-docs/sd-051-protocol-20-mainnet-heading-date.md"
     },
     {
       "id": "sk-001",
@@ -520,6 +777,46 @@
       "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/a4954b6a38f66de5ce4b28fc33535464df0818fb/improvements/skills/sk-002-security-md-reentrancy-claim.md"
     },
     {
+      "id": "sk-003",
+      "title": "The data skill promises getLedgers history back to genesis despite provider retention limits",
+      "service": "skills",
+      "discovered": "2026-07-03",
+      "resolved": "2026-08-11",
+      "repo": "stellar/stellar-dev-skill",
+      "upstreamRefs": [
+        "https://github.com/stellar/stellar-dev-skill/issues/52",
+        "https://github.com/stellar/stellar-dev-skill/pull/73"
+      ],
+      "resolvingRefs": [
+        "https://github.com/stellar/stellar-dev-skill/issues/52",
+        "https://github.com/stellar/stellar-dev-skill/pull/73"
+      ],
+      "liveRecheck": "2026-08-11 production read via agents.stellar.buzz/mcp of skills.stellar-dev.data at pin 9e3d3fe0de85: no unconditional genesis claim; Infinite Scroll qualified by provider data-lake reach and getHealth().oldestLedger/-32600 guidance",
+      "reviewEvidence": "Independent Fable reviewer, Solo process 4492 / todo 1449, re-derived upstream state, pin ancestry, live trigger, and repository references",
+      "sourceCommit": "d2d7c161a4362445c6db59bf5989de98f130fe55",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/d2d7c161a4362445c6db59bf5989de98f130fe55/improvements/skills/sk-003-getledgers-retention-conflict.md"
+    },
+    {
+      "id": "sk-006",
+      "title": "The smart-contracts skill lacks error-keyed troubleshooting for common CLI and build failures",
+      "service": "skills",
+      "discovered": "2026-07-03",
+      "resolved": "2026-08-28",
+      "repo": "stellar/stellar-dev-skill",
+      "upstreamRefs": [
+        "https://github.com/stellar/stellar-dev-skill/issues/53",
+        "https://github.com/stellar/stellar-dev-skill/pull/93"
+      ],
+      "resolvingRefs": [
+        "https://github.com/stellar/stellar-dev-skill/issues/53",
+        "https://github.com/stellar/stellar-dev-skill/pull/93"
+      ],
+      "liveRecheck": "2026-08-28T13:16:09Z curl raw main development.md HTTP 200, verbatim No-such-file/link.exe/identity/alias/fund rows present; pinned b78983c carries them",
+      "reviewEvidence": "Lane C distinct read-only reviewer 2026-08-28 re-ran probe and pin fetch, verified issue 53 closed-completed and PR 93 merged 677a6aa resolution posted and read back 2026-08-28: https://github.com/stellar/stellar-dev-skill/issues/53#issuecomment-5455029603",
+      "sourceCommit": "dbc466e551053d262ea4ee4267a09a6526124396",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/dbc466e551053d262ea4ee4267a09a6526124396/improvements/skills/sk-006-error-keyed-troubleshooting-gap.md"
+    },
+    {
       "id": "sk-008",
       "title": "The upstream Stellar-Light/stellar-scout skill API reference previously lagged the live Scout OpenAPI 1.7.0 contract for two exposed read…",
       "service": "skills",
@@ -538,6 +835,24 @@
       "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/9892897b92e41e4fdb8af2f8661abebcc7046029/improvements/skills/sk-008-stellar-scout-api-reference-17-drift.md"
     },
     {
+      "id": "sk-009",
+      "title": "The pinned Stellar Scout skill API reference has fallen behind the live Scout OpenAPI contract from 1.7.11 through 1.8.40. This is new…",
+      "service": "skills",
+      "discovered": "2026-07-10",
+      "resolved": "2026-08-28",
+      "repo": "Stellar-Light/stellar-scout",
+      "upstreamRefs": [
+        "https://github.com/Stellar-Light/stellar-scout/issues/11"
+      ],
+      "resolvingRefs": [
+        "https://github.com/Stellar-Light/stellar-scout/issues/11"
+      ],
+      "liveRecheck": "2026-08-28T13:16:11Z live OpenAPI 1.9.1 and pinned 2e4e412 api-reference agree on semantic/TVL/research/leaderboard/repo fields",
+      "reviewEvidence": "Lane C distinct read-only reviewer 2026-08-28 re-ran live OpenAPI/pin diff and verified issue 11 closed-completed resolution posted and read back 2026-08-28: https://github.com/Stellar-Light/stellar-scout/issues/11#issuecomment-5455029882",
+      "sourceCommit": "70726884a723786c669283953f576277ce9d955b",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/70726884a723786c669283953f576277ce9d955b/improvements/skills/sk-009-stellar-scout-api-reference-1711-drift.md"
+    },
+    {
       "id": "sk-010",
       "title": "The official stellar/stellar-dev-skill dapp skill embedded a stale Stellar Wallets Kit integration. At pinned upstream commit…",
       "service": "skills",
@@ -554,6 +869,199 @@
       "reviewEvidence": "distinct reviewer: Lane C read-only review 2026-07-27 (Solo todo 1205, scratchpad improvements-upstream-review-2026-07-27) independently re-ran each trigger against the live surface rather than accepting the maintainer handoff; Lane E (todo 1208) re-verified before retirement",
       "sourceCommit": "773857262d462506947a324b7437b8499f886287",
       "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/773857262d462506947a324b7437b8499f886287/improvements/skills/sk-010-wallets-kit-jsr-scope-dapp-skill.md"
+    },
+    {
+      "id": "sk-011",
+      "title": "The served upstream ZK skill is stale after Protocol 25. It describes BN254 and Poseidon/Poseidon2 changes as proposed or gated and tells…",
+      "service": "skills",
+      "discovered": "2026-07-11",
+      "resolved": "2026-08-11",
+      "repo": "stellar/stellar-dev-skill",
+      "upstreamRefs": [
+        "https://github.com/stellar/stellar-dev-skill/issues/51",
+        "https://github.com/stellar/stellar-dev-skill/pull/72"
+      ],
+      "resolvingRefs": [
+        "https://github.com/stellar/stellar-dev-skill/issues/51",
+        "https://github.com/stellar/stellar-dev-skill/pull/72"
+      ],
+      "liveRecheck": "2026-08-11 production read of skills.stellar-dev.zk-proofs at pin 9e3d3fe0de85: CAP-0074/0075 Available (Protocol 25+), CAP-0080 Available (Protocol 26+), verified-against-Protocol-27 header; proposed/gated trigger absent",
+      "reviewEvidence": "Independent Fable reviewer, Solo process 4492 / todo 1449, re-derived upstream state, pin ancestry, live trigger, and repository references",
+      "sourceCommit": "d2d7c161a4362445c6db59bf5989de98f130fe55",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/d2d7c161a4362445c6db59bf5989de98f130fe55/improvements/skills/sk-011-zk-proofs-protocol-25-status.md"
+    },
+    {
+      "id": "sk-012",
+      "title": "The served agentic-payments skill presents \"MPP Channel mode\" as the public mode name. Current MPP material uses Session for the payment…",
+      "service": "skills",
+      "discovered": "2026-07-11",
+      "resolved": "2026-08-11",
+      "repo": "stellar/stellar-dev-skill",
+      "upstreamRefs": [
+        "https://github.com/stellar/stellar-dev-skill/issues/57",
+        "https://github.com/stellar/stellar-dev-skill/pull/71"
+      ],
+      "resolvingRefs": [
+        "https://github.com/stellar/stellar-dev-skill/issues/57",
+        "https://github.com/stellar/stellar-dev-skill/pull/71"
+      ],
+      "liveRecheck": "2026-08-11 production read of skills.stellar-dev.agentic-payments at pin 9e3d3fe0de85: MPP Session is the public mode name; channel is the settlement mechanism; MPP Channel mode is absent",
+      "reviewEvidence": "Independent Fable reviewer, Solo process 4492 / todo 1449, re-derived upstream state, pin ancestry, live trigger, and repository references",
+      "sourceCommit": "d2d7c161a4362445c6db59bf5989de98f130fe55",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/d2d7c161a4362445c6db59bf5989de98f130fe55/improvements/skills/sk-012-mpp-session-mode-terminology.md"
+    },
+    {
+      "id": "sk-013",
+      "title": "The assets skill teaches ChangeTrust(limit: 0) as trustline removal without the preconditions that make the operation safe and valid. A…",
+      "service": "skills",
+      "discovered": "2026-08-04",
+      "resolved": "2026-08-19",
+      "repo": "stellar/stellar-dev-skill",
+      "upstreamRefs": [
+        "https://github.com/stellar/stellar-dev-skill/issues/81"
+      ],
+      "resolvingRefs": [
+        "https://github.com/stellar/stellar-dev-skill/issues/81",
+        "https://github.com/stellar/stellar-dev-skill/pull/90",
+        "https://github.com/stellar/stellar-dev-skill/pull/91"
+      ],
+      "liveRecheck": "2026-08-19: the pinned assets skill states every trustline-removal precondition, and the original trigger no longer reproduces.",
+      "reviewEvidence": "Independent Fable review: Solo process 4850, todo 1799, scratchpad 837 revision 19.",
+      "sourceCommit": "70726884a723786c669283953f576277ce9d955b",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/70726884a723786c669283953f576277ce9d955b/improvements/skills/sk-013-trustline-removal-omits-safety-preconditions.md"
+    },
+    {
+      "id": "sk-016",
+      "title": "The agentic-payments skill teaches MPP Charge mode and MPP Session mode. It does not teach the MPP discovery layer",
+      "service": "skills",
+      "discovered": "2026-08-14",
+      "resolved": "2026-08-19",
+      "repo": "stellar/stellar-dev-skill",
+      "upstreamRefs": [
+        "https://github.com/stellar/stellar-dev-skill/issues/107",
+        "https://github.com/stellar/stellar-dev-skill/pull/109"
+      ],
+      "resolvingRefs": [
+        "https://github.com/stellar/stellar-dev-skill/issues/107",
+        "https://github.com/stellar/stellar-dev-skill/pull/109"
+      ],
+      "liveRecheck": "2026-08-19: the pinned MPP skill covers every requested discovery requirement, and the original trigger no longer reproduces.",
+      "reviewEvidence": "Independent Fable review: Solo process 4850, todo 1799, scratchpad 837 revision 19.",
+      "sourceCommit": "6aa70b7f50559cf3b083215aec9fec3017f5728c",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/6aa70b7f50559cf3b083215aec9fec3017f5728c/improvements/skills/sk-016-agentic-payments-mpp-discovery-gap.md"
+    },
+    {
+      "id": "sk-017",
+      "title": "skills/dapp/smart-accounts.md gives two stale repository links and one unsupported status label",
+      "service": "skills",
+      "discovered": "2026-08-14",
+      "resolved": "2026-08-19",
+      "repo": "stellar/stellar-dev-skill",
+      "upstreamRefs": [
+        "https://github.com/stellar/stellar-dev-skill/issues/108",
+        "https://github.com/stellar/stellar-dev-skill/pull/110"
+      ],
+      "resolvingRefs": [
+        "https://github.com/stellar/stellar-dev-skill/issues/108",
+        "https://github.com/stellar/stellar-dev-skill/pull/110"
+      ],
+      "liveRecheck": "2026-08-19: the pinned files use canonical links, remove the unsupported label, and state the authorization-model boundary.",
+      "reviewEvidence": "Independent Fable review: Solo process 4850, todo 1799, scratchpad 837 revision 19.",
+      "sourceCommit": "6aa70b7f50559cf3b083215aec9fec3017f5728c",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/6aa70b7f50559cf3b083215aec9fec3017f5728c/improvements/skills/sk-017-dapp-smart-accounts-archived-links-legacy-label.md"
+    },
+    {
+      "id": "sk-018",
+      "title": "The live Scout API adds four read-only operations that the Scout skill reference does not document:",
+      "service": "skills",
+      "discovered": "2026-08-18",
+      "resolved": "2026-08-19",
+      "repo": "Stellar-Light/stellar-scout",
+      "upstreamRefs": [],
+      "resolvingRefs": [],
+      "liveRecheck": "2026-08-19: upstream stellar-scout commit 2eebd982dc31 documents all four endpoints; Raven pins selection sel:cdb4d944079c and removes structural blocks for excluded Scout paths.",
+      "reviewEvidence": "Grok 4.6 process 4832, Solo todo 1769 comment 4641; root read the full changed skill selection and reproduced the pre-existing feedback exposure debt.",
+      "sourceCommit": "9e277702fd5f70a18cdc7c4d5f9bda0127461644",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/9e277702fd5f70a18cdc7c4d5f9bda0127461644/improvements/skills/sk-018-stellar-scout-api-reference-composite-endpoint-drift.md"
+    },
+    {
+      "id": "sk-020",
+      "title": "The standards skill told agents that the Stellar Developers Discord is https://discord.gg/stellar. That vanity code does not belong to…",
+      "service": "skills",
+      "discovered": "2026-08-25",
+      "resolved": "2026-09-01",
+      "repo": "stellar/stellar-dev-skill",
+      "upstreamRefs": [
+        "https://github.com/stellar/ecosystem-resources/issues/9",
+        "https://github.com/stellar/stellar-dev-skill/issues/113",
+        "https://github.com/stellar/stellar-dev-skill/pull/114"
+      ],
+      "resolvingRefs": [
+        "https://github.com/stellar/stellar-dev-skill/issues/113",
+        "https://github.com/stellar/stellar-dev-skill/pull/114"
+      ],
+      "liveRecheck": "2026-09-01 production skill.read against raven.stellar.org returns '- [Stellar Developers Discord](https://discord.gg/stellardev)' for skills.stellar-dev.standards file:resources.md, served from pin b78983c92330d81943fa99cdaee4e4a52e85eba3; raw main confirms stellar-dev-skill skills/standards/resources.md:233 and README.md:126 plus ecosystem-resources learning/README.md:181 all read discord.gg/stellardev; a discord.gg/stellar([^A-Za-z0-9]|$) sweep across all four pinned skill trees (b78983c9, d92c56bd, 6f215af6, d25b9f6b) returns no stale match",
+      "reviewEvidence": "Distinct reviewer Opus 5 high (pane w1H:p3), 2026-09-01: independently fetched all three upstream files and read issue 113, PR 114, and ecosystem-resources issue 9; confirmed the deployed production skill.read result; swept all four pinned skill trees and found no residual; ecosystem-resources#9 is a separate closed defect and received no comment; posted and read back resolution comment https://github.com/stellar/stellar-dev-skill/issues/113#issuecomment-5499760587 on stellar-dev-skill#113 only; did not comment on PR 114",
+      "sourceCommit": "462ff2b1976040d9d04097981f71ae8970f1439c",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/462ff2b1976040d9d04097981f71ae8970f1439c/improvements/skills/sk-020-standards-skill-stale-discord-vanity.md"
+    },
+    {
+      "id": "sk-021",
+      "title": "The previously accepted Raven Smart Contracts skill example used a Protocol 27 release candidate. Its next comment says Mainnet runs…",
+      "service": "skills",
+      "discovered": "2026-09-03",
+      "resolved": "2026-09-09",
+      "repo": "stellar/stellar-dev-skill",
+      "upstreamRefs": [
+        "https://github.com/stellar-experimental/stellar-raven/issues/136",
+        "https://github.com/stellar/stellar-dev-skill/issues/124",
+        "https://github.com/stellar/stellar-dev-skill/pull/127"
+      ],
+      "resolvingRefs": [
+        "https://github.com/stellar/stellar-dev-skill/pull/127"
+      ],
+      "liveRecheck": "2026-09-09 production skill.read at 18:20Z and 18:21Z pins 0472452a05731de5e0a1e886d8aae6df24873fe2. Stable SDK 27 and Mainnet protocol 27 replace the original stale comment. Worker 0dad1151-56f5-4e7d-ae75-b4b81f3601f9.",
+      "reviewEvidence": "Grok 4.6 high independently rechecked production, canonical hashes, original triggers, and references; .agents/rounds/2026-09-09-skill-retirement-live-grok.md. Root posted and read back all upstream and handoff resolution comments.",
+      "sourceCommit": "09820d46ad3cbc64a9cced3786831aa24ab1c8a6",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/09820d46ad3cbc64a9cced3786831aa24ab1c8a6/improvements/skills/sk-021-smart-contracts-mainnet-protocol-comment-stale.md"
+    },
+    {
+      "id": "sk-023",
+      "title": "The previously accepted MPP guide mpp.md never states the scope of MPP. Its only scope statements are Stellar-specific. The router…",
+      "service": "skills",
+      "discovered": "2026-09-04",
+      "resolved": "2026-09-09",
+      "repo": "stellar/stellar-dev-skill",
+      "upstreamRefs": [
+        "https://github.com/stellar/stellar-dev-skill/issues/125",
+        "https://github.com/stellar/stellar-dev-skill/pull/129"
+      ],
+      "resolvingRefs": [
+        "https://github.com/stellar/stellar-dev-skill/pull/129"
+      ],
+      "liveRecheck": "2026-09-09 production skill.read at 18:20Z and 18:21Z pins 0472452a05731de5e0a1e886d8aae6df24873fe2. The MPP guide states payment-method-agnostic scope and distinguishes mppx from the Stellar payment method. Worker 0dad1151-56f5-4e7d-ae75-b4b81f3601f9.",
+      "reviewEvidence": "Grok 4.6 high independently rechecked production, canonical hashes, original triggers, and references; .agents/rounds/2026-09-09-skill-retirement-live-grok.md. Root posted and read back all upstream and handoff resolution comments.",
+      "sourceCommit": "09820d46ad3cbc64a9cced3786831aa24ab1c8a6",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/09820d46ad3cbc64a9cced3786831aa24ab1c8a6/improvements/skills/sk-023-mpp-general-protocol-identity.md"
+    },
+    {
+      "id": "sk-024",
+      "title": "The previously accepted router and x402 guide present OpenZeppelin Channels as the only facilitator for x402 on Stellar. The root decision…",
+      "service": "skills",
+      "discovered": "2026-09-04",
+      "resolved": "2026-09-09",
+      "repo": "stellar/stellar-dev-skill",
+      "upstreamRefs": [
+        "https://github.com/stellar/stellar-dev-skill/issues/126",
+        "https://github.com/stellar/stellar-dev-skill/pull/128"
+      ],
+      "resolvingRefs": [
+        "https://github.com/stellar/stellar-dev-skill/pull/128"
+      ],
+      "liveRecheck": "2026-09-09 production skill.read at 18:20Z and 18:21Z pins 0472452a05731de5e0a1e886d8aae6df24873fe2. The router and x402 guide describe multiple facilitators and scope OZ_API_KEY to OpenZeppelin Channels. Worker 0dad1151-56f5-4e7d-ae75-b4b81f3601f9.",
+      "reviewEvidence": "Grok 4.6 high independently rechecked production, canonical hashes, original triggers, and references; .agents/rounds/2026-09-09-skill-retirement-live-grok.md. Root posted and read back all upstream and handoff resolution comments.",
+      "sourceCommit": "09820d46ad3cbc64a9cced3786831aa24ab1c8a6",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/09820d46ad3cbc64a9cced3786831aa24ab1c8a6/improvements/skills/sk-024-x402-facilitator-and-api-key-scope.md"
     },
     {
       "id": "sls-001",
@@ -958,6 +1466,30 @@
       "reviewEvidence": "Independent Fable reviewer Solo 3654 re-derived upstream deploy and live trigger",
       "sourceCommit": "0306425752a0fb4c1b1965d64236c5a975aafa5b",
       "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/0306425752a0fb4c1b1965d64236c5a975aafa5b/improvements/stellar-light-scout/sls-022-yieldblox-incident-fact-model.md"
+    },
+    {
+      "id": "sls-023",
+      "title": "Scout's broad RWA discovery does not separate entity/project status from the deployment status of a particular product on Stellar. A live…",
+      "service": "stellar-light-scout",
+      "discovered": "2026-07-10",
+      "resolved": "2026-09-08",
+      "repo": "Stellar-Light/stellarlight",
+      "upstreamRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/494"
+      ],
+      "resolvingRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/494",
+        "https://github.com/Stellar-Light/stellarlight/pull/1298",
+        "https://github.com/Stellar-Light/stellarlight/pull/1299",
+        "https://github.com/Stellar-Light/stellarlight/pull/1301",
+        "https://github.com/Stellar-Light/stellarlight/pull/1302",
+        "https://github.com/Stellar-Light/stellarlight/pull/1305",
+        "https://github.com/Stellar-Light/stellarlight/pull/1306"
+      ],
+      "liveRecheck": "2026-09-08 Scout API 1.9.48: GET /api/projects/search?q=real%20world%20asset&limit=100 returned DTCC as Development with one announced H1 2027 product; every broad-search row joined to GET /api/rwa?limit=100 had products and a known network; the registry returned 97 verified assets from 52 issuers. Response SHA-256 values: fe2a0ffa3ab2e219a04e2c0460016ca4f445d02eef03acc4ab4ebb0657eda2ae and 3b36e92e1d8382c740466ae487c22bf46a5ab9fcd83ccaf6e115ab605d6a5f3f. The smaller Etherfuse completeness residual is sls-083.",
+      "reviewEvidence": "Claude Fable 5.1 high independently re-ran the original trigger and adjacent checks: .agents/rounds/2026-09-08-improvements-followups/sls023-review-fable.md",
+      "sourceCommit": "426afd3fc4df75cfb95f5be262d7ad360c0844c6",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/426afd3fc4df75cfb95f5be262d7ad360c0844c6/improvements/stellar-light-scout/sls-023-rwa-product-deployment-status.md"
     },
     {
       "id": "sls-025",
@@ -1454,6 +1986,32 @@
       "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/51847b418c377a15ff5fdf48527bc685e123bcfc/improvements/stellar-light-scout/sls-054-changelog-rename-identity-shape-mismatch.md"
     },
     {
+      "id": "sls-055",
+      "title": "Scout research does not reliably expose quotable canonical SDF organizational pages. Its broad cited-research lane routes…",
+      "service": "stellar-light-scout",
+      "discovered": "2026-07-13",
+      "resolved": "2026-08-19",
+      "repo": "Stellar-Light/stellarlight",
+      "upstreamRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/533",
+        "https://github.com/Stellar-Light/stellarlight/issues/742",
+        "https://github.com/Stellar-Light/stellarlight/pull/535",
+        "https://github.com/Stellar-Light/stellarlight/pull/544",
+        "https://github.com/Stellar-Light/stellarlight/pull/885"
+      ],
+      "resolvingRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/533",
+        "https://github.com/Stellar-Light/stellarlight/issues/742",
+        "https://github.com/Stellar-Light/stellarlight/pull/535",
+        "https://github.com/Stellar-Light/stellarlight/pull/544",
+        "https://github.com/Stellar-Light/stellarlight/pull/885"
+      ],
+      "liveRecheck": "2026-08-19: production Scout 1.8.73 top-ranks all five canonical SDF page families with current provenance.",
+      "reviewEvidence": "Independent Fable review: Solo process 4850, todo 1799, scratchpad 837 revision 19.",
+      "sourceCommit": "6aa70b7f50559cf3b083215aec9fec3017f5728c",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/6aa70b7f50559cf3b083215aec9fec3017f5728c/improvements/stellar-light-scout/sls-055-canonical-sdf-organizational-pages-research-coverage.md"
+    },
+    {
       "id": "sls-056",
       "title": "Scout project search applies canonical deduplication to the returned projects array after computing meta.counts. The payload can therefore…",
       "service": "stellar-light-scout",
@@ -1525,6 +2083,434 @@
       "reviewEvidence": "distinct reviewer: gpt-5.6-sol at xhigh effort independently repeated the original live trigger on 2026-07-30 (author was Solo process 4111); resolution comment posted at https://github.com/Stellar-Light/stellarlight/issues/746#issuecomment-5133759906",
       "sourceCommit": "b8acfff36ec6a4587b63457efba530350f22c3ee",
       "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/b8acfff36ec6a4587b63457efba530350f22c3ee/improvements/stellar-light-scout/sls-059-get-skill-routing-example-names-retired-soroban-slug.md"
+    },
+    {
+      "id": "sls-060",
+      "title": "A closed Scout RFP detail page retains an unconditional funding application call to action. The API marks Hummingbot Integration closed…",
+      "service": "stellar-light-scout",
+      "discovered": "2026-08-04",
+      "resolved": "2026-08-11",
+      "repo": "Stellar-Light/stellarlight",
+      "upstreamRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/766"
+      ],
+      "resolvingRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/766"
+      ],
+      "liveRecheck": "2026-08-11 Hummingbot page has no Apply CTA and renders Closed — past round plus This brief is closed; adjacent closed pages are fixed while open layerzero-dvn retains its CTA",
+      "reviewEvidence": "Independent Fable reviewer, Solo process 4500 / todo 1451, repeated the live trigger, adjacent-page checks, upstream state, and repository reference scan",
+      "sourceCommit": "dbb3eee51e96515d6dd4d118e87adbf7246a712b",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/dbb3eee51e96515d6dd4d118e87adbf7246a712b/improvements/stellar-light-scout/sls-060-closed-rfp-detail-keeps-apply-cta.md"
+    },
+    {
+      "id": "sls-061",
+      "title": "Some currently awarded Scout projects expose non-empty scfAwardedRounds and an aggregate, but leave scfRoundAwards empty even though the…",
+      "service": "stellar-light-scout",
+      "discovered": "2026-08-05",
+      "resolved": "2026-08-11",
+      "repo": "Stellar-Light/stellarlight",
+      "upstreamRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/767"
+      ],
+      "resolvingRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/767"
+      ],
+      "liveRecheck": "2026-08-11 production API 1.8.41 returns populated scfRoundAwards for all seven original rows and every recorded award round; residual rows are separated into reviewed successor issue 806",
+      "reviewEvidence": "Independent Fable reviewer, Solo process 4500 / todo 1451, verified the original trigger; separate Fable reviewer process 4502 / todo 1455 verified the 467-row successor evidence filed as issue 806",
+      "sourceCommit": "dbb3eee51e96515d6dd4d118e87adbf7246a712b",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/dbb3eee51e96515d6dd4d118e87adbf7246a712b/improvements/stellar-light-scout/sls-061-scf-round-awards-population-gap.md"
+    },
+    {
+      "id": "sls-062",
+      "title": "Scout's status endpoint reports nine SDF skills while its filterable skills directory and the canonical upstream roster each expose seven.…",
+      "service": "stellar-light-scout",
+      "discovered": "2026-08-06",
+      "resolved": "2026-08-11",
+      "repo": "Stellar-Light/stellarlight",
+      "upstreamRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/768"
+      ],
+      "resolvingRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/768"
+      ],
+      "liveRecheck": "2026-08-11 /api/status sdfSkills.count=8; /api/skills?source=sdf returns 8 rows and meta.counts.bySource.sdf=8; the canonical sitemap lists the same 8 skills",
+      "reviewEvidence": "Independent Fable reviewer, Solo process 4500 / todo 1451, repeated the three-surface trigger, upstream state, and repository reference scan",
+      "sourceCommit": "dbb3eee51e96515d6dd4d118e87adbf7246a712b",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/dbb3eee51e96515d6dd4d118e87adbf7246a712b/improvements/stellar-light-scout/sls-062-status-sdf-skill-count-mismatch.md"
+    },
+    {
+      "id": "sls-063",
+      "title": "The Scout project search returns 26 awarded projects with known award rounds and an empty scfRoundAwards array. Seventeen rows have an…",
+      "service": "stellar-light-scout",
+      "discovered": "2026-08-11",
+      "resolved": "2026-08-19",
+      "repo": "Stellar-Light/stellarlight",
+      "upstreamRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/806",
+        "https://github.com/Stellar-Light/stellarlight/pull/811"
+      ],
+      "resolvingRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/806",
+        "https://github.com/Stellar-Light/stellarlight/pull/811"
+      ],
+      "liveRecheck": "2026-08-19: production Scout 1.8.73 returns exact round and budget records for all 17 verified rows.",
+      "reviewEvidence": "Independent Fable review: Solo process 4850, todo 1799, scratchpad 837 revision 19.",
+      "sourceCommit": "6aa70b7f50559cf3b083215aec9fec3017f5728c",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/6aa70b7f50559cf3b083215aec9fec3017f5728c/improvements/stellar-light-scout/sls-063-scf-round-awards-exact-submission-residuals.md"
+    },
+    {
+      "id": "sls-064",
+      "title": "Audit rows carry no relation metadata, so multiple reports for one protocol and auditor cannot be told apart",
+      "service": "stellar-light-scout",
+      "discovered": "2026-08-14",
+      "resolved": "2026-08-19",
+      "repo": "Stellar-Light/stellarlight",
+      "upstreamRefs": [],
+      "resolvingRefs": [],
+      "liveRecheck": "2026-08-19: every repeated protocol and auditor group now carries an engagementId. Report version, engagement dates, and findings extraction metadata are populated where known. Residual Veridise supersession and exact identifier miss behavior moved to sls-070 and sls-071.",
+      "reviewEvidence": "Grok 4.6 process 4832, Solo todo 1769 comment 4641; root reproduced the live list and exact identifier calls. The final independent spec review required separate successor findings.",
+      "sourceCommit": "9e277702fd5f70a18cdc7c4d5f9bda0127461644",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/9e277702fd5f70a18cdc7c4d5f9bda0127461644/improvements/stellar-light-scout/sls-064-audit-report-version-supersession.md"
+    },
+    {
+      "id": "sls-065",
+      "title": "The OpenAPI contract for GET /api/hackathons/builds advertises three code-derived filters: capability, domain, and dependsOn. The catalog…",
+      "service": "stellar-light-scout",
+      "discovered": "2026-08-18",
+      "resolved": "2026-08-19",
+      "repo": "Stellar-Light/stellarlight",
+      "upstreamRefs": [],
+      "resolvingRefs": [],
+      "liveRecheck": "2026-08-19: Scout OpenAPI 1.8.73 removed capability, domain, and dependsOn from GET /api/hackathons/builds; live calls reject those unadvertised parameters.",
+      "reviewEvidence": "Grok 4.6 process 4832, Solo todo 1769 comment 4641; root reproduced OpenAPI 1.8.73 and the live endpoint behavior.",
+      "sourceCommit": "c05f4b1c47b81d3739c38ab4895b268907f57053",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/c05f4b1c47b81d3739c38ab4895b268907f57053/improvements/stellar-light-scout/sls-065-hackathon-builds-phantom-code-filters.md"
+    },
+    {
+      "id": "sls-066",
+      "title": "GET /api/stablecoins serves a bounded tracked inventory. Its 2026-08-18 snapshot omitted Circle USDC, although Circle still listed USDC on…",
+      "service": "stellar-light-scout",
+      "discovered": "2026-08-18",
+      "resolved": "2026-08-19",
+      "repo": "Stellar-Light/stellarlight",
+      "upstreamRefs": [],
+      "resolvingRefs": [],
+      "liveRecheck": "2026-08-19: live Scout stablecoins includes Circle USDC and populated Circle EURC metrics with curated-registry coverage; Circle and Horizon confirm the USDC issuer.",
+      "reviewEvidence": "Grok 4.6 process 4832, Solo todo 1769 comment 4641; root reproduced the live registry and independently checked Circle and Horizon.",
+      "sourceCommit": "c05f4b1c47b81d3739c38ab4895b268907f57053",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/c05f4b1c47b81d3739c38ab4895b268907f57053/improvements/stellar-light-scout/sls-066-stablecoin-inventory-omits-usdc.md"
+    },
+    {
+      "id": "sls-067",
+      "title": "RFP contract overstates current fundability and omits live round-state fields",
+      "service": "stellar-light-scout",
+      "discovered": "2026-08-18",
+      "resolved": "2026-08-19",
+      "repo": "Stellar-Light/stellarlight",
+      "upstreamRefs": [],
+      "resolvingRefs": [],
+      "liveRecheck": "2026-08-19: Scout 1.8.73 separates open briefs from submission eligibility. The response and official awards page agree on Panel Review. Current phase and rounds-in-progress fields are declared. The remaining source-field schema gap moved to sls-072.",
+      "reviewEvidence": "Grok 4.6 process 4832, Solo todo 1769 comment 4641; root reproduced the response, OpenAPI schema, and official round state. The final independent spec review required a successor finding.",
+      "sourceCommit": "53f2d23ccae57bb26b03d93ce3b809c75ecad95b",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/53f2d23ccae57bb26b03d93ce3b809c75ecad95b/improvements/stellar-light-scout/sls-067-rfp-fundability-and-round-state-contract.md"
+    },
+    {
+      "id": "sls-068",
+      "title": "Scout returns three Fluxity repositories with a Wagent project link. The affected rows are luanlabs/fluxity.finance,…",
+      "service": "stellar-light-scout",
+      "discovered": "2026-08-19",
+      "resolved": "2026-08-25",
+      "repo": "Stellar-Light/stellarlight",
+      "upstreamRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/972"
+      ],
+      "resolvingRefs": [
+        "https://github.com/Stellar-Light/stellarlight/pull/981",
+        "https://github.com/Stellar-Light/stellarlight/pull/982"
+      ],
+      "liveRecheck": "2026-08-25 live repository checks returned fluxity for all four Fluxity repositories.",
+      "reviewEvidence": "An independent Herdr Opus high review repeated the four repository checks.",
+      "sourceCommit": "74e1e38ac28d34f8ab49c7b5ca530e4c8b8c1729",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/74e1e38ac28d34f8ab49c7b5ca530e4c8b8c1729/improvements/stellar-light-scout/sls-068-fluxity-repositories-linked-to-wagent.md"
+    },
+    {
+      "id": "sls-069",
+      "title": "Scout OpenAPI includes remediation history inside seven response-schema descriptions. Five descriptions name sls-066 or sls-067. Two more…",
+      "service": "stellar-light-scout",
+      "discovered": "2026-08-19",
+      "resolved": "2026-08-25",
+      "repo": "Stellar-Light/stellarlight",
+      "upstreamRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/973"
+      ],
+      "resolvingRefs": [
+        "https://github.com/Stellar-Light/stellarlight/pull/980"
+      ],
+      "liveRecheck": "2026-08-25 live sweeps found zero descriptions containing Raven finding IDs or remediation-history phrases.",
+      "reviewEvidence": "An independent Herdr Opus high review repeated the description sweeps.",
+      "sourceCommit": "74e1e38ac28d34f8ab49c7b5ca530e4c8b8c1729",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/74e1e38ac28d34f8ab49c7b5ca530e4c8b8c1729/improvements/stellar-light-scout/sls-069-model-facing-schema-remediation-history.md"
+    },
+    {
+      "id": "sls-070",
+      "title": "Scout now assigns an engagementId to every repeated protocol and auditor group. This resolves the broad relation-metadata defect in sls-064",
+      "service": "stellar-light-scout",
+      "discovered": "2026-08-19",
+      "resolved": "2026-08-25",
+      "repo": "Stellar-Light/stellarlight",
+      "upstreamRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/974"
+      ],
+      "resolvingRefs": [
+        "https://github.com/Stellar-Light/stellarlight/pull/983"
+      ],
+      "liveRecheck": "2026-08-25 live report data linked report 28 to report 42 as the V2.1 successor.",
+      "reviewEvidence": "Two independent Herdr reviewers checked the live relation and the auditor-owned reports.",
+      "sourceCommit": "74e1e38ac28d34f8ab49c7b5ca530e4c8b8c1729",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/74e1e38ac28d34f8ab49c7b5ca530e4c8b8c1729/improvements/stellar-light-scout/sls-070-veridise-audit-report-supersession.md"
+    },
+    {
+      "id": "sls-071",
+      "title": "An absent exact identifier previously fell through to section-classification or other semantic neighbours without an explicit exact-miss…",
+      "service": "stellar-light-scout",
+      "discovered": "2026-08-19",
+      "resolved": "2026-08-25",
+      "repo": "Stellar-Light/stellarlight",
+      "upstreamRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/975"
+      ],
+      "resolvingRefs": [
+        "https://github.com/Stellar-Light/stellarlight/pull/979"
+      ],
+      "liveRecheck": "2026-08-25 live checks returned exactMiss for absent V-SOR-APP-VUL-999 and no exactMiss for present V-SOR-VUL-002.",
+      "reviewEvidence": "Independent Herdr reviewers repeated both controls and separated the appendix index defect into sls-074.",
+      "sourceCommit": "74e1e38ac28d34f8ab49c7b5ca530e4c8b8c1729",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/74e1e38ac28d34f8ab49c7b5ca530e4c8b8c1729/improvements/stellar-light-scout/sls-071-exact-audit-identifier-miss.md"
+    },
+    {
+      "id": "sls-072",
+      "title": "Scout 1.8.73 resolves the fundability and stale-phase defects from sls-067. The response and the official awards page agree on the current…",
+      "service": "stellar-light-scout",
+      "discovered": "2026-08-19",
+      "resolved": "2026-08-25",
+      "repo": "Stellar-Light/stellarlight",
+      "upstreamRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/976"
+      ],
+      "resolvingRefs": [
+        "https://github.com/Stellar-Light/stellarlight/pull/979"
+      ],
+      "liveRecheck": "2026-08-25 live OpenAPI and response checks agreed on the scfRound.source value.",
+      "reviewEvidence": "An independent Herdr Opus high review compared the schema with the live value.",
+      "sourceCommit": "74e1e38ac28d34f8ab49c7b5ca530e4c8b8c1729",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/74e1e38ac28d34f8ab49c7b5ca530e4c8b8c1729/improvements/stellar-light-scout/sls-072-rfp-round-source-openapi-schema.md"
+    },
+    {
+      "id": "sls-073",
+      "title": "The Stellar Light vet-idea endpoint returns an empty report.competitors.projects array for records that the directory does hold",
+      "service": "stellar-light-scout",
+      "discovered": "2026-08-21",
+      "resolved": "2026-09-03",
+      "repo": "Stellar-Light/stellarlight",
+      "upstreamRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/1025"
+      ],
+      "resolvingRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/1025"
+      ],
+      "liveRecheck": "2026-09-03 live GET /api/vet-idea?q=perpetuals%20%2F%20derivatives%20trading%20protocol%20on%20Stellar returned vertical=null, matchMode=scored, and project competitors noether, stellars-finance, sushi, turbolong, vanna-finance, zenex, soroswap, and lobstr; the limit=6 directory result contained the same first six candidates.",
+      "reviewEvidence": "Independent Terra review read issue #1025, its maintainer resolution comment, merged PRs #1026-#1029, and repeated the original live trigger plus an adjacent wallet trigger.",
+      "sourceCommit": "884c0e38c57c9e03b36751e105048352b896978d",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/884c0e38c57c9e03b36751e105048352b896978d/improvements/stellar-light-scout/sls-073-perps-vetidea-project-consistency.md"
+    },
+    {
+      "id": "sls-074",
+      "title": "Scout reports V-SOR-APP-VUL-003 as an exact miss. The Veridise V2.1 report contains that exact identifier in Appendix A.2.2 for Denial of…",
+      "service": "stellar-light-scout",
+      "discovered": "2026-08-25",
+      "resolved": "2026-08-28",
+      "repo": "Stellar-Light/stellarlight",
+      "upstreamRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/1031"
+      ],
+      "resolvingRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/1031"
+      ],
+      "liveRecheck": "2026-08-28T13:16:59Z V-SOR-APP-VUL-003 returns Veridise row with no exactMiss; V-SOR-APP-VUL-999 control still returns exactMiss",
+      "reviewEvidence": "Lane C distinct read-only reviewer 2026-08-28 re-ran trigger/control, verified b170d0d deployed, and found issue 1031 still open resolution posted and read back 2026-08-28: https://github.com/Stellar-Light/stellarlight/issues/1031#issuecomment-5455030587",
+      "sourceCommit": "e8dbf9972068b2affa65bdeef9fc195ab702a2b9",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/e8dbf9972068b2affa65bdeef9fc195ab702a2b9/improvements/stellar-light-scout/sls-074-appendix-audit-identifiers-exact-miss.md"
+    },
+    {
+      "id": "sls-075",
+      "title": "Scout OpenAPI 1.8.87 adds GET /api/projects/resolve, but its core nested response objects are opaque. subject, current, and evidence…",
+      "service": "stellar-light-scout",
+      "discovered": "2026-08-25",
+      "resolved": "2026-08-28",
+      "repo": "Stellar-Light/stellarlight",
+      "upstreamRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/1030"
+      ],
+      "resolvingRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/1030"
+      ],
+      "liveRecheck": "2026-08-28T13:17:15Z/13:17:35Z live resolver response and OpenAPI 1.9.1 expose typed subject/current/evidence/meta fields",
+      "reviewEvidence": "Lane C distinct read-only reviewer 2026-08-28 re-ran response/schema checks and verified issue 1030 closed-completed and dd2dfdb deployed resolution posted and read back 2026-08-28: https://github.com/Stellar-Light/stellarlight/issues/1030#issuecomment-5455030797",
+      "sourceCommit": "e8dbf9972068b2affa65bdeef9fc195ab702a2b9",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/e8dbf9972068b2affa65bdeef9fc195ab702a2b9/improvements/stellar-light-scout/sls-075-project-resolver-response-contract.md"
+    },
+    {
+      "id": "sls-076",
+      "title": "scout.searchProjects({ q: \"Strupey\" }) returns Stroopy.AI as a strict keyword match. The response says that all keywords matched",
+      "service": "stellar-light-scout",
+      "discovered": "2026-08-27",
+      "resolved": "2026-08-28",
+      "repo": "Stellar-Light/stellarlight",
+      "upstreamRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/1055",
+        "https://github.com/Stellar-Light/stellarlight/pull/1056"
+      ],
+      "resolvingRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/1055",
+        "https://github.com/Stellar-Light/stellarlight/pull/1056"
+      ],
+      "liveRecheck": "2026-08-28T13:17:22Z Strupey returns corrected with identity warning; Stroopy control returns strict",
+      "reviewEvidence": "Lane C distinct read-only reviewer 2026-08-28 re-ran trigger/control and verified issue 1055 closed-completed and PR 1056 merged 2a85c1b resolution posted and read back 2026-08-28: https://github.com/Stellar-Light/stellarlight/issues/1055#issuecomment-5455031036",
+      "sourceCommit": "e8dbf9972068b2affa65bdeef9fc195ab702a2b9",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/e8dbf9972068b2affa65bdeef9fc195ab702a2b9/improvements/stellar-light-scout/sls-076-project-search-strict-spelling-neighbor.md"
+    },
+    {
+      "id": "sls-077",
+      "title": "Scout OpenAPI 1.9.1 omits issued from the 200 response claim.type enum. The same endpoint accepts issued in the type query parameter. The…",
+      "service": "stellar-light-scout",
+      "discovered": "2026-08-27",
+      "resolved": "2026-09-03",
+      "repo": "Stellar-Light/stellarlight",
+      "upstreamRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/1086"
+      ],
+      "resolvingRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/1086"
+      ],
+      "liveRecheck": "2026-09-03 live GET /api/verify?type=issued&subject=EURC&auditor=Circle returned claim.type=issued and verdict=supported; live OpenAPI 1.9.23 lists issued in both request and 200-response claim.type enums.",
+      "reviewEvidence": "Independent Terra review read issue #1086 and its maintainer resolution comment, then repeated the original issued EURC request and checked both live OpenAPI enums.",
+      "sourceCommit": "884c0e38c57c9e03b36751e105048352b896978d",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/884c0e38c57c9e03b36751e105048352b896978d/improvements/stellar-light-scout/sls-077-verify-issued-response-enum.md"
+    },
+    {
+      "id": "sls-078",
+      "title": "Scout OpenAPI 1.9.1 gives getQualityReport broad x-routing keywords. The live list includes trust, confidence in the data, coverage,…",
+      "service": "stellar-light-scout",
+      "discovered": "2026-08-27",
+      "resolved": "2026-09-03",
+      "repo": "Stellar-Light/stellarlight",
+      "upstreamRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/1087"
+      ],
+      "resolvingRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/1087"
+      ],
+      "liveRecheck": "2026-09-03 live OpenAPI 1.9.23 GET /api/quality x-routing contains only eight Scout/Stellar Light source-calibration phrases; its notFor section excludes generic technical, protocol, SDK, and operational questions.",
+      "reviewEvidence": "Independent Terra review read issue #1087 and its maintainer resolution comment, checked the live OpenAPI route contract, and separated the remaining 90-capture Raven schema-keyword result from the upstream fix.",
+      "sourceCommit": "884c0e38c57c9e03b36751e105048352b896978d",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/884c0e38c57c9e03b36751e105048352b896978d/improvements/stellar-light-scout/sls-078-quality-report-routing-capture.md"
+    },
+    {
+      "id": "sls-079",
+      "title": "The status field returned by scout.searchProjects carries one label for two different facts. Live can mean \"listed and active in the…",
+      "service": "stellar-light-scout",
+      "discovered": "2026-08-28",
+      "resolved": "2026-09-03",
+      "repo": "Stellar-Light/stellarlight",
+      "upstreamRefs": [],
+      "resolvingRefs": [],
+      "liveRecheck": "2026-09-03 live strict Stellars Finance search returned status=Pre-Release, statusBasis=human-verified, deployment.network=testnet, and the operator-bundle source URL; live OpenAPI states status is never deployment proof.",
+      "reviewEvidence": "Independent Terra review repeated the original named-project trigger and checked the live Project schema; the Live/mainnet conflation no longer reproduces.",
+      "sourceCommit": "884c0e38c57c9e03b36751e105048352b896978d",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/884c0e38c57c9e03b36751e105048352b896978d/improvements/stellar-light-scout/sls-079-project-status-deployment-conflation.md"
+    },
+    {
+      "id": "sls-080",
+      "title": "Date DeepWiki answers separately from scanned repository content",
+      "service": "stellar-light-scout",
+      "discovered": "2026-08-30",
+      "resolved": "2026-09-01",
+      "repo": "Stellar-Light/stellarlight",
+      "upstreamRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/1134",
+        "https://github.com/Stellar-Light/stellarlight/pull/1174"
+      ],
+      "resolvingRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/1134",
+        "https://github.com/Stellar-Light/stellarlight/pull/1136",
+        "https://github.com/Stellar-Light/stellarlight/pull/1163",
+        "https://github.com/Stellar-Light/stellarlight/pull/1168",
+        "https://github.com/Stellar-Light/stellarlight/pull/1174"
+      ],
+      "liveRecheck": "2026-09-01 POST http://localhost:8787/mcp execute scout.explainRepo repo=stellar/stellar-horizon q='Which Horizon ingestion constant pins the highest supported protocol version, and what is its value?' returned MaxSupportedProtocolVersion = 28, answerSource=knowledge-note, answerAsOf=2026-09-01T00:00:00Z, generatedAt=2026-09-01T20:08:07.092Z, scannedRef=82660510ecda7fd365a14d08badb9d85fa22bc32; source at that ref defines MaxSupportedProtocolVersion uint32 = 28",
+      "reviewEvidence": "Independent Grok 4.6 deletion review 2026-09-01: .agents/rounds/2026-09-01-free-improvements-maintenance/grok-sls080-review.md; live Raven execute plus source read at scannedRef; fixed-state blob a8dafc22962088295bf138ac204e087b62b3fb00 is public in commit 9074093d4686cb34a05371b5a21a4b6c83aa80f2; posted and read back resolution comment https://github.com/Stellar-Light/stellarlight/issues/1134#issuecomment-5499763507 on issue 1134 only; adjacent defects remain out of scope for sls-080",
+      "sourceCommit": "9074093d4686cb34a05371b5a21a4b6c83aa80f2",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/9074093d4686cb34a05371b5a21a4b6c83aa80f2/improvements/stellar-light-scout/sls-080-explain-repo-deepwiki-answer-freshness.md"
+    },
+    {
+      "id": "sls-082",
+      "title": "The GET /api/rwa request and response schemas omit one accepted state value. The parameter description lists issued-single-holder. The…",
+      "service": "stellar-light-scout",
+      "discovered": "2026-09-08",
+      "resolved": "2026-09-09",
+      "repo": "Stellar-Light/stellarlight",
+      "upstreamRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/1529",
+        "https://github.com/Stellar-Light/stellarlight/pull/1532",
+        "https://github.com/stellar-experimental/stellar-raven/issues/144"
+      ],
+      "resolvingRefs": [
+        "https://github.com/Stellar-Light/stellarlight/pull/1532"
+      ],
+      "liveRecheck": "2026-09-09 root and independent Terra checks of deployed Scout 1.9.49, with reviewer captures 18:40:59Z through 18:42:29Z. Both RWA state enums match all four handler values. The valid filter returned 34 matching rows; an invalid state returned 400.",
+      "reviewEvidence": "Terra high independently repeated original direct upstream triggers, issuer TOML and Horizon checks, adjacent residuals, and persistent references; .agents/rounds/2026-09-09-scout-retirement-live-terra.md. Upstream retirement is separate from rejected Raven catalog adoption.",
+      "sourceCommit": "1de777ed60471ec134a13c8c4d66e332c7709940",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/1de777ed60471ec134a13c8c4d66e332c7709940/improvements/stellar-light-scout/sls-082-rwa-state-enums.md"
+    },
+    {
+      "id": "sls-083",
+      "title": "Scout's RWA registry and the Etherfuse project row expose five Etherfuse assets. The current issuer stellar.toml declares nine assets for…",
+      "service": "stellar-light-scout",
+      "discovered": "2026-09-08",
+      "resolved": "2026-09-09",
+      "repo": "Stellar-Light/stellarlight",
+      "upstreamRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/1531",
+        "https://github.com/Stellar-Light/stellarlight/pull/1532",
+        "https://github.com/stellar-experimental/stellar-raven/issues/146"
+      ],
+      "resolvingRefs": [
+        "https://github.com/Stellar-Light/stellarlight/pull/1532"
+      ],
+      "liveRecheck": "2026-09-09 root and independent Terra checks of deployed Scout 1.9.49, with reviewer captures 18:40:59Z through 18:42:29Z. The registry matches all nine issuer TOML code-and-issuer pairs. Project coverage states 9 declared, 9 tracked, 8 served, complete=true. CETESZ has zero supply and is not a served product. Circle reports incomplete coverage.",
+      "reviewEvidence": "Terra high independently repeated original direct upstream triggers, issuer TOML and Horizon checks, adjacent residuals, and persistent references; .agents/rounds/2026-09-09-scout-retirement-live-terra.md. Upstream retirement is separate from rejected Raven catalog adoption.",
+      "sourceCommit": "1de777ed60471ec134a13c8c4d66e332c7709940",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/1de777ed60471ec134a13c8c4d66e332c7709940/improvements/stellar-light-scout/sls-083-etherfuse-rwa-registry-coverage.md"
+    },
+    {
+      "id": "sls-084",
+      "title": "The project response returns a statusBasis value that the OpenAPI enum omits. The original 2026-09-08 population scan found nine rows with…",
+      "service": "stellar-light-scout",
+      "discovered": "2026-09-08",
+      "resolved": "2026-09-09",
+      "repo": "Stellar-Light/stellarlight",
+      "upstreamRefs": [
+        "https://github.com/Stellar-Light/stellarlight/issues/1530",
+        "https://github.com/Stellar-Light/stellarlight/pull/1532",
+        "https://github.com/stellar-experimental/stellar-raven/issues/145"
+      ],
+      "resolvingRefs": [
+        "https://github.com/Stellar-Light/stellarlight/pull/1532"
+      ],
+      "liveRecheck": "2026-09-09 root and independent Terra checks of deployed Scout 1.9.49, with reviewer captures 18:40:59Z through 18:42:29Z. Project.statusBasis includes package-release and its publication-only definition. All nine original named project rows return that documented value.",
+      "reviewEvidence": "Terra high independently repeated original direct upstream triggers, issuer TOML and Horizon checks, adjacent residuals, and persistent references; .agents/rounds/2026-09-09-scout-retirement-live-terra.md. Upstream retirement is separate from rejected Raven catalog adoption.",
+      "sourceCommit": "1de777ed60471ec134a13c8c4d66e332c7709940",
+      "sourceUrl": "https://github.com/stellar-experimental/stellar-raven/blob/1de777ed60471ec134a13c8c4d66e332c7709940/improvements/stellar-light-scout/sls-084-status-basis-openapi-enum.md"
     }
   ]
 }

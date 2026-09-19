@@ -17,14 +17,20 @@
  * (catalogSchema) in test/catalog.test.ts; this script stays plain JS so it
  * runs with `node` alone.
  */
-import { readFileSync, mkdirSync } from "node:fs";
-import { join, dirname, resolve } from "node:path";
+import { readFileSync, mkdirSync, statSync } from "node:fs";
+import { join, dirname, resolve, relative, isAbsolute } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 // Loaded via native type stripping (Node >= 23.6) — the same way
 // eval/run-routing.mjs imports src/catalog/search.ts. Still zero deps.
 import { extractKeywords } from "../src/catalog/extract-keywords.ts";
+import {
+  extractRoutingExclusions,
+  extractRoutingPhrases
+} from "../src/catalog/extract-routing-phrases.ts";
 import { tokenize } from "../src/catalog/vendor/search-scoring.ts";
+import { isGenericAliasTrigger } from "../src/catalog/known-aliases.ts";
 // The runnable-skill allowlist-as-data (research/skill-run-design.md §2/§5):
 // the SAME registry the runtime dispatch and the super-spec emitter consume,
 // so the exposed runnable surface cannot drift between emitters.
@@ -32,7 +38,9 @@ import { RUNNERS } from "../src/skills/runners/index.ts";
 import { writeFileAtomic } from "./lib/shared.mjs";
 import { loadSkillTexts, skillFileUrl } from "./lib/skill-mirror.mjs";
 import { RETRIEVAL_PROFILES } from "./catalog-data/retrieval-profiles.mjs";
-import { lumenloopOutputSchema } from "../src/adapters/lumenloop-shape.ts";
+import { KNOWN_ALIAS_PACKS } from "./catalog-data/known-aliases.mjs";
+import { applyModelContractCorrection } from "./catalog-data/model-contract-corrections.mjs";
+import { lumenloopInputSchema, lumenloopOutputSchema } from "../src/adapters/lumenloop-shape.ts";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT_PATH = join(ROOT, "catalog", "manifest.json");
@@ -40,7 +48,7 @@ const OUT_PATH = join(ROOT, "catalog", "manifest.json");
 const readJson = (p) => JSON.parse(readFileSync(join(ROOT, p), "utf8"));
 
 // ---------------------------------------------------------------------------
-// Operation keywords (todo 824 items 4+5, M3/M4): descriptions are prose, so
+// Operation keywords: descriptions are prose, so
 // schema-level vocabulary — property names and enum values — plus the docs
 // page-title snapshot are lexically invisible to the search scorer. Distill
 // them into the same low-weight `keywords` field skill sections carry
@@ -161,7 +169,129 @@ function attachRoutingKeywords(entries, bodiesById) {
 }
 
 /**
- * Per-op page-title bodies for stellarDocs (todo 824 item 5): titles from
+ * Preserve each positive x-routing source string without changing scoring.
+ * A multiword keywords item remains one phrase. Separate items never join.
+ */
+function attachRoutingPhrases(entries, sourcesById) {
+  return entries.map((entry) => {
+    const source = sourcesById.get(entry.id);
+    if (!source) return entry;
+    const routingPhrases = extractRoutingPhrases(source);
+    const routingExclusions = extractRoutingExclusions(source.notFor ?? []);
+    return routingPhrases.length > 0 || routingExclusions.length > 0
+      ? {
+          ...entry,
+          ...(routingPhrases.length > 0 ? { routingPhrases } : {}),
+          ...(routingExclusions.length > 0 ? { routingExclusions } : {})
+        }
+      : entry;
+  });
+}
+
+/**
+ * Attach receipt-backed entity aliases to exact catalog entries. The search
+ * layer scores this field with the high-weight name field. Fail loudly when
+ * an alias target disappears, or when two packs repeat an alias on one entry.
+ */
+export function attachKnownAliases(entries, packs = KNOWN_ALIAS_PACKS) {
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  const aliasesById = new Map();
+  const triggersById = new Map();
+
+  for (const pack of packs) {
+    if (!Array.isArray(pack.provenance) || pack.provenance.length === 0) {
+      throw new Error("known alias pack has no receipt provenance");
+    }
+    for (const receipt of pack.provenance) validateAliasReceipt(receipt);
+    if (!Array.isArray(pack.aliases) || pack.aliases.length < 2) {
+      throw new Error("known alias pack must contain at least two entity identities");
+    }
+    if (!Array.isArray(pack.triggers) || pack.triggers.length === 0) {
+      throw new Error("known alias pack must contain at least one distinctive trigger");
+    }
+    for (const trigger of pack.triggers) {
+      if (typeof trigger !== "string" || !trigger.trim()) {
+        throw new Error("known alias pack contains an empty trigger");
+      }
+      if (isGenericAliasTrigger(trigger)) {
+        throw new Error(
+          `known alias trigger ${JSON.stringify(trigger)} is generic or a stopword`
+        );
+      }
+    }
+    if (!Array.isArray(pack.entryIds) || pack.entryIds.length === 0) {
+      throw new Error("known alias pack must target at least one catalog entry");
+    }
+    for (const id of pack.entryIds ?? []) {
+      if (!byId.has(id)) {
+        throw new Error(`known alias pack references non-exposed catalog entry "${id}"`);
+      }
+      const aliases = aliasesById.get(id) ?? new Set();
+      for (const alias of pack.aliases) {
+        if (aliases.has(alias)) {
+          throw new Error(`known alias pack repeats "${alias}" on catalog entry "${id}"`);
+        }
+        aliases.add(alias);
+      }
+      aliasesById.set(id, aliases);
+      const triggers = triggersById.get(id) ?? new Set();
+      for (const trigger of pack.triggers) triggers.add(trigger);
+      triggersById.set(id, triggers);
+    }
+  }
+
+  return entries.map((entry) => {
+    const aliases = aliasesById.get(entry.id);
+    return aliases
+      ? { ...entry, knownAliases: [...aliases], knownAliasTriggers: [...triggersById.get(entry.id)] }
+      : entry;
+  });
+}
+
+function validateAliasReceipt(receipt) {
+  if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) {
+    throw new Error("known alias provenance must contain receipt objects");
+  }
+  const receiptPath = receipt.path;
+  if (typeof receiptPath !== "string" || !receiptPath.trim() || isAbsolute(receiptPath)) {
+    throw new Error("known alias provenance path must be repository-relative");
+  }
+  const absolutePath = resolve(ROOT, receiptPath);
+  const fromRoot = relative(ROOT, absolutePath);
+  if (!fromRoot || fromRoot.startsWith("..") || isAbsolute(fromRoot)) {
+    throw new Error(
+      `known alias provenance path escapes the repository: ${JSON.stringify(receiptPath)}`
+    );
+  }
+  try {
+    if (!statSync(absolutePath).isFile()) throw new Error("not a file");
+  } catch {
+    throw new Error(`known alias provenance file does not exist: ${JSON.stringify(receiptPath)}`);
+  }
+  try {
+    execFileSync("git", ["ls-files", "--error-unmatch", "--", receiptPath], {
+      cwd: ROOT,
+      stdio: "ignore"
+    });
+  } catch {
+    throw new Error(`known alias provenance file is not checked in: ${JSON.stringify(receiptPath)}`);
+  }
+  if (receipt.sha256 === undefined) {
+    throw new Error(`known alias provenance requires SHA-256: ${JSON.stringify(receiptPath)}`);
+  }
+  if (typeof receipt.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(receipt.sha256)) {
+    throw new Error(
+      `known alias provenance has an invalid SHA-256: ${JSON.stringify(receiptPath)}`
+    );
+  }
+  const actual = createHash("sha256").update(readFileSync(absolutePath)).digest("hex");
+  if (actual !== receipt.sha256) {
+    throw new Error(`known alias provenance SHA-256 does not match: ${JSON.stringify(receiptPath)}`);
+  }
+}
+
+/**
+ * Per-operation page-title bodies for stellarDocs: titles from
  * inventory/stellar-docs-titles.json scoped by each op's clientFilter URL
  * prefixes. Whole-corpus ops (no prefix filter) get none — vocabulary shared
  * by the whole surface distinguishes nothing.
@@ -195,7 +325,7 @@ function stellarDocsTitleExtras(entries, titlesSnapshot) {
 // Drift guard: exclusions are exact-match data, so an upstream rename/removal
 // must break the build (stale exclusion = a write endpoint may have moved),
 // not silently stop matching.
-function assertScoutExclusionsResolve(openapi) {
+export function assertScoutExclusionsResolve(openapi) {
   const present = new Set();
   for (const [path, pathItem] of Object.entries(openapi.paths)) {
     for (const method of HTTP_METHODS) {
@@ -207,6 +337,13 @@ function assertScoutExclusionsResolve(openapi) {
     throw new Error(
       `EXCLUDED_SCOUT_OPS no longer present in the scout OpenAPI: ${stale.join(", ")}. ` +
         `Upstream renamed or removed them — reconcile the exclusion list in build-catalog.mjs.`
+    );
+  }
+  const newlyListed = [...SCOUT_PATHS_ABSENT_FROM_SPEC].filter((path) => path in openapi.paths);
+  if (newlyListed.length > 0) {
+    throw new Error(
+      `Previously unlisted Scout paths appeared in OpenAPI: ${newlyListed.join(", ")}. ` +
+        `Review their exposure and reconcile SCOUT_PATHS_ABSENT_FROM_SPEC.`
     );
   }
 }
@@ -303,16 +440,20 @@ import {
   LUMENLOOP_DESCRIPTION_NOTES,
   SCOUT_DESCRIPTION_NOTES,
   SCOUT_DESCRIPTION_SCRUBS,
+  assertSkillDescriptionOverrideIdsResolve,
   scoutRefRewrites,
   rewriteScoutRefs,
-  scrubScoutDescription
+  skillDescription,
+  scrubScoutDescription,
+  scrubNonExposedScoutSchemaRefs
 } from "./description-notes.mjs";
 import {
   EXCLUDED_LUMENLOOP_OPS,
   EXCLUDED_SCOUT_OPS,
+  SCOUT_PATHS_ABSENT_FROM_SPEC,
   RETIRED_ONBOARDING_SKILLS,
   lumenloopOpExcluded,
-  scrubRetiredSkillRefs
+  scrubNonExposedRefs
 } from "./exposure.mjs";
 import { assertNoNonExposedRefsInText } from "./emitted-text-guard.mjs";
 import { parseFrontmatter, plainText, slugify } from "./lib/skill-markdown.mjs";
@@ -390,21 +531,28 @@ function buildLumenloop(inv) {
       );
     }
     if (lumenloopOpExcluded(tool)) continue;
-    const descriptionParts = [tool.description];
+    const id = `lumenloop.${tool.name}`;
+    const contract = applyModelContractCorrection(id, {
+      description: tool.description,
+      returns: tool.returns,
+      inputSchema: lumenloopInputSchema(id, tool.input_schema ?? null),
+      outputSchema: lumenloopOutputSchema(id, tool.output_schema ?? null)
+    });
+    const descriptionParts = [contract.description];
     if (tool.when_to_use) descriptionParts.push(`When to use: ${tool.when_to_use}`);
-    if (tool.returns) descriptionParts.push(`Returns: ${tool.returns}`);
+    if (contract.returns) descriptionParts.push(`Returns: ${contract.returns}`);
     const note = LUMENLOOP_DESCRIPTION_NOTES[tool.name];
     if (note !== undefined) {
       descriptionParts.push(note);
       consumedNotes.add(tool.name);
     }
     entries.push({
-      id: `lumenloop.${tool.name}`,
+      id,
       service: "lumenloop",
       kind: "operation",
       description: descriptionParts.join("\n\n"),
-      inputSchema: tool.input_schema ?? null,
-      outputSchema: lumenloopOutputSchema(`lumenloop.${tool.name}`, tool.output_schema ?? null),
+      inputSchema: contract.inputSchema,
+      outputSchema: contract.outputSchema,
       transport: { type: "http", method: "POST", path: `/v1/tools/${tool.name}`, base: origin },
       provenance: {
         source: inv.source.tools,
@@ -480,11 +628,13 @@ function buildScout(inv) {
   // weighted fields, never concatenated into the description. Collected
   // here (purpose/useWhen/exampleQuestions/keywords) and attached as the
   // `routingKeywords` field via attachRoutingKeywords (scoring.ts lever 7).
-  // `notFor` is deliberately dropped — its clauses carry OTHER operations'
-  // vocabulary ("a funded project → searchProjects" on getBuilders), which
-  // as this op's keywords would recreate the cross-capture the upstream fix
-  // removed.
+  // Keep `notFor` outside positive routing vocabulary. Its left-hand clauses
+  // become separate negative evidence. Route labels after `->` stay excluded.
   const routingExtras = new Map();
+  // Phrase metadata preserves the same positive fields as source strings.
+  // Multiword keywords such as "top projects" are real published phrases.
+  // Separate keyword items never join. `notFor` never enters positive phrases.
+  const routingPhraseExtras = new Map();
   const openapi = inv.openapi;
   const base = openapi.servers?.[0]?.url ?? "https://stellarlight.xyz";
   const consumedNotes = new Set();
@@ -515,23 +665,42 @@ function buildScout(inv) {
       if (note !== undefined) consumedNotes.add(opId);
       const routing = op["x-routing"];
       if (routing && typeof routing === "object") {
+        const asStrings = (value) =>
+          Array.isArray(value)
+            ? value.filter((item) => typeof item === "string" && item.length > 0)
+            : [];
+        const source = {
+          purpose: typeof routing.purpose === "string" ? [routing.purpose] : [],
+          useWhen: asStrings(routing.useWhen),
+          exampleQuestions: asStrings(routing.exampleQuestions),
+          keywords: asStrings(routing.keywords),
+          notFor: asStrings(routing.notFor)
+        };
         const parts = [
-          routing.purpose,
-          ...(Array.isArray(routing.useWhen) ? routing.useWhen : []),
-          ...(Array.isArray(routing.exampleQuestions) ? routing.exampleQuestions : []),
-          ...(Array.isArray(routing.keywords) ? routing.keywords : [])
-        ].filter((v) => typeof v === "string" && v.length > 0);
-        if (parts.length > 0) routingExtras.set(`scout.${opId}`, [parts.join("\n")]);
+          ...source.purpose,
+          ...source.useWhen,
+          ...source.exampleQuestions,
+          ...source.keywords
+        ];
+        if (parts.length > 0) {
+          routingExtras.set(`scout.${opId}`, [parts.join("\n")]);
+          routingPhraseExtras.set(`scout.${opId}`, source);
+        }
       }
+      const id = `scout.${opId}`;
+      const contract = applyModelContractCorrection(id, {
+        inputSchema: scrubNonExposedScoutSchemaRefs(scoutInputSchema(op, pathItem, openapi)),
+        outputSchema: scrubNonExposedScoutSchemaRefs(scoutOutputSchema(op, openapi))
+      });
       entries.push({
-        id: `scout.${opId}`,
+        id,
         service: "scout",
         kind: "operation",
         description: [description || opId, note ? plainText(note) : undefined]
           .filter(Boolean)
           .join("\n\n"),
-        inputSchema: scoutInputSchema(op, pathItem, openapi),
-        outputSchema: scoutOutputSchema(op, openapi),
+        inputSchema: contract.inputSchema,
+        outputSchema: contract.outputSchema,
         transport: { type: "http", method: httpMethod, path, base },
         provenance: {
           source: `${base}/api/openapi.json`,
@@ -564,12 +733,12 @@ function buildScout(inv) {
       );
     }
   }
-  return { entries, routingExtras };
+  return { entries, routingExtras, routingPhraseExtras };
 }
 
 // ---------------------------------------------------------------------------
 // Stellar Docs (Algolia) — 12 authored operations from specs/stellar-docs.json
-// (Lane D, todo 796; mapping recipe: research/services/stellar-docs-spec-design.md §7)
+// Mapping recipe: research/services/stellar-docs-spec-design.md §7.
 // ---------------------------------------------------------------------------
 
 function buildStellarDocs(spec) {
@@ -580,9 +749,9 @@ function buildStellarDocs(spec) {
     kind: catalogHints.kind,
     description: op.returns ? `${op.description}\n\nReturns: ${op.returns}` : op.description,
     inputSchema: op.params, // spec params are already a JSON Schema object
-    outputSchema: null,
+    outputSchema: op.outputSchema ?? null,
     // Transport = shared backend block + this op's exact Algolia query mapping.
-    // Phase 3's adapter consumes `algolia` (paramMap/fixedParams/
+    // The adapter consumes `algolia` (paramMap/fixedParams/
     // conditionalParams/clientFilter/derivedQuery) as-is.
     transport: {
       type: "algolia",
@@ -600,7 +769,7 @@ function buildStellarDocs(spec) {
       source: catalogHints.provenanceSource,
       fetchedAt: spec.authoredAt,
       spec: "specs/stellar-docs.json",
-      note: "authored spec-as-data operation (Lane D todo 796), live-verified against the Algolia index — not a fetched descriptor"
+      note: "authored spec-as-data operation, live-verified against the Algolia index — not a fetched descriptor"
     }
   }));
 }
@@ -696,10 +865,10 @@ function buildSkills(manifest, texts, arm) {
         sha: file.sha,
         sha256: loadedOf(source.id, skill.name, file.path).sha256
       });
-      // Scrub retired-skill cross-references BEFORE deriving descriptions and
-      // headings — the same scrub src/skills/source.ts applies to every served
-      // body, so what search surfaces and what skill.read returns agree.
-      const raw = scrubRetiredSkillRefs(
+      // Scrub non-exposed references BEFORE deriving descriptions and
+      // headings. src/skills/source.ts applies the same scrub to every served
+      // body, so search and skill.read agree.
+      const raw = scrubNonExposedRefs(
         textOf(source.id, skill.name, "SKILL.md"),
         `${source.id}/${skill.name}/SKILL.md`
       );
@@ -711,7 +880,10 @@ function buildSkills(manifest, texts, arm) {
         ...skillEntryBase(source, syncedAt),
         id: skillId,
         kind: "skill",
-        description: attrs.description || firstParagraph(bodyLines, 0) || skill.name,
+        description: skillDescription(
+          skillId,
+          attrs.description || firstParagraph(bodyLines, 0) || skill.name
+        ),
         ...(BUILD_AUTHORITY_SKILL_ROLES[skillId]
           ? { buildAuthorityRoles: [...BUILD_AUTHORITY_SKILL_ROLES[skillId]] }
           : {}),
@@ -746,12 +918,8 @@ function buildSkills(manifest, texts, arm) {
           kind: "skill-section",
           description: heading,
           ...(keywords.length > 0 ? { keywords } : {}),
-          // Sections are exposed (exact-id skill.read, availableSections)
-          // but OUT of search since the 2026-07-13 skills-form A/B: 204
-          // section cards measurably crowded the 50 operations while adding
-          // nothing the whole-skill entry does not deliver (scratchpad 608
-          // P4: QA 41C/7W vs 39C/9W, stable wins 3-1, OpenZeppelin case
-          // correct 6/6 via whole-skill discovery alone).
+          // Sections remain exposed for exact-id reads and navigation, but
+          // ADR-0005 keeps them out of search.
           searchable: false,
           transport: { ...transportFor(skillFile), section: heading }
         });
@@ -760,7 +928,7 @@ function buildSkills(manifest, texts, arm) {
       // 3) each additional .md file treated like a section
       for (const file of skill.files ?? []) {
         if (file.path === "SKILL.md" || !file.path.endsWith(".md")) continue;
-        const fileRaw = scrubRetiredSkillRefs(
+        const fileRaw = scrubNonExposedRefs(
           textOf(source.id, skill.name, file.path),
           `${source.id}/${skill.name}/${file.path}`
         );
@@ -790,17 +958,12 @@ function buildSkills(manifest, texts, arm) {
 }
 
 // ---------------------------------------------------------------------------
-// Skills-form experiment arms (skills program, Solo scratchpad 608 — R2
-// design). One categorical treatment over the ASSEMBLED entries: which
+// Skills-form experiment arms from ADR-0005. One categorical treatment over
+// the assembled entries controls which
 // representation of the pinned skill store enters search. Everything else —
 // exposure, exact-id reads/runs, schemas, pins, scoring constants — is a
-// control. Arm B WON the 2026-07-13 A/B (P4 in the scratchpad) and is now
-// the DEFAULT build: buildSkills stamps sections searchable:false at
-// creation, so B is a no-op here. Arm A (sections back in search) is kept
-// buildable for future rounds; C (all skills out of search) is banked with
-// its +30/−1 offline evidence for a possible follow-up from the B baseline.
-// Arm D (parent keyword distillation) was eliminated offline in the same
-// round (scratchpad 608 P3) and is no longer buildable.
+// control. Arm B is the default build. Arm A restores section search for
+// replication, and arm C removes all skills from search.
 // ---------------------------------------------------------------------------
 
 const SKILLS_FORM_ARMS = ["A", "B", "C"];
@@ -919,10 +1082,10 @@ export function attachRetrievalProfiles(entries, profiles = RETRIEVAL_PROFILES) 
 // excluded scout endpoint by its raw REST spelling, or mention a retired
 // skill. This is the systemic backstop for the whole leak class — a scrub or
 // rewrite that goes stale fails the build here instead of shipping a pointer
-// to a capability consumers must never learn about. Runnable-skill entries
-// contribute their schema JSON too (design §5): schema `description` strings
-// are emitted text — a runner schema naming a non-exposed op would teach the
-// model exactly what ADR-0003 forbids. Exported for the guard tests.
+// to a capability consumers must never learn about. Every operation schema
+// and every runnable-skill schema contributes its JSON too: schema text ships
+// through signatures and describe/catalog views, so it must follow the same
+// exposure boundary as descriptions. Exported for the guard tests.
 //
 // The "any service.op token not in opIds" check needs the full assembled
 // manifest as an allowlist, so it stays here; the other three checks (raw
@@ -942,9 +1105,12 @@ export function assertNoNonExposedRefs(entries) {
       entry.description ?? "",
       ...(entry.keywords ?? []),
       ...(entry.routingKeywords ?? []),
-      // Runnable schemas ship to the model (signatures, describe, super
-      // spec) — their whole JSON is guarded text like any description.
-      ...(entry.runnable === true
+      ...(entry.routingPhrases ?? []).flatMap((phrase) => phrase.tokens),
+      ...(entry.knownAliases ?? []),
+      ...(entry.knownAliasTriggers ?? []),
+      // Operation and runnable-skill schemas ship to the model through
+      // signatures and describe/catalog views. Guard their whole JSON.
+      ...(entry.kind === "operation" || entry.runnable === true
         ? [JSON.stringify(entry.inputSchema), JSON.stringify(entry.outputSchema)]
         : [])
     ].join("\n");
@@ -974,8 +1140,8 @@ async function main() {
   assertScoutExclusionsResolve(stellarLight.openapi);
   assertSideEffectingOpsExcluded(stellarLight.openapi);
 
-  // Experiment-arm selection (--skills-form A|B|C, default B = shipped
-  // since the 2026-07-13 A/B; any non-B arm REQUIRES --out so a variant can
+  // Experiment-arm selection. Arm B is the shipped default. Any non-B arm
+  // requires --out so a variant can
   // never overwrite the shipped manifest).
   const armIdx = process.argv.indexOf("--skills-form");
   const arm = armIdx >= 0 ? process.argv[armIdx + 1] : "B";
@@ -1001,12 +1167,17 @@ async function main() {
   // Runnable attachment runs over the FULLY assembled set: its declared-op
   // guard needs every service's operation entries in scope, not just skills.
   const entries = applySkillsFormArm(
-    attachRetrievalProfiles(attachRunnableSkills(
+    attachKnownAliases(attachRetrievalProfiles(attachRunnableSkills(
       [
         ...attachOperationKeywords(buildLumenloop(lumenloop)),
         // Scout ops: x-routing vocabulary → routingKeywords (lever 7) first,
         // then schema tokens → keywords with the routing tokens excluded.
-        ...attachOperationKeywords(attachRoutingKeywords(scout.entries, scout.routingExtras)),
+        ...attachOperationKeywords(
+          attachRoutingPhrases(
+            attachRoutingKeywords(scout.entries, scout.routingExtras),
+            scout.routingPhraseExtras
+          )
+        ),
         // Docs ops carry page-title vocabulary (hundreds of distinct frequency-1
         // tokens post-DF) — the default 64 cap truncates the alphabetical tail,
         // so they get a roomier cap. Still bounded: 12 ops × ≤256 short tokens.
@@ -1017,7 +1188,7 @@ async function main() {
         ),
         ...buildSkills(skillsManifest, skillTexts, arm)
       ].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-    )),
+    ))),
     arm
   );
 
@@ -1028,6 +1199,10 @@ async function main() {
   }
 
   assertBuildAuthorityIdsResolve(entries);
+  assertSkillDescriptionOverrideIdsResolve(
+    entries.filter((entry) => entry.kind === "skill").map((entry) => entry.id),
+    "build-catalog"
+  );
 
   assertNoNonExposedRefs(entries);
 
@@ -1042,11 +1217,9 @@ async function main() {
     skillsManifest.synced_at
   ].reduce((max, ts) => (Date.parse(ts) > Date.parse(max) ? ts : max));
 
-  // The stellarDocs corpus taxonomy is deliberately NOT copied here: it lives
-  // in specs/stellar-docs.json and reaches the model via the super spec
-  // (build-super-spec.mjs reads it from the spec directly). A manifest-level
-  // `docs.taxonomy` copy existed until 2026-07-03 but had no consumer —
-  // neither the scorer, the adapters, nor codemode.catalog() read it.
+  // The stellarDocs corpus taxonomy stays in specs/stellar-docs.json. It
+  // reaches the model through the super spec. The scorer, adapters, and
+  // codemode.catalog() do not need a manifest copy.
   const catalog = sortKeysDeep({ version: 1, generatedAt, entries });
   mkdirSync(dirname(outPath), { recursive: true });
   const manifestBytes = `${JSON.stringify(catalog, null, 2)}\n`;

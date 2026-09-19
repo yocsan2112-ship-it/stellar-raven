@@ -1,18 +1,74 @@
 {
-  "$comment": "Mechanically-enforced gate baselines (see EVALS.md rules). run-routing.mjs prints a gate verdict on every run and exits 1 on breach when invoked with --gate (CI does). Re-baselining is an explicit act: update these numbers in the same commit as the change that moves them, with the decision recorded in Solo (EVALS.md rule 1). Counts are absolute hits, not percentages.",
+  "$comment": "Mechanically-enforced gate baselines (see EVALS.md rules). run-routing.mjs prints a gate verdict on every run and exits 1 on breach when invoked with --gate (CI does). Re-baselining is an explicit act: update these numbers, evidence input fingerprints, and accepted totals in the same commit as the change that moves them, with the decision recorded in the round ledger. Counts are absolute hits, not percentages. A raw local trace name is optional evidence.localTrace context, never the committed evidence identity.",
   "gradingRule": "v3-manifest-exposed",
-  "baselinedAt": "2026-07-26T23:51:48Z",
-  "baselineResults": "routing-2026-07-26T23-51-48-789Z.json",
-  "note": "Re-baselined for Scout 1.8.28 operation/routing drift and the current ecosystem-skills mirrors. Four public read-only Scout collections were exposed (24 of 28 operations); existing upstream summaries and x-routing also changed. The prior committed legacy baseline was 209/285/316 (2026-07-13), which main's catalog no longer matched; measured pristine-main pre-change was 210/282/318, so this drift's actual legacy-strict effect is 210/282/318 -> 210/282/317 (one top-5 loss). Extended strict measured 93/110/117. The skills lane retained 23/23 top-3, top-5, and card@5; its top-1 floor moved 18 -> 17 because q-skill-builder-quickstart-remittance now ranks the newly sharpened Scout project/prior-art lookup first and the intended builder-quickstart skill second. That mixed query explicitly asks for prior art, the expected skill remains top-3/card@5, and weakening accurate Scout routing to preserve the old strict winner was rejected. No runner operation intersects this drift. Prior baseline: routing-2026-07-13T08-54-21-839Z.json (skills-form arm-B ship).",
+  "baselinedAt": "2026-09-16T23:20:09.940Z",
+  "evidence": {
+    "inputs": [
+      {
+        "path": "catalog/manifest.json",
+        "sha256": "da21ab9ab7859bb36ef0c2f5443c48cafef69c6c545c6397f7f741cc9fb47210"
+      },
+      {
+        "path": "eval/routing-cases.json",
+        "sha256": "9e863cedc1f1754f67b3955bfe744254da6ae0d069502aefc7964530493fafd3"
+      },
+      {
+        "path": "eval/skills-cases.json",
+        "sha256": "3ec4d90444489550f9ac9745384a4371cdbd0077dfc77a84597652d02f61ba1f"
+      },
+      {
+        "path": "eval/holdout-cases.json",
+        "sha256": "cb34d83be86f63a0a4ba06977659afa91d0fbaecbeab0e86b82bef9d73c4bbf5"
+      }
+    ],
+    "acceptedTotals": {
+      "legacy": {
+        "n": 338,
+        "top1": 219,
+        "top3": 298,
+        "top5": 326,
+        "cardN": 182,
+        "cardHit5": 112
+      },
+      "skills": {
+        "n": 23,
+        "top1": 17,
+        "top3": 23,
+        "top5": 23,
+        "cardN": 23,
+        "cardHit5": 23
+      },
+      "holdout": {
+        "n": 49,
+        "top1": 12,
+        "top3": 26,
+        "top5": 29,
+        "cardN": 49,
+        "cardHit5": 29,
+        "forbiddenCaptures": 10,
+        "passed": 24
+      }
+    },
+    "localTrace": "routing-2026-09-16T23-20-09-940Z.json"
+  },
+  "note": "2026-09-16 Scout 1.9.52 source acceptance retains 30 Scout operations and excludes RWA. Source routing text changes require general phrase, evidence, and negative-intent repairs. Independent Grok high review accepts the semantic movements, including the final modifier-scope correction; Terra high accepts the code repairs. Legacy baselines and skills/holdout floors increase; the forbidden-capture ceiling decreases. Labels and other input hashes stay unchanged. Decision: .agents/rounds/2026-09-16-scout-acceptance.md. Final semantic review: .agents/rounds/2026-09-16-truth-maintenance/scout-clause-repair-independent-review.md. RWA remains deferred in issue #167.",
   "legacy": {
     "n": 338,
-    "top1": 210,
-    "top3": 282,
-    "top5": 317,
+    "top1": 219,
+    "top3": 298,
+    "top5": 326,
     "bandPct": 1
   },
   "skills": {
     "n": 23,
     "minTop1": 17
+  },
+  "holdoutNote": "eval/holdout-cases.json remains a frozen, blind-authored set. The reviewed source acceptance tightens its floors to 12/26/29 and its forbidden-capture ceiling to 10. Do not tune against it or edit failed cases. Historical movements remain in eval/README.md and the acceptance ledger.",
+  "holdout": {
+    "n": 49,
+    "minTop1": 12,
+    "minTop3": 26,
+    "minTop5": 29,
+    "maxForbiddenCaptures": 10
   }
 }

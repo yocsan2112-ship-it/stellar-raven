@@ -7,7 +7,7 @@
  * execute payload text for service outcomes; the executor's op ledger is the
  * authoritative source for error/soft-empty aggregates when available.
  */
-import { DEMO_CAPS, type DemoToolBudget } from "./budget.ts";
+import { DEMO_CAPS, type DemoOperationSummary, type DemoToolBudget } from "./budget.ts";
 import { DEMO_SYSTEM_PROMPT } from "./prompt.ts";
 
 type ObservedToolResult = {
@@ -40,18 +40,8 @@ export type DemoStepSignals = {
   executeTruncations: number;
 };
 
-export function demoOperationSummary(budget: DemoToolBudget): {
-  total: number;
-  ok: number;
-  error: number;
-  softEmpty: number;
-} {
-  return {
-    total: budget.operationTotal,
-    ok: budget.operationOk,
-    error: budget.operationError,
-    softEmpty: budget.operationSoftEmpty
-  };
+export function demoOperationSummary(budget: DemoToolBudget): DemoOperationSummary {
+  return budget.operations;
 }
 
 const EXECUTION_FAILED_PREFIX = "Execution failed:";
@@ -134,20 +124,15 @@ export function prepareDemoStep({
   budget?: DemoToolBudget;
 }): { activeTools?: never[]; system?: string } | undefined {
   const signals = demoStepSignals(steps);
-  const operations = budget
-    ? {
-        total: budget.latestOperationTotal,
-        ok: budget.latestOperationOk,
-        error: budget.latestOperationError,
-        softEmpty: budget.latestOperationSoftEmpty
-      }
-    : null;
+  const operations = budget?.latestOperations ?? null;
   const operationRecovery =
     operations !== null &&
     operations.total > 0 &&
     operations.ok === 0 &&
     (operations.error > 0 || operations.softEmpty > 0);
   const noHostEvidence = budget?.latestExecuteEvidence === "none";
+  const inconclusiveServiceEvidence =
+    budget?.latestExecuteEvidence === "service-inconclusive" && (operations?.ok ?? 0) > 0;
   const recoveryHint = budget?.latestRecoveryHint ?? null;
 
   if (stepNumber === DEMO_CAPS.maxSteps - 1) {
@@ -160,6 +145,7 @@ export function prepareDemoStep({
   if (
     !operationRecovery &&
     !noHostEvidence &&
+    !inconclusiveServiceEvidence &&
     recoveryHint === null &&
     signals.evidenceState !== "navigation-only" &&
     signals.evidenceState !== "needs-recovery"
@@ -175,6 +161,8 @@ export function prepareDemoStep({
   const reason =
     noHostEvidence
       ? "The latest execute returned no host-observed service, skill-content, or artifact evidence; catalog/spec/search results and model-authored constants are navigation or unsupported data, not factual grounding."
+      : inconclusiveServiceEvidence
+        ? "The latest successful service response contained no result rows. Its envelope remains ok, but it is inconclusive host evidence."
       : recoveryHint
         ? recoveryHint.mode === "conditional-alternatives"
           ? `The latest execute used successful broad operation class(es) (${recoveryHint.sourceOperations.join(", ")}); the host did not inspect or judge their rows. If exact evidence answers the request or the question names a closed-world source, stop at that scope. If the open-world question remains unanswered, use at most one bounded uncalled alternative (${recoveryHint.candidates.map((candidate) => candidate.id).join(", ")}).`

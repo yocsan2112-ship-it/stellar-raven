@@ -7,16 +7,17 @@
     "stellarDocs.search_sdk_cli_tools_docs"
   ],
   "golden": {
-    "answer": "`TransactionBuilder`'s fee is a maximum inclusion-fee bid per operation, not guaranteed spend. **As of 2026-07-10**, the effective base-fee floor is 100 stroops per operation, but 100 does not guarantee inclusion under surge; a low bid can be delayed or discarded. Smart-contract transactions also pay resource fees and compete against resource limits. For live estimates, use Stellar RPC **`getFeeStats`** (also exposed by current `stellar fees stats`) for classic/Soroban inclusion-fee percentiles. Horizon `GET /fee_stats` remains available and some Horizon endpoints lack direct RPC equivalents; official Docs currently conflict between calling Horizon deprecated and calling it legacy/no-new-features, nearing EOL but not yet deprecated. Hubble is historical analytics rather than the primary real-time submission estimator. Estimate immediately before submission, cap risk, add bounds, and treat values/status as dated.",
+    "answer": "`TransactionBuilder`'s fee is a maximum inclusion-fee bid per operation, not guaranteed spend. **As of 2026-07-10**, the effective base-fee floor is 100 stroops per operation, but 100 does not guarantee inclusion under surge; a low bid can be delayed or discarded. Smart-contract transactions also pay resource fees and compete against resource limits. For live estimates, use Stellar RPC **`getFeeStats`** (also exposed by current `stellar fees stats`) for classic/Soroban inclusion-fee percentiles. Horizon `GET /fee_stats` remains available and some Horizon endpoints lack direct RPC equivalents. As of 2026-09-08, the live Docs describe Horizon as nearing end-of-life and eventually deprecated. Hubble is historical analytics rather than the primary real-time submission estimator. Estimate immediately before submission, cap risk, add bounds, and treat values/status as dated.",
     "keyFacts": [
       "Explains maximum per-op bid, dated 100-stroop floor, and surge delay/exclusion.",
-      "Prioritizes live RPC getFeeStats/CLI or Horizon fee_stats and distinguishes Hubble historical analytics."
+      "Prioritizes live RPC getFeeStats, CLI, or Horizon fee_stats.",
+      "Treats Hubble as historical analytics, not a live fee estimator."
     ],
     "avoid": [
       "Do NOT say 100 always wins, freeze current percentiles, or use Ethereum gas/gwei framing.",
-      "Do NOT present Hubble as the primary real-time submission estimator or overbid without an application risk cap."
+      "Do NOT claim Hubble is the primary real-time submission estimator or overbid without an application risk cap."
     ],
-    "notes": "GT-29/GT-32 CORRECTION 2026-07-10: lead with RPC getFeeStats/current CLI; Horizon /fee_stats remains available and Horizon is legacy/no-new-features, not formally deprecated. Hubble is historical analytics. Date the 100-stroop floor and provider observations.\nGT-29 endpoint/discoverability recurrence attaches to sd-003. GT-32 blind found an official deprecated/not-yet-deprecated wording conflict tracked by sd-017; grade durable endpoint behavior rather than a categorical label."
+    "notes": "GT-29/GT-32 CORRECTION 2026-07-10: lead with RPC getFeeStats/current CLI; Horizon /fee_stats remains available and Horizon is legacy/no-new-features, not formally deprecated. Hubble is historical analytics. Date the 100-stroop floor and provider observations.\nGT-29 endpoint/discoverability recurrence attaches to sd-003. On 2026-09-09, the live pages and positive search records agree on the nearing-end-of-life label. The sd-042 search-ingestion conflict no longer applies. Grade durable endpoint behavior.\nAccurately quoting the canonical Stellar documentation on RPC getFeeStats method discoverability is not a wrong claim while sd-003 stands; grade caps at partial for that claim unless the answer contradicts the golden fact independently of the quoted source."
   },
   "tags": {
     "category": "protocol-core",
@@ -24,6 +25,10 @@
     "freshness": "stable"
   },
   "truth": {
+    "lifecycle": {
+      "state": "active",
+      "reviewState": "none"
+    },
     "domain": "real-world",
     "status": "confirmed",
     "sources": [
@@ -72,17 +77,47 @@
             "note": "verbatim legacy evidence descriptor imported at migration"
           }
         ]
+      },
+      {
+        "claim": "As of 2026-09-09, the live Docs and indexed EVM record describe Horizon as nearing end-of-life and eventually deprecated.",
+        "verdict": "confirmed-as-of",
+        "evidence": [
+          {
+            "class": "A",
+            "ref": "https://developers.stellar.org/docs/learn/migrate/evm/smart-contract-deployment",
+            "observedAt": "2026-09-09",
+            "note": "The Soroban Client section says Horizon API (nearing end-of-life). Four canonical Horizon pages retain future-deprecation wording."
+          },
+          {
+            "class": "B",
+            "ref": "https://github.com/stellar/stellar-docs/blob/db501fe9f2d856f2b38c4da7bf57b325806fe842/docs/learn/migrate/evm/smart-contract-deployment.mdx",
+            "observedAt": "2026-09-09",
+            "note": "Blob c7b63187d38d9d368e7eadade08df45d88bff886 contains the corrected lifecycle wording."
+          },
+          {
+            "class": "E",
+            "ref": "stellarDocs.search_docs({query:'deprecated Horizon API stellar-sdk networking layer',hitsPerPage:10,includeContent:true})",
+            "observedAt": "2026-09-09",
+            "note": "The corrected positive EVM record ranks first after the September 9 crawl. The old present-tense phrase is absent."
+          }
+        ]
       }
     ],
     "verified": {
-      "date": "2026-07-11",
-      "by": "Golden-truth sweep import — The bid/surge mechanics are correct, but current numeric parameters were undated and Hubble historical analytics was promoted over the direct live RPC/Horizon fee-stat endpoints.",
+      "date": "2026-09-09",
+      "by": "Root integration after independent Sol high ingestion verification and blind Grok 4.6 high re-verification",
       "evidence": [
-        "Solo scratchpad 575 GT-29 primary 3276 and blind 3278; mechanics agreed, reviewer independently corrected endpoint priority."
+        ".agents/rounds/2026-09-09-docs-ingestion-sol.md",
+        ".agents/rounds/2026-09-09-docs-retirement-review-grok.md",
+        "Deployed Docs source: https://github.com/stellar/stellar-docs/blob/db501fe9f2d856f2b38c4da7bf57b325806fe842. Sol checked deployment runs 34242504493 and 34255828473 and the subsequent completed September 9 crawl.",
+        "Source classes A, B, and E agree on the corrected occurrence. Each new corroboration row records the exact page, source, and production query.",
+        "Only the dated Horizon lifecycle and search-ingestion qualifier change. Fee, surge, getFeeStats, Hubble, key facts, avoid items, and the separate sd-003 caution remain unchanged.",
+        "Sibling consistency sweep and register review: .agents/rounds/2026-09-09-truth-maintenance.md. No saved answer was re-judged and no paid QA ran."
       ],
       "rootCause": [
-        "improvements/stellar-docs/sd-003-rpc-method-reference-pages-unindexed.md",
-        "Eval-side current-versus-historical endpoint routing error."
+        "improvements/resolved.json entry sd-042; source commit 176513cc5e058fa12ad81f607ea4ca0d514a659a",
+        "The September 9 crawl ingested the deployed source correction; the former source/index conflict no longer applies.",
+        "improvements/stellar-docs/sd-003-rpc-method-reference-pages-unindexed.md"
       ]
     },
     "origin": "raven-next q-pc-practical-fee-setting"

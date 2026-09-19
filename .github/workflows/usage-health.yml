@@ -1,0 +1,26 @@
+name: Usage archive health
+on:
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Check archive canary and collection gaps
+        env:
+          USAGE_REPORT_TOKEN: ${{ secrets.USAGE_REPORT_TOKEN }}
+          USAGE_REPORT_URL: ${{ vars.USAGE_REPORT_URL }}
+        run: |
+          if [ -z "$USAGE_REPORT_TOKEN" ]; then
+            echo "::notice::USAGE_REPORT_TOKEN is not set for this repository, so the usage health check was skipped. See usage/README.md to run your own usage archive."
+            exit 0
+          fi
+          node scripts/check-usage-health.mjs

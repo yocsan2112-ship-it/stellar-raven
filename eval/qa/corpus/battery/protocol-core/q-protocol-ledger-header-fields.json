@@ -8,10 +8,11 @@
     "answer": "Protocol 27 `LedgerHeader` directly contains `ledgerVersion`, `previousLedgerHash`, `scpValue`, `txSetResultHash`, `bucketListHash`, `ledgerSeq`, `totalCoins`, `feePool`, `inflationSeq`, `idPool`, `baseFee`, `baseReserve`, `maxTxSetSize`, `skipList[4]`, and `ext`. Inside `scpValue`/`StellarValue` are `txSetHash`, `closeTime`, `upgrades`, and its extension. Keep direct and nested fields separate: `txSetHash` is not the same field as `txSetResultHash`, and BucketList state commitment is distinct from transaction-set/result commitments.",
     "keyFacts": [
       "Lists all direct P27 LedgerHeader fields.",
-      "Correctly nests txSetHash/closeTime/upgrades in scpValue and distinguishes result/state hashes."
+      "States scpValue nests txSetHash, closeTime, and upgrades.",
+      "Treats transaction-result/BucketList-state hashes as distinct commitments."
     ],
     "avoid": [
-      "Do NOT omit extension/configuration/accounting fields or flatten nested StellarValue members into direct header fields."
+      "Do NOT claim nested StellarValue members are direct LedgerHeader fields."
     ],
     "notes": "List of header fields. Trap is importing EVM/PoW header fields (gas, difficulty, nonce, coinbase).\nAlso good if the answer: Notes the Upgrades field carries network-wide parameter/protocol-version changes voted via SCP. | Notes the bucket-list hash summarizes all ledger state objects.\nGolden cites: The ledgers / data-structures page on developers.stellar.org.\nGT-32 CORRECTION 2026-07-10: exhaustive direct-vs-nested structure is source-derived from P27 XDR."
   },
@@ -21,6 +22,10 @@
     "freshness": "stable"
   },
   "truth": {
+    "lifecycle": {
+      "state": "active",
+      "reviewState": "none"
+    },
     "domain": "real-world",
     "status": "confirmed",
     "sources": [
@@ -56,13 +61,21 @@
       }
     ],
     "verified": {
-      "date": "2026-07-11",
-      "by": "Golden-truth sweep import — The inherited list was incomplete and flattened fields nested in scpValue into direct LedgerHeader fields.",
+      "date": "2026-08-27",
+      "by": "golden-truth burn-down 2026-08-27 (negative-predicate batch, worker gt2-sol-b)",
       "evidence": [
-        "Solo scratchpad 575 GT-32 primary 3281 and blind 3284; full agreement."
+        "Solo scratchpad 575 GT-32 primary 3281 and blind 3284; full agreement.",
+        "Structural re-form (presentation-avoid): Kept the false nesting claim and deleted an omission rule already enforced by a key fact; the truth is unchanged.",
+        "Sibling sweep 2026-08-27: grep LedgerHeader|StellarValue|txSetResultHash|bucketListHash → q-protocol-ledger-header-fields, q-pc-bucketlist-vs-merkle-inclusion-proof, q-ti-parse-raw-ledger-data; no contradiction",
+        "Structural re-form (negative-predicate): Split the long nested-field and hash-role comparison into two atomic positive requirements; truth unchanged",
+        "Live re-check 2026-08-27: https://raw.githubusercontent.com/stellar/stellar-xdr/v27.0/Stellar-ledger.x — P27 XDR placed the consensus value in the direct scpValue field.",
+        "Live re-check 2026-08-27: https://developers.stellar.org/docs/learn/fundamentals/stellar-data-structures/ledgers — the current ledger page described transaction-set-result and BucketList-state hashes as different header commitments.",
+        "Sibling sweep 2026-08-27: grep LedgerHeader|StellarValue|txSetResultHash|bucketListHash → q-hot-fee-pool-burn-deflation, q-pc-bucketlist-vs-merkle-inclusion-proof, q-ti-parse-raw-ledger-data; no contradiction"
       ],
       "rootCause": [
-        "Conceptual Docs headings flattened instead of reading XDR structure."
+        "Conceptual Docs headings flattened instead of reading XDR structure.",
+        ".agents/TODO.md — Golden authoring lint warnings burn-down (presentation-avoid class)",
+        ".agents/TODO.md — Golden authoring lint warnings burn-down (negative-predicate class)"
       ]
     },
     "origin": "raven-next q-protocol-ledger-header-fields"

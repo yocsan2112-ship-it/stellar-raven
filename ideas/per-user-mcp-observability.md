@@ -1,7 +1,8 @@
 # Per-user MCP Observability and Future Personalization
 
-Status: privacy-safe request attribution implemented and production-verified 2026-07-13. Product
-analytics and personalization remain deliberately deferred.
+Status: historical request-attribution design, implemented and production-verified on 2026-07-13.
+Personalization remains deferred. [The usage guide](../usage/README.md) describes the later private aggregate-report implementation.
+[The architecture](../ARCHITECTURE.md) owns current authentication, logging, and retention behavior.
 
 Recorded: 2026-07-11 for Solo todo
 `solo://proj/49/todo/track-users-better-v--889`.
@@ -14,8 +15,8 @@ We want to answer two related but different questions:
    debugging, telemetry, traces, support, and aggregate product analysis?
 2. Can that identity eventually support user-controlled memory that tunes answers to an individual?
 
-The implemented local change adds privacy-safe user/client attribution to request logs while
-preserving Cloudflare-native invocation joins. Production verification remains deploy-gated. Do
+The change added privacy-safe user/client attribution to request logs while
+preserving Cloudflare-native invocation joins. Do
 not fingerprint users from IP, geo, TLS, or browser characteristics, and do not make operational
 telemetry the future personalization database.
 
@@ -29,7 +30,7 @@ The target separation is:
 These may share an internal user identity, but they need separate schemas, retention, access, and
 user controls.
 
-## Current implementation
+## Implementation snapshot — 2026-07-13
 
 ### Authentication and user identity
 
@@ -90,10 +91,10 @@ exists.
 Current structured events include:
 
 - `mcp_request`: access mode, privacy-safe user/client hashes, request/Ray ids, method, and status;
-- top-level `search`: a bounded query preview, exact-query hash and length, filters, hit counts, top
+- top-level `search`: exact-query hash and length, filters, hit counts, top
   ids, response size, truncation, and duration;
-- `execute`: up to 4,000 characters of model-authored JavaScript, bounded result/error previews,
-  sizes, truncation state, and duration;
+- `execute`: code length, result/error sizes, truncation state, and duration — never the code
+  itself;
 - `op`: operation id, outcome, and duration;
 - runnable-skill and artifact read/write events with bounded operational fields.
 
@@ -228,8 +229,8 @@ fetch spans, with timing attribution and no user content on spans.
 5. Update `.agents/skills/cloudflare-observability-review/SKILL.md` with the verified field names
    and query examples. Document that secret rotation can temporarily split one human/client across
    old- and new-grant hashes, and that a wrong admin token is intentionally indistinguishable from
-   other rejected bearer tokens. Record the probe window and Ray IDs in the relevant Solo todo or
-   scratchpad, without sensitive fields.
+   other rejected bearer tokens. Record the probe window and Ray IDs in the relevant round ledger,
+   without sensitive fields.
 
 Exit: code, live evidence, and the operator runbook agree.
 

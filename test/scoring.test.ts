@@ -1,7 +1,7 @@
 /**
  * Scoring-layer contracts (src/catalog/scoring.ts).
  *
- * 1. Replica drift guard (todo 845): scoring.ts's `scoreEntryUngated` is a
+ * 1. Replica drift guard: scoring.ts's `scoreEntryUngated` is a
  *    line-for-line copy of the vendored scorer with EXACTLY ONE difference —
  *    the coverage gate is absent. That gives a total-equality invariant this
  *    suite pins:
@@ -68,7 +68,7 @@ const QUERY_BATTERY = [
   "x"
 ];
 
-describe("ungated replica ⇔ vendored scorer drift guard (todo 845)", () => {
+describe("ungated replica ⇔ vendored scorer drift guard", () => {
   it("scores identically to the vendor on every gate-passing (entry, query) pair", () => {
     let gatePassing = 0;
     let gateRescued = 0; // vendor null, replica non-null — the replica's raison d'être
@@ -182,7 +182,11 @@ describe("scoreEntryWeighted — routing-keyword blend (lever 7)", () => {
   it("weights curated routing vocabulary above lever-4 keywords, at most description weight", () => {
     const q = "builders recruiting latam";
     const viaKeywords = scoreEntryWeighted({ ...op, keywords: ["recruiting", "latam"] }, q)!;
-    const viaRouting = scoreEntryWeighted({ ...op, routingKeywords: ["recruiting", "latam"] }, q)!;
+    const viaRouting = scoreEntryWeighted({
+      ...op,
+      routingKeywords: ["recruiting", "latam"],
+      routingPhrases: [{ field: "useWhen", tokens: ["recruiting", "latam"] }]
+    }, q)!;
     const viaDescription = scoreEntryWeighted(
       { ...op, description: `${op.description} recruiting latam` },
       q
@@ -199,10 +203,29 @@ describe("scoreEntryWeighted — routing-keyword blend (lever 7)", () => {
     const without = scoreEntryWeighted(op, q);
     expect(without).toBeNull();
     const withRouting = scoreEntryWeighted(
-      { ...op, routingKeywords: ["recruiting", "latam", "hiring", "widgets"] },
+      {
+        ...op,
+        routingKeywords: ["recruiting", "latam", "hiring", "widgets"],
+        routingPhrases: [{
+          field: "useWhen",
+          tokens: ["recruiting", "latam", "hiring", "widgets"]
+        }]
+      },
       q
     );
     expect(withRouting).not.toBeNull();
+  });
+
+  it("does not rescue routing vocabulary split across incoherent phrases", () => {
+    const q = "widgets recruiting latam hiring";
+    expect(scoreEntryWeighted({
+      ...op,
+      routingKeywords: ["recruiting", "latam", "hiring", "widgets"],
+      routingPhrases: [
+        { field: "useWhen", tokens: ["recruiting", "builders"] },
+        { field: "keywords", tokens: ["latam", "region"] }
+      ]
+    }, q)).toBeNull();
   });
 
   it("blends both keyword fields additively without lowering the base", () => {

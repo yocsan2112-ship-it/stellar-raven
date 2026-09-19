@@ -4,19 +4,21 @@
   "surface": [
     "scout.searchProjects",
     "scout.searchRepos",
-    "scout.searchResearch"
+    "scout.searchResearch",
+    "scout.searchHackathonBuilds",
+    "scout.vetIdea"
   ],
   "golden": {
     "answer": "Study prior art as a **dated maturity matrix**, not a bare repo list:\n\n- **SStream** — Rust create/claim/cancel stream code and SCF #16 $36K Awarded; linked UI was 404 and no public contract was verified.\n- **Tide Stream Payment / Zentra** — Rust contract/tests/frontend and SCF #23 $18.2K Awarded; frontend responded, but no mainnet contract was verified.\n- **Fluxity** — Soroban streaming contract/tests and an official SCF #21 $68K Awarded row; do not turn its internally inconsistent project aggregate into a second award; deployment remained inconclusive.\n- **Paystreme** — SCF #11 $50K Awarded proposal prior art; current public contract/source trail was not verified.\n- **ApiCharge** — substantial subscription/payment code, SCF #40 $79K Awarded, and a real pubnet contract; its custom time-subscription/x402-compatible scheme and runtime maturity must not be mislabeled canonical x402 exact.\n- **RouteDock/MPP session examples** — substantial testnet/reference channel and agent-vault work, not verified mainnet production.\n\nFor every result, show repo, official submission, UI status, contract/network, audit/source-verification status, and as-of date. Discovery does not prove production readiness.",
     "keyFacts": [
       "Returns real streaming/recurring-payment prior art with code and official provenance.",
-      "Separates funding, UI, contract/network, and production maturity for each item."
+      "Treats funding, UI, contract/network, and production maturity as per-item dimensions."
     ],
     "avoid": [
       "Do NOT invent repos or treat repository/SCF presence as current production deployment.",
       "Do NOT collapse x402, MPP sessions/channels, and custom recurring-payment contracts into one standard."
     ],
-    "notes": "GROUNDED + CORRECTED: live Scout repo search (2026-06-22, /api/repos/search) does NOT surface the Phase-1 illustrative names (FlowFi, Quipay, stellar-drips). Real streaming/recurring-payment prior art: luanlabs/fluxity-interface (token streaming), tosinshada/tide-streaming, Handilusa/Ferrule (MPP session channels), and x402/MPP payment-execution repos (winsznx/routedock, davidmaronio/StellarPay402). Do NOT hard-gate on a single exact name set — the gate is 'real Scout-grounded repos with provenance', and must_avoid forbids invented repos. 2026-06-29 RE-VERIFIED on live Scout + GitHub: CORRECTED handle luanlabs/fluxity -> luanlabs/fluxity-interface (bare 'luanlabs/fluxity' 404s; the luanlabs/fluxity-* family is fluxity-interface (Scout 28, desc 'token streaming solution'), fluxity-v1-core (Soroban contract V1), fluxity-api, fluxity.finance). Confirmed Scout-graded: tosinshada/tide-streaming (in corpus), Handilusa/Ferrule (repoScore 53, desc 'Pay-per-token AI agents...MPP session channels'), winsznx/routedock (repoScore 69, 'unified payment execution layer for x402/MPP'), davidmaronio/StellarPay402 (repoScore 85). Source github.com/luanlabs/fluxity-interface resolves 200.\nAlso good if the answer: References relevant SCF submissions or an SDF/MPP recurring-payments writeup as study material.\nGolden cites: Scout repo / SCF submission provenance for each surfaced item.\nGT-18 CORRECTION 2026-07-10: grade a code/SCF/UI/network/source-verification matrix. The inherited repo-only roster and deployment implications are superseded."
+    "notes": "GROUNDED + CORRECTED: live Scout repo search (2026-06-22, /api/repos/search) does NOT surface the Phase-1 illustrative names (FlowFi, Quipay, stellar-drips). Real streaming/recurring-payment prior art: luanlabs/fluxity-interface (token streaming), tosinshada/tide-streaming, Handilusa/Ferrule (MPP session channels), and x402/MPP payment-execution repos (winsznx/routedock, davidmaronio/StellarPay402). Do NOT hard-gate on a single exact name set — the gate is 'real Scout-grounded repos with provenance', and must_avoid forbids invented repos. 2026-06-29 RE-VERIFIED on live Scout + GitHub: CORRECTED handle luanlabs/fluxity -> luanlabs/fluxity-interface (bare 'luanlabs/fluxity' 404s; the luanlabs/fluxity-* family is fluxity-interface (Scout 28, desc 'token streaming solution'), fluxity-v1-core (Soroban contract V1), fluxity-api, fluxity.finance). Confirmed Scout-graded: tosinshada/tide-streaming (in corpus), Handilusa/Ferrule (repoScore 53, desc 'Pay-per-token AI agents...MPP session channels'), winsznx/routedock (repoScore 69, 'unified payment execution layer for x402/MPP'), davidmaronio/StellarPay402 (repoScore 85). Source github.com/luanlabs/fluxity-interface resolves 200.\nAlso good if the answer: References relevant SCF submissions or an SDF/MPP recurring-payments writeup as study material.\nGolden cites: Scout repo / SCF submission provenance for each surfaced item.\nGT-18 CORRECTION 2026-07-10: grade a code/SCF/UI/network/source-verification matrix. The inherited repo-only roster and deployment implications are superseded.\nAccurately quoting the canonical Scout source on exact RouteDock, MPP, x402, and repository-name recall is not a wrong claim while a cached or older copy still shows the pre-2026-07-14 misses fixed by sls-025; grade caps at partial for that claim unless the answer contradicts the golden fact independently of the quoted source."
   },
   "tags": {
     "category": "defi-ecosystem",
@@ -24,6 +26,10 @@
     "freshness": "stable"
   },
   "truth": {
+    "lifecycle": {
+      "state": "active",
+      "reviewState": "none"
+    },
     "domain": "mixed",
     "status": "confirmed",
     "sources": [
@@ -92,15 +98,23 @@
       }
     ],
     "verified": {
-      "date": "2026-07-11",
-      "by": "Golden-truth sweep import — The inherited prior-art list mixed interface repos, MPP/x402 references, and streaming contracts without separating code, official funding, UI reachability, network deployment, or source verification. Independent review found omitted projects and materially stronger testnet/pubnet evidence for several entries.",
+      "date": "2026-08-27",
+      "by": "golden-truth burn-down 2026-08-27 (negative-predicate batch, worker gt2-sol-a)",
       "evidence": [
         "Solo scratchpad 575 GT-18 primary 3249 and blind 3252",
-        "Sibling sweep: q-defi-agentic-payment-standards-compare, q-defi-x402-projects-discovery, and agentic-payment implementation cases"
+        "Sibling sweep: q-defi-agentic-payment-standards-compare, q-defi-x402-projects-discovery, and agentic-payment implementation cases",
+        "Structural re-form (symmetric-caution): Added a claim-specific caution for cached Scout repository recall; the truth is unchanged.",
+        "Finding read 2026-08-27: improvements/resolved.json entry sls-025 — fixed exact x402 and repository alias recall on 2026-07-14.",
+        "Sibling sweep 2026-08-27: grep SStream|Fluxity|RouteDock|recurring payments → q-defi-agentic-payment-standards-compare, q-stellar-recurring-payments; no contradiction",
+        "Structural re-form (negative-predicate): replaced the negative taxonomy verb with one positive predicate; all per-item maturity fields are unchanged.",
+        "Live re-check 2026-08-27: https://github.com/rahimklaber/SStream and https://github.com/StreamCharge/ApiCharge — current repositories still expose different code, UI, contract/network, and maturity surfaces.",
+        "Sibling sweep 2026-08-27: grep SStream|Tide|Fluxity|ApiCharge|streaming|recurring-payment → q-stellar-recurring-payments and q-defi-agentic-payment-standards-compare; no contradiction"
       ],
       "rootCause": [
         "Repository discovery was treated as deployment proof and a static handle list replaced a maturity comparison.",
-        "improvements/stellar-light-scout/sls-025-agent-standard-alias-recall.md"
+        "improvements/stellar-light-scout/sls-025-agent-standard-alias-recall.md",
+        ".agents/TODO.md — Golden authoring lint warnings burn-down (symmetric-caution class)",
+        ".agents/TODO.md — Golden authoring lint warnings burn-down (negative-predicate class)"
       ]
     },
     "origin": "raven-next q-defi-streaming-payments-prior-art"

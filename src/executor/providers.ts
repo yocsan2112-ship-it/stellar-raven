@@ -4,7 +4,7 @@
  * src/executor/run.ts feeds these providers to codemode's
  * DynamicWorkerExecutor, whose ResolvedProvider type they match structurally.
  *
- * Surface shape (decision, todo 798): one global per service exposing one
+ * Each service global exposes one
  * async fn PER OPERATION, named exactly by the catalog id's terminal segment —
  * `lumenloop.search_directory(args)`, `scout.getStatus()`,
  * `stellarDocs.search_docs(args)`. Chosen over a generic `call("id", args)`
@@ -31,9 +31,10 @@
  *     provider RPC instead (a source-injected `const codemode` would shadow
  *     this provider global) — same resolved document either way.
  *   codemode.search(queryOrOpts)      — host-side searchCatalogPage (ranked;
- *     { ok, hits, total, truncated, recovery, widerCandidates } — truncated ⇒ retry with a higher limit
+ *     { ok, hits, total, truncated, recovery, widerCandidates, confidence, recoveryMetadata }
+ *     — truncated ⇒ retry with a higher limit
  *     or narrower filters). Unknown kind/service filter values are rejected
- *     as error envelopes naming the valid set (todo 839) — the frozen
+ *     as error envelopes naming the valid set. The
  *     searchCatalog contract keeps filters silent, so the validation lives
  *     here at the sandbox boundary.
  *   codemode.catalog({ kind?, service?, compact? }) — the catalog as plain
@@ -72,17 +73,17 @@ import {
   type RetrievalReason
 } from "../catalog/types.ts";
 import {
-  searchCatalogPage,
   catalogServices,
-  recoveryCandidates,
   renderSignature,
   sectionKeysOf
 } from "../catalog/search.ts";
+import { prepareCatalogSearch } from "../catalog/search-resolution.ts";
 import { lastIdSegment, VALID_IDENT } from "../catalog/id.ts";
 import { callService } from "../adapters/index.ts";
 import type { AdapterEnv, FetchLike } from "../adapters/types.ts";
 import { guard } from "../policy/guard.ts";
 import { redactSecrets, secretsFromEnv } from "../policy/redact.ts";
+import type { SourceMetadataField, SourceMetadataPath } from "../policy/source-basis.ts";
 import { readSkill } from "../skills/store.ts";
 import type { SkillRetrievalFrom, SkillSource } from "../skills/source.ts";
 import { runSkill, assertRunnersWired } from "../skills/run.ts";
@@ -91,7 +92,7 @@ import type { OpsFacade, SkillRunner } from "../skills/runners/types.ts";
 import { resolveSpecRefs } from "./spec-sandbox.ts";
 import { logArtifactRead, logEvent, logSkillRead } from "../observability.ts";
 import { searchEventFields } from "../observability-search.ts";
-import { info as artifactInfo, read as artifactRead, type ArtifactMetadata } from "../artifacts/store.ts";
+import { info as artifactInfo, read as artifactRead } from "../artifacts/store.ts";
 
 /** Structurally identical to @cloudflare/codemode's ResolvedProvider. */
 export type SandboxProvider = {
@@ -106,8 +107,130 @@ export const ARTIFACT_READ_CAP = 4;
 export type OpLedgerCall = {
   op: string;
   outcome: "ok" | "error" | "soft-empty";
+  /** Host-only structural evidence signal. It never changes the service envelope. */
+  hasServiceData?: boolean;
+  /** Exact allowlisted response metadata captured before sandbox projection. */
+  sourceMetadata?: SourceMetadataField[];
   ms: number;
 };
+
+type SourceMetadataRule = {
+  path: SourceMetadataPath;
+  segments: readonly string[];
+  kind: "string" | "number" | "string-or-number";
+};
+
+/**
+ * These are the only response locations the host may copy into the provenance
+ * sidecar. They cover payload-root metadata, the standard `meta` block and its
+ * `counts` block, plus Scout's named `meta.scfRound` scheduling summary.
+ * No recursive walk occurs, so row content, credentials and partner details
+ * cannot enter through an unexpected nested field with a familiar name.
+ */
+const SOURCE_METADATA_RULES: readonly SourceMetadataRule[] = [
+  { path: "data.generatedAt", segments: ["generatedAt"], kind: "string" },
+  { path: "data.dataAsOf", segments: ["dataAsOf"], kind: "string" },
+  { path: "data.asOf", segments: ["asOf"], kind: "string" },
+  { path: "data.matchMode", segments: ["matchMode"], kind: "string" },
+  { path: "data.match_mode", segments: ["match_mode"], kind: "string" },
+  { path: "data.count", segments: ["count"], kind: "number" },
+  { path: "data.total", segments: ["total"], kind: "number" },
+  { path: "data.meta.generatedAt", segments: ["meta", "generatedAt"], kind: "string" },
+  { path: "data.meta.dataAsOf", segments: ["meta", "dataAsOf"], kind: "string" },
+  { path: "data.meta.asOf", segments: ["meta", "asOf"], kind: "string" },
+  { path: "data.meta.matchMode", segments: ["meta", "matchMode"], kind: "string" },
+  { path: "data.meta.match_mode", segments: ["meta", "match_mode"], kind: "string" },
+  { path: "data.meta.count", segments: ["meta", "count"], kind: "number" },
+  { path: "data.meta.total", segments: ["meta", "total"], kind: "number" },
+  { path: "data.meta.counts.count", segments: ["meta", "counts", "count"], kind: "number" },
+  { path: "data.meta.counts.total", segments: ["meta", "counts", "total"], kind: "number" },
+  { path: "data.meta.scfRound.asOf", segments: ["meta", "scfRound", "asOf"], kind: "string" },
+  {
+    path: "data.meta.scfRound.currentRound",
+    segments: ["meta", "scfRound", "currentRound"],
+    kind: "string-or-number"
+  },
+  {
+    path: "data.meta.scfRound.currentPhase",
+    segments: ["meta", "scfRound", "currentPhase"],
+    kind: "string"
+  },
+  {
+    path: "data.meta.scfRound.submissionWindow.closes",
+    segments: ["meta", "scfRound", "submissionWindow", "closes"],
+    kind: "string"
+  }
+];
+
+function captureSourceMetadata(payload: unknown): SourceMetadataField[] | undefined {
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  const fields: SourceMetadataField[] = [];
+  for (const rule of SOURCE_METADATA_RULES) {
+    let current: unknown = payload;
+    let present = true;
+    for (const segment of rule.segments) {
+      if (
+        current === null ||
+        typeof current !== "object" ||
+        Array.isArray(current) ||
+        !Object.prototype.hasOwnProperty.call(current, segment)
+      ) {
+        present = false;
+        break;
+      }
+      current = (current as Record<string, unknown>)[segment];
+    }
+    if (!present) continue;
+    if (current === null) {
+      fields.push({ path: rule.path, value: null });
+      continue;
+    }
+    if (rule.kind === "number" && typeof current === "number" && Number.isFinite(current)) {
+      fields.push({ path: rule.path, value: current });
+    } else if (rule.kind === "string" && typeof current === "string") {
+      fields.push({ path: rule.path, value: current });
+    } else if (
+      rule.kind === "string-or-number" &&
+      (typeof current === "string" || (typeof current === "number" && Number.isFinite(current)))
+    ) {
+      fields.push({ path: rule.path, value: current });
+    }
+  }
+  return fields.length > 0 ? fields : undefined;
+}
+
+/**
+ * An ok envelope is not by itself factual service evidence. Collections carry
+ * the rows that can support a later answer. Empty collections are
+ * inconclusive unless the same payload also has a meaningful scalar/detail
+ * field. Metadata branches do not count as detail evidence.
+ */
+export function hasServiceData(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value !== "object") return true;
+
+  const seen = new Set<object>();
+  let hasData = false;
+  const metadataKeys = new Set(["meta", "metadata", "counts", "pagination", "pageInfo"]);
+  const visit = (current: unknown, metadataBranch = false): void => {
+    if (current === null || hasData) return;
+    if (typeof current !== "object") {
+      if (!metadataBranch) hasData = true;
+      return;
+    }
+    if (seen.has(current)) return;
+    seen.add(current);
+    if (Array.isArray(current)) {
+      if (!metadataBranch && current.length > 0) hasData = true;
+      return;
+    }
+    for (const [key, nested] of Object.entries(current)) {
+      visit(nested, metadataBranch || metadataKeys.has(key));
+    }
+  };
+  visit(value);
+  return hasData;
+}
 
 export type ArtifactReadStats = {
   count: number;
@@ -209,12 +332,12 @@ const ARTIFACT_PRELUDE = [
  *     the real error. `r.error` on ok:true stays a plain undefined, so the
  *     `if (r.error)` guard pattern keeps working.
  *
- * Non-enumerable accessors — deliberately NOT a Proxy around the envelope
- * (Proxies DataCloneError under Workers RPC v8 serialization) — keep every
- * legitimate pattern untouched: Object.keys / spread / JSON / structured
- * clone all read enumerable-only (so a script returning the raw envelope
- * still serializes across the Workers RPC boundary), and `await` never trips
- * over a `then` trap. Only direct wrong-level property access trips a trap.
+ * Non-enumerable accessors keep every legitimate pattern untouched:
+ * Object.keys / spread / JSON / structured clone all read enumerable-only.
+ * A payload-prototype Proxy cannot cross the Workers RPC boundary, so this
+ * guard intentionally does not diagnose object-payload array reads. A script
+ * returning the raw envelope or its payload must serialize successfully.
+ * Only direct wrong-level property access trips a trap.
  * The write-through SET is NOT try/caught: on a frozen envelope it must
  * throw loudly at the write, not silently no-op and then throw on read.
  * Applies to service namespaces only — codemode.* discovery fns return
@@ -315,6 +438,10 @@ export function buildOpsFns(
         fetchImpl
       );
       const ms = Date.now() - t0;
+      const redactedResult = redactSecrets(result, secrets);
+      const sourceMetadata = redactedResult.ok
+        ? captureSourceMetadata(redactedResult.data)
+        : undefined;
       logEvent("op", {
         id: entry.id,
         outcome: result.ok ? "ok" : result.error.kind,
@@ -323,9 +450,11 @@ export function buildOpsFns(
       deps?.onOpCall?.({
         op: entry.id,
         outcome: result.ok ? "ok" : result.error.kind,
+        hasServiceData: result.ok ? hasServiceData(result.data) : undefined,
+        sourceMetadata,
         ms
       });
-      return redactSecrets(result, secrets);
+      return redactedResult;
     };
   }
   return byService;
@@ -497,11 +626,9 @@ export function buildCodemodeProvider(
   /**
    * Demo-only narrowing: production execute exposes codemode.search/catalog/
    * spec/describe for mid-script discovery; the public playground can disable
-   * broad discovery helpers while optionally keeping describe for exact visible
-   * hit ids.
+   * broad discovery helpers.
    */
   discovery?: boolean,
-  describeOnly?: boolean,
   /**
    * The skill.run wiring (design §6): the shared ops facade from buildOpsFns
    * — the SAME closures the service namespaces expose, so policy identity
@@ -539,7 +666,6 @@ export function buildCodemodeProvider(
     compactCatalogViewCache.set(catalog, compactCatalogView);
   }
   const enableDiscovery = discovery ?? true;
-  const enableDescribe = enableDiscovery || describeOnly === true;
   let artifactReads = 0;
   let artifactInfos = 0;
   let artifactReadBytes = 0;
@@ -559,21 +685,6 @@ export function buildCodemodeProvider(
       message: "artifact not found"
     }
   });
-  const publicArtifactMeta = (meta: ArtifactMetadata) => ({
-    id: meta.id,
-    createdAt: meta.createdAt,
-    expiresAt: meta.expiresAt,
-    bytes: meta.bytes,
-    sha256: meta.sha256,
-    mime: meta.mime,
-    requestId: meta.requestId,
-    rayId: meta.rayId,
-    capTokens: meta.capTokens,
-    originalChars: meta.originalChars,
-    opLedger: meta.opLedger,
-    catalogGeneratedAt: meta.catalogGeneratedAt
-  });
-
   const fns: Record<string, (...args: unknown[]) => Promise<unknown>> = {
     ...(enableDiscovery
       ? {
@@ -682,13 +793,12 @@ export function buildCodemodeProvider(
                 }
               };
             }
-            // Filter validation (todo 839): searchCatalog's filters are silent
-            // exact-matches by (frozen) contract, so a near-miss like service
-            // "stellardocs" or kind "operations" returns ZERO hits and reads as
+            // searchCatalog uses silent exact-match filters. A near-miss like
+            // service "stellardocs" or kind "operations" returns zero hits and reads as
             // "the capability is missing". Reject unknown filter values as an
-            // error-envelope that names the bad value AND the real ones. The
-            // service set comes from the catalog itself (catalogServices), never
-            // a hand-maintained list. Explicit null means "no filter" (idiomatic
+            // error envelope that names the bad value and the real ones. The
+            // service set comes from the catalog itself, never a hand-maintained
+            // list. Explicit null means "no filter" (idiomatic
             // LLM code passes `maybeService ?? null`), same as `limit: null`.
             const kindFilter = opts.kind ?? undefined;
             const serviceFilter = opts.service ?? undefined;
@@ -702,14 +812,14 @@ export function buildCodemodeProvider(
                 }
               };
             }
-            const services = catalogServices(catalog);
-            if (serviceFilter !== undefined && !(services as readonly unknown[]).includes(serviceFilter)) {
+            const prepared = prepareCatalogSearch(catalog, serviceFilter as string | undefined);
+            if (!prepared.ok) {
               return {
                 ok: false,
                 error: {
                   service: "codemode",
                   kind: "error",
-                  message: `codemode.search: unknown service ${JSON.stringify(serviceFilter)} — valid services (exact-match): ${services.join(", ")}`
+                  message: `codemode.search: unknown service ${JSON.stringify(prepared.issue.service)} — valid services (exact-match): ${prepared.issue.validServices.join(", ")}`
                 }
               };
             }
@@ -729,18 +839,14 @@ export function buildCodemodeProvider(
                 }
               };
             }
-            const operationIds = new Set(
-              catalog.entries.filter((entry) => entry.kind === "operation").map((entry) => entry.id)
-            );
-            const unknownRecoveryIds =
-              (recoverFrom as string[] | undefined)?.filter((id) => !operationIds.has(id)) ?? [];
-            if (unknownRecoveryIds.length > 0) {
+            const recoveryStage = prepared.checkRecoveryIds(recoverFrom as string[] | undefined);
+            if (!recoveryStage.ok) {
               return {
                 ok: false,
                 error: {
                   service: "codemode",
                   kind: "error",
-                  message: `codemode.search: unknown recoverFrom operation id(s) ${unknownRecoveryIds.map((id) => JSON.stringify(id)).join(", ")} — ids are exact-match`
+                  message: `codemode.search: unknown recoverFrom operation id(s) ${recoveryStage.issue.ids.map((id) => JSON.stringify(id)).join(", ")} — ids are exact-match`
                 }
               };
             }
@@ -756,42 +862,37 @@ export function buildCodemodeProvider(
               };
             }
             const t0 = Date.now();
-            const page = searchCatalogPage(catalog, {
+            const { page, recovery } = recoveryStage.resolve({
               query: opts.query,
               kind: kindFilter as SearchKind | undefined,
-              service: serviceFilter as string | undefined,
-              limit: typeof opts.limit === "number" ? opts.limit : undefined
+              limit: typeof opts.limit === "number" ? opts.limit : undefined,
+              reason: reason as RetrievalReason | undefined
             });
-            const { hits, total, truncated, widerCandidates } = page;
-            // Recovery models a caller-reported prior attempt, never the ranked
-            // hits the model merely saw in this search response. The host
-            // validates exact IDs and exposure, not an execution ledger. A
-            // reason without an explicit attempted operation is inert.
-            const recovery = Array.isArray(recoverFrom) && recoverFrom.length > 0
-              ? recoveryCandidates(catalog, recoverFrom as string[], reason as RetrievalReason | undefined)
-              : [];
+            const { hits, total, truncated, widerCandidates, confidence, recoveryMetadata } = page;
             logEvent("search", {
               source: "codemode",
               ...searchEventFields({
                 query: opts.query,
                 requestedLimit: typeof opts.limit === "number" ? opts.limit : null,
-                page
+                page,
+                summary: { hits, total, truncated, recovery, widerCandidates }
               }),
-              hits: hits.length,
-              total,
-              truncated,
-              top: hits.slice(0, 3).map((h) => h.id),
-              recovery: recovery.length,
-              recoveryTop: recovery.slice(0, 3).map((candidate) => candidate.id),
-              widerCandidates: widerCandidates.length,
-              widerCandidateTop: widerCandidates.slice(0, 3).map((candidate) => candidate.id),
-              responseChars: JSON.stringify({ hits, recovery, widerCandidates }).length,
+              responseChars: JSON.stringify({ hits, recovery, widerCandidates, confidence, recoveryMetadata }).length,
               ms: Date.now() - t0
             });
-            return { ok: true, hits, total, truncated, recovery, widerCandidates };
+            return {
+              ok: true,
+              hits,
+              total,
+              truncated,
+              recovery,
+              widerCandidates,
+              confidence,
+              recoveryMetadata
+            };
           },
 
-          // The canonical detail-on-demand step (todo 841, mirroring upstream
+          // The canonical detail-on-demand step mirrors upstream
           // codemode's search → describe → call): a describe result carries
           // everything DETAIL-shaped a search hit has and more — search hits
           // stub oversized output types (COMPACT_OUTPUT_THRESHOLD,
@@ -804,10 +905,6 @@ export function buildCodemodeProvider(
           describe: async (id?: unknown) => describeCatalogEntry(catalog, id)
         }
       : {}),
-    ...(enableDescribe && !enableDiscovery
-      ? { describe: async (id?: unknown) => describeCatalogEntry(catalog, id) }
-      : {}),
-
     skill_read: async (name?: unknown, opts?: unknown) => {
       // Wrap the shared source for THIS call so retrieval provenance and count
       // are observable without threading a stats sink through readSkill.
@@ -919,7 +1016,7 @@ export function buildCodemodeProvider(
           readCount: infoOrdinal
         });
         if (!r.ok) return artifactNotFound();
-        return { ok: true, data: publicArtifactMeta(r.artifact) };
+        return { ok: true, data: r.artifact };
       } catch {
         await logArtifactRead({
           kind: "info",
@@ -1060,7 +1157,6 @@ export function buildSandbox(
     onOpCall?: (call: OpLedgerCall) => void;
     artifact?: ArtifactSandboxDeps;
     codemodeDiscovery?: boolean;
-    codemodeDescribe?: boolean;
   }
 ): SandboxProvider[] {
   // Runner-wiring assertion at provider build (design §5/§6): registry ↔
@@ -1082,7 +1178,6 @@ export function buildSandbox(
         onSkillRun: deps?.onSkillRun
       },
       deps?.codemodeDiscovery,
-      deps?.codemodeDescribe,
       { facade: ops, secrets: secretsFromEnv(env as Record<string, unknown>) },
       deps?.artifact
     )

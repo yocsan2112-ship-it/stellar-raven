@@ -14,28 +14,38 @@ the headline wins.
 
 | Instrument | Layer | Cost / when to run | Headline vs diagnostic |
 |---|---|---|---|
-| `eval/run-routing.mjs` — legacy 338 strict | `search` ranking, offline | free, seconds — **every scoring/catalog change** | **GATE**: committed absolute baseline with a ±1% band. The authoritative current numbers, timestamp, result artifact, and decision note live in `eval/gates.json`; `--gate` exits 1 on breach and CI runs it on every push/PR. Historical movements are recorded in `eval/README.md`. |
+| `eval/run-routing.mjs` — legacy 338 strict | `search` ranking, offline | free, seconds — **every scoring/catalog change** | **GATE**: committed absolute baseline with a ±1% band. The authoritative input fingerprints, accepted totals, timestamp, and decision note live in `eval/gates.json`; `--gate` exits 1 on breach and CI runs it on every push/PR. Historical movements are recorded in `eval/README.md`. |
 | — skills lane (23, hand-authored) | skills routing | free, same run | **GATE**: must not fall below the current top-1 floor in `eval/gates.json`; top-3/top-5/card@5 remain visible diagnostics. |
-| — extended lane (122, real-user phrasing) | `search` on jitsu-mined questions | free, same run | Diagnostic; **target metric for retrieval work**. Read the result artifact named in `eval/gates.json` (local run output; `eval/results/` is not committed) instead of copying a second “current” count here. |
+| — extended lane (122, real-user phrasing) | `search` on jitsu-mined questions | free, same run | Diagnostic; **target metric for retrieval work**. Read the latest local result for the current tree. Local results are not committed and do not define the gate baseline. |
+| — protocol-history v1 lane (8 positives, 4 controls) | `search` routing to a cited research corpus | free, same run | Historical frozen diagnostic inside `run-routing.mjs`. Positives require `scout.searchResearch` in the top five. Controls forbid any top-five capture. |
+| `npm run eval:protocol-history` — v2 original plus blind sets (19 required, 9 forbidden, 4 neutral) | protocol-history routing and symmetric false captures | free, seconds — every candidate for this work | Source-epoch-bound frozen diagnostic. The runner checks source hashes before scoring. It writes `source-expired` without scored sets after any mismatch. Eligible results stamp the actual manifest and contract digests. |
 | — accept-either views (corpus `acceptable_cards` ∪ overlay) | label-tolerance context | free, same run | Diagnostic only; never the headline |
 | `eval/discovery/` | one-search, agent-allowed-≤3-search, and mined-query replay source-family / usable-route discovery | one-shot/replay free; agent arm paid; after discovery guidance or retrieval-shape work | Diagnostic: 43 adjudicated cases; `familyHit@3` + `usableOp@5`; paired miss classification; 91-query LumenLoop replay lane |
 | `eval/agentic/` | agent-driven `search`, live server | ~$, minutes — after major search-behavior changes | Diagnostic (label-ambiguity analysis) |
-| `eval/qa/run-qa.mjs` — main battery (490) | **end-to-end search → execute → answer** | ~$0.2–0.7/case, ~30 min per 30-case sample — before/after big changes, A/Bs | **HEADLINE** (correct / partial / wrong) |
+| `eval/qa/run-qa.mjs` — main battery (501) | **end-to-end search → execute → answer** | ~$0.2–0.7/case, ~30 min per 30-case sample — before/after big changes, A/Bs | **HEADLINE** (correct / partial / wrong) |
 | `npm run eval:playground` — actual `/playground/chat` SSE over existing QA cases | public playground model loop → tools → answer | paid; seeded 5-case default, max 30 per run-scoped subject — after playground prompt/model/loop changes; model-backed runs require an operator-matched server/tree generation and machine-readable round-cap context | Diagnostic, scored by the same QA judge/evidence pack; v2 artifacts self-pin answering/judge/cap/source provenance; never merge its denominator with the main MCP headline |
 | — canonical live-data contract `live-data-canonical-v3` (`--cases eval/qa/corpus/live/live-cases.json`, 15 = the carried v2 ten (7 Scout / 2 Lumenloop / 1 cant-do, byte-identical under an independent projection digest) + 5 behavioral additions: lifecycle-label provenance, jobs recency, cross-service reconciliation, guessed-slug soft-empty, artifact-read continuation) | `execute` **grounding** where priors fail | ~$3.30–10 full at the documented ~$0.22–0.67/case — after executor/adapter changes | Diagnostic for the execute path; membership/order stays the frozen 15 while full case content is pinned by the contract's `caseContentDigest`; graded on behavior, never exact values. History: `live-data-canonical-v2` (10 cases) was the contract through 2026-07-12 and saturated at 10/10; v2 aggregates stay v2-denominated, per-id comparison remains valid for the carried ten |
 | — opt-in digest contract `live-digest-supplement-v2` (`--cases eval/qa/corpus/live/live-digest-supplement-cases.json`, 2 Lumenloop) | `execute` recency-digest grounding | ~$0.44–1.34 full at the same per-case estimate — only for digest/skill-run questions | Diagnostic supplement; report separately from the canonical live-data lane and main battery |
 | `eval/plan/grade-plan.mjs` | which services `execute` actually touched | free (regrades stored QA transcripts) | Diagnostic (coverage; progression informational only) |
+
+`npm run eval:qa:paired` is an experimental stored-run printer. It requires 100 eligible IDs
+after exclusions, so it does not apply to the sample-30 headline lane.
 
 Corpus provenance: the QA battery is **owned** at `eval/qa/corpus/battery/` (one hand-authored
 file per case; `eval/qa/README.md`); `eval/corpus/` is the **archival** vendored snapshot and
 the routing eval's committed label source (`eval/corpus/PROVENANCE.md`) — the raven sibling
 repos are retired; growth happens in this repo's own formats.
 
-**Owned-battery and sample history.** The authoritative denominator is **490 cases as of
-2026-07-13**, after six release-closeout cases were added to the 484-case 2026-07-11 baseline:
-three evidence-poor retrieval controls/positives plus one closed-world control, and two paired
-prior-art preflight cases. Historical 484-case aggregate results remain 484-denominated and are
-not relabeled; per-id comparisons remain valid when the rubric/pack tuple matches.
+**Owned-battery and sample history.** The current battery has **501 active cases as of 2026-09-17**.
+The 500→501 compile added `q-tw-escrow-api-auth-custody`.
+Use the generated registry and selected case IDs to establish each run's denominator.
+The 499→500 compile added `q-scf-resolve-passport-superseded-slug`. The 497→499
+compile added two `scout.hackathonBrief` cases to the 497-case corpus. The retrieval audit
+previously added five service-semantics cases to the 492-case corpus. Commit
+`6e1f979` before that added two Soroban cases to the 490-case corpus. The 490-case corpus was created
+after six release-closeout cases were added to the 484-case 2026-07-11 baseline. Historical
+484-case, 490-case, and 492-case results retain their original denominators. Per-id comparisons
+remain valid when the rubric and pack tuple matches.
 
 The sample-30 algorithm did not change: it allocates proportionally by `tags.service`, sorts each
 stratum by id, and makes even-spaced picks. Growing the Scout and LumenLoop strata by three cases
@@ -44,26 +54,33 @@ five. Removed: `q-defi-liquid-staking-whitespace`, `q-hist-quantum-preparedness-
 `q-scf-current-hackathons-compare-live`, `q-scf-rfps-hackathons-live`, and
 `q-ti-explain-repo-payload-status`. Added: `q-defi-defindex-honest`,
 `q-hist-meridian-2026-corrected-venue`, `q-scf-current-round`, `q-scf-sdf-bug-bounty`, and
-`q-ti-openzeppelin-relayer`. None of the six new cases itself entered sample-30. Therefore the
-new sample is deterministic for the 490-case corpus but is **not membership-identical** to the
-2026-07-11 484-case baseline sample; aggregate before/after claims across that boundary require
-either the same explicit ids or a disclosed sample-membership change.
+`q-ti-openzeppelin-relayer`. None of the six new cases itself entered sample-30. Therefore, that
+historical sample was deterministic for the 490-case corpus but was **not membership-identical**
+to the 2026-07-11 484-case baseline sample. Aggregate before/after claims across that boundary
+require either the same explicit ids or a disclosed sample-membership change.
+
+The 492→497 compile retained 9 sample ids and replaced 21. Two new cases entered sample-30.
+`eval/qa/README.md` records the exact membership history. Comparisons across this boundary need a
+common-id set or a disclosed membership change. The 497→499 compile retained 28 sample ids and
+replaced two. The 499→500 boundary also needs a common-id set or a disclosed membership change.
 
 ## Rules that keep this from getting messy
 
 1. **One headline, two gates, everything else is diagnostic.** New reporting views don't
-   get promoted into gates without a decision recorded in Solo. The two gates are
+   get promoted into gates without a decision recorded in the round ledger. The two gates are
    mechanical, not prose: baselines live in `eval/gates.json`, every `run-routing` run
    prints a gate verdict, `--gate` turns a breach into exit 1, and CI runs
    `eval:selftest` + `eval:routing -- --gate` on every push/PR — so re-baselining means
-   changing `gates.json` in the same commit as the change that moved the numbers.
+   changing `gates.json` in the same commit as the change that moved the numbers. The file
+   records SHA-256 fingerprints for every gated data input and exact accepted lane totals.
    Grading-rule changes
    re-baseline the gates explicitly (results files carry `gradingRule`). Current rule: v3,
    manifest-exposed entries only, no lumenloop/skills twin identity; cross-service tolerance
    belongs in `expected_any`, not in the strict headline.
 2. **Lanes never merge.** The legacy 338, skills 23 (active; +8 documented-inert
    `retiredCases` in `eval/skills-cases.json` after the 2026-07-03 onboarding-skills
-   retirement, ADR-0002), extended 122, membership-frozen canonical live-data 15
+   retirement, ADR-0002), extended 122, protocol-history v1 diagnostic 12, v2 diagnostics 12 and 20,
+   membership-frozen canonical live-data 15
    (`live-data-canonical-v3`; the carried v2 ten are a subset of it, and v2-denominated
    aggregates stay v2-denominated), and opt-in live-digest
    supplement 2 are separate scopes with separate denominators, forever. A historical
@@ -89,18 +106,65 @@ either the same explicit ids or a disclosed sample-membership change.
    committed. `eval:selftest` pins both named QA contracts' names, ordered membership, and
    case-content digests. Any live-contract question/golden/tag/note change requires an explicit
    contract-version bump, provenance note, and digest update. Generated files
-   (`routing-cases.json`, `qa/cases.json`, `qa/sample.json`) are never hand-edited — CI
+   (`routing-cases.json`, `qa/cases.json`, `qa/sample.json`, `qa/lifecycle-registry.json`) are never hand-edited — CI
    byte-pins them.
-7. **Results are local-only evidence** (`eval/**/results/`, gitignored); READMEs carry the
-   committed record with the exact results-file stamp they cite. The results dirs are unbounded
-   — prune them periodically (e.g. drop results older than 30 days), keeping any stamp still
-   referenced by `eval/gates.json` or a committed README record.
+7. **Results are local-only evidence** (`eval/**/results/`, gitignored). Routing results stamp the actual manifest SHA-256. `eval/gates.json`
+   carries the routing gate's committed fingerprints and accepted totals. READMEs carry historical
+   records and can cite exact local result stamps. A routing gate can add `evidence.localTrace` as
+   optional context, but the trace is never required to resolve the baseline. The results dirs are
+   unbounded. Prune results older than 30 days after the active investigation ends.
 8. **Discovery is intentionally narrower than QA.** Its one-shot lane asks whether one verbatim
    `search` surfaces an expected family in the top 3 and a usable operation/skill in the top 5.
    The agent arm allows a real caller at most three searches and records visible hits plus final
    selection; the replay lane uses PII-safe queries mined from eval agents, never raw user traffic.
    Paired classification separates retrieval, agent-behavior, and downstream rows. None of these
    lanes measures final-answer correctness; use QA for that headline.
+9. **Agentic cross-service tolerance needs an explicit contract change.** The current agentic
+   workflow grades the exact expected service. Before the next comparable run, either consume the
+   committed per-case `expected_any` labels and stamp that grading contract, or keep exact-primary
+   grading. Never reinterpret stored results after the run.
+10. **As-of-date omissions need a cross-shard inventory.** The 2026-08-14 row review found several
+    otherwise-correct answers that omitted dates for volatile claims. Inventory the pattern across
+    service shards before changing prompts or rubrics. A single case remains diagnostic and does
+    not justify per-question tuning.
+11. **Remote service identity is part of QA comparability.** A stable listener only proves the
+    local process identity. It does not prove the Scout, Lumenloop, or Stellar Docs identity.
+    A comparable live collection requires one pinned public probe and one pinned pre-arm vector.
+    It also requires matching captures around every answering call and one matching postflight.
+    A successful attempted postflight must record `skippedReason: null`.
+    A missing baseline is a separate guard failure, not a probe failure.
+    Any missing capture, probe failure, or changed vector makes the artifact non-comparable.
+    The runner suppresses all aggregates after such a failure.
+12. **Concurrent paired collection has one supervisor.** Use
+    `npm run eval:qa:paired:collect -- --plan <plan.json> --authorized-plan-sha256 <sha256>`.
+    The plan uses `qa-paired-collection-plan-v2`. The supplied hash must equal the canonical plan
+    hash. Keep the owner authorization outside the plan. The owner signature covers the canonical
+    hash and every command array in the plan. The plan freezes exactly 200 selected IDs and exactly
+    500 unique active corpus IDs. It binds both ordered ID hashes, selected content, cases bytes,
+    commands, four worktrees, and input hashes. Each cases path stays inside its runner. Both runners
+    must reproduce every corpus field. The executing supervisor and control module must match their pins.
+    Baseline and candidate use different revisions and surface hashes. Baseline uses `add-missing`;
+    candidate uses `verify-native`. Their public and upstream ports are pairwise distinct.
+    Shared measurement flags match. Both servers reproduce one salted `.dev.vars` identity without
+    recording values. Keep this salted plan uncommitted, then delete it after the run.
+    The plan binds the free capacity command, instrument, artifact, schedule, thresholds, and
+    24-hour freshness window. The exact 86,400,000 ms boundary is valid. The artifact must prove
+    two overlapping captures and 14 successful
+    responses. It must show no errors, retries, or `Retry-After`. Vectors must match, and real request
+    concurrency must occur. The `--stable-sha256` remote probe still controls immediate service drift.
+    The plan also binds the exact P6 wrapper command and its seven `$0.50` calls.
+    P6 refuses an existing output or temporary output. It never overwrites a method record.
+    The plan binds both directed flip re-judge commands and requires `--allow-empty`.
+    Each flip command pins the Claude path, binary SHA-256, and environment SHA-256.
+    The re-judge checks these identities before and after judging. It stamps them in the artifact.
+    The supervisor enforces row barriers, alternating monotonic release order, shared cancellation,
+    child exits, a bounded termination drain, and a four-hour deadline. Wall-clock times provide
+    duration evidence only. Before the receipt, each artifact must exist in its arm results
+    directory. It must be comparable and match the selected IDs and exact content identity.
+    Its server revision must match that arm's frozen `--server-revision`.
+    Collection uses `$80` per arm. Stored judging raises the same ledger to `$120` per arm.
+    A failed collection produces no paired aggregate or receipt. See `qa/README.md` for the full
+    plan and receipt contract.
 
 ## Primary artifact: service-improvement recommendations
 
@@ -116,7 +180,7 @@ matching collection: `lumenloop/`, `stellar-light-scout/`, `stellar-docs/`, `ski
 - **Evidence rule:** findings move `proposed → verified → reported-upstream → fixed-upstream`;
   `verified` requires live re-execution evidence, not a stale transcript.
 - **Scope rule:** `improvements/` is for the upstream services only. Fixes to this repo's
-  own scoring/catalog/executor go to Solo todos, as ever.
+  own scoring/catalog/executor go to `.agents/TODO.md`, as ever.
 
 ## What we deliberately do NOT measure
 

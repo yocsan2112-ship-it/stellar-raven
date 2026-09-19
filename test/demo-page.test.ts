@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { demoPage, DEMO_PAGE_HEADERS } from "../src/demo/page";
 import { DEMO_CAPS } from "../src/demo/budget";
 import { loadManifest, searchCatalogPage } from "../src/catalog/search";
+import { renderPublicHeadMetadata } from "../src/site";
 // The reusable ADR-0003 leak guard (backed by scripts/exposure.mjs data) —
 // the design requires running it over the rendered demo HTML.
 import { assertNoNonExposedRefsInText } from "../scripts/emitted-text-guard.mjs";
@@ -49,10 +50,29 @@ describe("demo page CSP", () => {
 });
 
 describe("demo page states", () => {
+  it("uses the shared header navigation styles within the playground content width", () => {
+    for (const page of [lockedHtml, chatHtml]) {
+      expect(page).toContain('<header class="top"><div class="pwrap top-in">');
+      expect(page).toContain(
+        '<nav class="top-nav"><a class="btn btn-ghost" href="/">Home</a>' +
+          '<a class="btn btn-ghost" href="/docs">Docs</a></nav>'
+      );
+      expect(page).not.toContain('<span class="end"><a class="btn btn-ghost" href="/">');
+    }
+  });
+
   it("sets complete noindex social metadata for the demo URL", () => {
+    expect(lockedHtml).toContain(
+      renderPublicHeadMetadata({
+        title: "Playground · Stellar Raven",
+        description: "Try Stellar Raven's live agent playground for Stellar ecosystem questions.",
+        path: "/playground",
+        noindex: true
+      })
+    );
     expect(lockedHtml).toContain("<title>Playground · Stellar Raven</title>");
     expect(lockedHtml).toContain(
-      '<meta name="description" content="Try Stellar Raven\'s live agent playground for Stellar ecosystem questions."/>'
+      '<meta name="description" content="Try Stellar Raven&#039;s live agent playground for Stellar ecosystem questions."/>'
     );
     expect(lockedHtml).toContain('<meta name="robots" content="noindex"/>');
     expect(lockedHtml).toContain('<meta property="og:type" content="website"/>');
@@ -74,7 +94,7 @@ describe("demo page states", () => {
     expect(lockedHtml).toContain("soroban smart contract deploy");
     expect(lockedHtml).toContain("&quot;sections&quot;: [");
     expect(lockedHtml).not.toContain("&quot;playbook&quot;: [");
-    expect(lockedHtml).toContain("4 of 15 matches");
+    expect(lockedHtml).toContain("4 of 13 matches");
     // The static example never shows a section HIT — sections left search at
     // the 2026-07-13 skills-form A/B (the sample code still READS a section).
     expect(lockedHtml).not.toContain("skill-section");
@@ -101,7 +121,12 @@ describe("demo page states", () => {
     expect(chatHtml).toContain('history.length === 1');
     expect(chatHtml).toContain('behavior: "instant"');
     expect(chatHtml).toContain("preventScroll: true");
-    expect(chatHtml).toContain(`maxlength="${DEMO_CAPS.maxUserMessageChars}"`);
+    expect(chatHtml).not.toContain("maxlength=");
+    expect(chatHtml).toContain('aria-describedby="composer-count"');
+    expect(chatHtml).toContain('<div id="composer-count" class="composer-count"></div>');
+    expect(chatHtml).not.toContain('id="composer-count" class="composer-count" role="status"');
+    expect(chatHtml).toContain(`var userMessageLimit = ${DEMO_CAPS.maxUserMessageChars};`);
+    expect(chatHtml).toContain("updateComposerLimitState(input, sendBtn, composerCount, announce, busy, wasOverLimit, userMessageLimit)");
     expect(chatHtml).toContain('fetch("/playground/chat"');
     expect(chatHtml).toContain("Ask about Stellar and Raven will search its connected sources");
     expect(chatHtml).not.toContain("full power and glory of Stellar Raven");
@@ -113,6 +138,22 @@ describe("demo page states", () => {
     }
     expect(chatHtml).toContain("stalled"); // the no-result-by-done state
     expect(chatHtml).not.toContain("stepline"); // no step dividers in the live trace either
+  });
+
+  it("authenticated: wires one Copy action per answer to the async Clipboard API", () => {
+    // Behavior lives in test/demo-copy-core.test.ts; this pins the wiring that
+    // only exists in the assembled page.
+    expect(chatHtml).toContain("attachCopyRow(document, navigator, current, acc)");
+    expect(chatHtml).toContain("clip.writeText(source)");
+    expect(chatHtml).not.toContain("execCommand(");
+    // Copy feedback has its own per-row status node; the shared turn-progress
+    // region is untouched by the feature.
+    expect(chatHtml).toContain('<div id="sr" class="sr-only" role="status"></div>');
+    expect(chatHtml).toContain(".answer-actions{display:flex");
+    // The locked page ships zero script, so it gets no Copy action (the
+    // shared stylesheet still carries the .answer-actions rule).
+    expect(lockedHtml).not.toContain("attachCopyRow");
+    expect(lockedHtml).not.toContain("buildCopyRow");
   });
 
   it("keeps demo-facing copy free of transport and envelope jargon", () => {

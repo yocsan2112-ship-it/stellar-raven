@@ -4,21 +4,24 @@
   "surface": [
     "scout.getPartners",
     "scout.matchPartners",
-    "scout.searchProjects"
+    "scout.searchProjects",
+    "scout.getStablecoins"
   ],
   "golden": {
     "answer": "A grounded answer derives its named examples and status claims from the live Stellar Scout directory or research data, then dates the roster so it is not presented as permanent. As of 2026-07-11, a live stablecoin-issuer search returned 38 matches, with Circle, Glo Dollar, and Coins.ph among the first results.\n\nThe dated example is illustrative: a later grounded answer should report what the same source basis supports at its own observation time while preserving the stable distinctions above.",
     "keyFacts": [
-      "Presents specific source-supported content as a current or dated observation rather than as an unsupported memory claim.",
+      "Presents source-supported content as a current or dated observation, not a memory claim.",
       "Makes the as-of date visible for every changeable roster, status, version, or measurement.",
       "Names Circle (USDC and EURC) as the dominant stablecoin issuer on Stellar."
     ],
     "avoid": [
       "Do NOT fabricate stablecoin issuers or invent token tickers not present in the corpus.",
-      "Do NOT attribute USDC/EURC to a non-Circle issuer.",
-      "Do NOT present the observed live result set as a complete or permanent roster; explicitly historical facts remain historical."
+      "Do NOT attribute Circle's USDC or EURC to a non-Circle issuer; a distinct same-ticker asset from another issuer may still be reported as its own asset under its own issuer account.",
+      "Do NOT claim the observed live result set is a complete or permanent roster; explicitly historical facts remain historical.",
+      "Do NOT claim the ranked stablecoin registry is the complete roster of Stellar stablecoin issuers; a missing issuer is untracked, not absent from Stellar.",
+      "Do NOT read a null supply, market cap, or holder value as zero, and do NOT rank issuers by raw supply across different pegs; marketCapUSD is the comparable metric."
     ],
-    "notes": "Discovery → scout_projects. Freshness-sensitive (issuer set evolves). Dossier §4.4. The dominant, verifiable anchor is Circle (USDC + EURC); the broader issuer set must be grounded in the live directory, not invented. Verified 2026-06-29: stellar.org/products-and-tools/circle-usdc-eurc resolves and confirms Circle issues both USDC and EURC on Stellar.\nAlso good if the answer: Surfaces additional anchor-operated / fiat-pegged issuers from the directory rather than only naming Circle. | Frames the answer as a discovery over the project directory, attributing issuers to specific entities.\nGolden cites: The Stellar Light / Scout project directory or a stellar.org stablecoin page."
+    "notes": "Discovery → scout_projects. Freshness-sensitive (issuer set evolves). Dossier §4.4. The dominant, verifiable anchor is Circle (USDC + EURC); the broader issuer set must be grounded in the live directory, not invented. Verified 2026-06-29: stellar.org/products-and-tools/circle-usdc-eurc resolves and confirms Circle issues both USDC and EURC on Stellar.\nAlso good if the answer: Surfaces additional anchor-operated / fiat-pegged issuers from the directory rather than only naming Circle. | Frames the answer as a discovery over the project directory, attributing issuers to specific entities.\nGolden cites: The Stellar Light / Scout project directory or a stellar.org stablecoin page.\nSTABLECOIN REGISTRY BOUND (verified 2026-08-19): scout.getStablecoins serves a curated registry, not a census. A live read included Circle USDC and Circle EURC with measured values. Its coverage block states that absence means untracked, never absent from Stellar. GRADER CAUTION: grade the reading behavior instead of set membership. Cite meta.dataAsOf for ranking or size claims; meta.generatedAt only dates the response. marketCapUSD is the cross-peg size metric because supply uses each row's peg. Null means unmeasured, not zero. Use assetId or issuer as the identity because one ticker can have several issuers. counts.total is the filtered count before slicing, counts.tracked is the whole registry, and counts.returned is the served page. Do not require a pinned row count, order, timestamp lag, or position. The top marketCapUSD row can be a yield-bearing token, so preserve product-class distinctions. Circle's USDC issuer remains independently confirmed by Circle and Horizon.\nAccurately quoting the canonical Scout source record on Circle USDC roster coverage is not a wrong claim while a cached or older copy still shows its pre-2026-08-19 omission; grade caps at partial for that claim unless the answer contradicts the golden fact independently of the quoted source."
   },
   "tags": {
     "category": "assets-anchors-seps",
@@ -26,30 +29,164 @@
     "freshness": "live"
   },
   "truth": {
-    "domain": "real-world",
+    "lifecycle": {
+      "state": "active",
+      "reviewState": "none"
+    },
+    "domain": "mixed",
     "status": "confirmed",
-    "asOf": "2026-07-11",
+    "asOf": "2026-08-19",
     "sources": [
       {
         "class": "A",
         "ref": "https://stellar.org/products-and-tools/circle-usdc-eurc",
         "note": "class inferred at migration"
+      },
+      {
+        "class": "A",
+        "ref": "https://developers.circle.com/stablecoins/usdc-contract-addresses",
+        "note": "Circle's own developer docs list Stellar Mainnet USDC as USDC-GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN; observed 2026-08-18."
+      },
+      {
+        "class": "A",
+        "ref": "https://developers.circle.com/stablecoins/eurc-contract-addresses",
+        "note": "Circle's own developer docs list Stellar Mainnet EURC as EURC-GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4ITNPP2; observed 2026-08-18."
+      },
+      {
+        "class": "C",
+        "ref": "scout.getStablecoins({ limit: 100 }) and ({ peg: \"USD\" }) through the deployed MCP; meta.source https://stellarlight.xyz/api/stablecoins, upstream https://stablecoin.stellarlight.xyz, meta.dataAsOf 2026-08-18T15:17:47.179Z",
+        "note": "Read-only live enumeration of the whole tracked set on 2026-08-18: no USDC row; Circle EURC row present with null supply, marketCapUSD, and holders."
+      },
+      {
+        "class": "D",
+        "ref": "https://stellar.expert/explorer/public/asset/USDC-GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+        "note": "Independent on-chain explorer, page dated 2026-08-18: the Circle-issued USDC asset is live with same-day payments and trades."
+      },
+      {
+        "class": "D",
+        "ref": "https://primexbt.com/news/circles-usdc-supply-on-stellar-jumps-34-7-in-30-days-tracking-cctp-rollout/",
+        "note": "Independent reporting dated 2026-08-08 citing Circle's own data for Stellar-specific USDC supply."
       }
     ],
     "verified": {
-      "date": "2026-07-11",
-      "by": "P4 conversions rework after independent Fable copy/quality review",
+      "date": "2026-08-29",
+      "by": "golden-truth session 3 (2026-08-29, long-fact batch, worker gt3-sol-a)",
       "evidence": [
-        "solo://proj/49/scratchpad/truth-maintenance-20--575",
-        "2026-07-11 localhost:8787 search→execute probe observed: a live stablecoin-issuer search returned 38 matches, with Circle, Glo Dollar, and Coins.ph among the first results.",
-        "Independent Fable review: /private/tmp/claude-501/-Users-kalepail-Desktop-stellar-raven-codemode/228cd755-2832-4a13-8e47-9a25e851db2a/scratchpad/p4/conversions-copy-review.md",
-        "solo://proj/49/scratchpad/super-corpus-rebuild--585"
+        "Class C 2026-08-19: https://stellarlight.xyz/api/stablecoins?limit=100 returned meta.dataAsOf 2026-08-19T18:57:38.745Z, coverage.basis curated-registry, and separate live rows for Circle USDC, Circle EURC, and MyKobo EURC. The filtered USD read returned counts.total 6 and counts.returned 6 while counts.tracked stayed 20.",
+        "Class A 2026-08-19: https://developers.circle.com/stablecoins/usdc-contract-addresses lists Stellar Mainnet USDC-GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN.",
+        "Class F 2026-08-19: https://horizon.stellar.org/assets?asset_code=USDC&asset_issuer=GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN&limit=1 returned the exact asset with a positive authorized balance.",
+        "Sibling sweep 2026-08-19: q-asset-stablecoin-issuers-discovery and q-eco-stablecoins-on-stellar now use the same curated-registry semantics. The existing Circle issuer, product-class, and dated-roster rules remain consistent with sibling cases and clusters 015 and 028.",
+        "solo://proj/49/scratchpad/truth-maintenance-an--835",
+        "Structural re-form (symmetric-caution): added a cached-source grading caution for sls-066; the verified issuer and registry facts are unchanged.",
+        "Improvements review 2026-08-27: improvements/resolved.json entry sls-066 records the 2026-08-19 fix; the disputed claim is Circle USDC roster coverage in an older Scout registry copy.",
+        "Sibling sweep 2026-08-27: grep sls-066|curated-registry → q-eco-stablecoins-on-stellar; no contradiction",
+        "Structural re-form (presentation-avoid): rewrote two presentational avoid items as the same concrete false-content claims; both trap targets are unchanged.",
+        "No live re-check was required because the avoid rewrites do not change the forbidden claims.",
+        "Sibling sweep 2026-08-27: grep curated-registry|stablecoin issuers|Circle USDC → q-eco-stablecoins-on-stellar, q-asset-usdc-eurc-issuer; no contradiction",
+        "Structural re-form (long-fact): shortened the source-supported observation rule; truth unchanged.",
+        "Live re-check 2026-08-29: https://stellar.org/products-and-tools/circle-usdc-eurc — the current official page confirms Circle's USDC and EURC examples on Stellar.",
+        "Sibling sweep 2026-08-29: grep Circle.*USDC|stablecoin issuers → q-asset-stablecoin-issuers-discovery only in this battery directory; no sibling contradiction."
       ],
       "rootCause": [
-        "eval-authoring",
-        "solo://proj/49/scratchpad/super-corpus-rebuild--585"
+        "improvements/resolved.json entry sls-066",
+        "solo://proj/49/scratchpad/truth-maintenance-an--835",
+        ".agents/TODO.md — Golden authoring lint warnings burn-down (symmetric-caution class)",
+        ".agents/TODO.md — Golden authoring lint warnings burn-down (presentation-avoid class)",
+        ".agents/TODO.md — Golden authoring lint warnings burn-down (long-fact class)"
       ]
     },
-    "origin": "raven-next q-asset-stablecoin-issuers-discovery"
+    "origin": "raven-next q-asset-stablecoin-issuers-discovery",
+    "corroboration": [
+      {
+        "claim": "USDC is live on Stellar under Circle's official Mainnet issuer GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN, and Circle's EURC is live under GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4ITNPP2.",
+        "verdict": "confirmed",
+        "evidence": [
+          {
+            "class": "A",
+            "ref": "https://developers.circle.com/stablecoins/usdc-contract-addresses",
+            "observedAt": "2026-08-18",
+            "note": "Circle's mainnet address table names the Stellar USDC issuer account."
+          },
+          {
+            "class": "A",
+            "ref": "https://www.circle.com/eurc",
+            "observedAt": "2026-08-18",
+            "note": "Circle's EURC page lists Stellar among the supported chains and links the same Stellar Mainnet EURC asset."
+          },
+          {
+            "class": "D",
+            "ref": "https://stellar.expert/explorer/public/asset/USDC-GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+            "observedAt": "2026-08-18",
+            "note": "Independent explorer shows the asset issued by that account transacting the same day."
+          }
+        ]
+      },
+      {
+        "claim": "The scout.getStablecoins snapshot is a bounded tracked set, so omission from it is untracked coverage and not real-world absence: on 2026-08-18 it served no USDC row at all, while Circle's EURC row was present with null supply, marketCapUSD, and holders.",
+        "verdict": "confirmed-as-of",
+        "evidence": [
+          {
+            "class": "C",
+            "ref": "scout.getStablecoins({ limit: 100 }) and ({ peg: \"USD\" }) through the deployed MCP; meta.source https://stellarlight.xyz/api/stablecoins, upstream https://stablecoin.stellarlight.xyz, meta.dataAsOf 2026-08-18T15:17:47.179Z",
+            "observedAt": "2026-08-18",
+            "note": "Whole-set enumeration returned every tracked row; no row carried the USDC ticker, and the Circle EURC row carried nulls on every size metric."
+          },
+          {
+            "class": "D",
+            "ref": "https://stellar.expert/explorer/public/asset/USDC-GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+            "observedAt": "2026-08-18",
+            "note": "The same day, the omitted asset was demonstrably live on Stellar mainnet."
+          },
+          {
+            "class": "A",
+            "ref": "https://developers.circle.com/stablecoins/usdc-contract-addresses",
+            "observedAt": "2026-08-18",
+            "note": "Circle continues to publish Stellar as a supported USDC mainnet."
+          }
+        ]
+      },
+      {
+        "claim": "One ticker can occupy several snapshot rows under different issuer accounts, so issuer is the join key rather than ticker: on 2026-08-18 EURC appeared both for Circle (GDHU6WRG4IEQXM5NZ4BMPKOXHW76MZM4Y2IEMFDVXBSDP6SJY4ITNPP2) and for MyKobo (GAQRF3UGHBT6JYQZ7YSUYCIYWAF4T2SAA5237Q5LIQYJOHHFAWDXZ7NM).",
+        "verdict": "confirmed-as-of",
+        "evidence": [
+          {
+            "class": "C",
+            "ref": "scout.getStablecoins({ limit: 100 }) and ({ peg: \"USD\" }) through the deployed MCP; meta.source https://stellarlight.xyz/api/stablecoins, upstream https://stablecoin.stellarlight.xyz, meta.dataAsOf 2026-08-18T15:17:47.179Z",
+            "observedAt": "2026-08-18",
+            "note": "Two distinct rows shared the EURC ticker with different issuer accounts, issuerDomain values, and company names."
+          },
+          {
+            "class": "A",
+            "ref": "https://developers.circle.com/stablecoins/eurc-contract-addresses",
+            "observedAt": "2026-08-18",
+            "note": "Circle's own address table identifies which of the two accounts is Circle's EURC."
+          }
+        ]
+      },
+      {
+        "claim": "The USD size of USDC on Stellar as of 2026-08-18. Independent sources give materially different figures, so no golden pins one; the golden asserts presence and issuer only.",
+        "verdict": "disputed",
+        "evidence": [
+          {
+            "class": "D",
+            "ref": "https://stellar.expert/explorer/public/asset/USDC-GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+            "observedAt": "2026-08-18",
+            "note": "On-chain explorer reported total supply 338,953,374 USDC with 2,336,426 trustlines."
+          },
+          {
+            "class": "D",
+            "ref": "https://primexbt.com/news/circles-usdc-supply-on-stellar-jumps-34-7-in-30-days-tracking-cctp-rollout/",
+            "observedAt": "2026-08-08",
+            "note": "Reporting cited roughly 365.5 million USD market cap on Stellar and about 360.5 million USD per Circle data dated 2026-08-07."
+          },
+          {
+            "class": "A",
+            "ref": "https://www.circle.com/multi-chain-usdc/stellar",
+            "observedAt": "2026-08-18",
+            "note": "Circle's own Stellar landing page still served the far older phrase 'grown past $83 million', so Circle's marketing copy and Circle's data disagree."
+          }
+        ]
+      }
+    ]
   }
 }

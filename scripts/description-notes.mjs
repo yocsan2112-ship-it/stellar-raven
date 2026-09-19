@@ -5,44 +5,44 @@
  *
  * Shared by build-catalog.mjs (manifest descriptions) and
  * build-super-spec.mjs (in-sandbox spec descriptions) so the two model-facing
- * surfaces cannot drift. Wording constraint for every note: keep tokens out
- * of the lexical scorer's blast radius — no `r.` (a bare "r" token
- * prefix-covers rule/role/rewrite/… queries) and no apostrophes (possessives
- * tokenize to a bare "s" with the same effect).
+ * surfaces cannot drift. These descriptions feed lexical scoring, so keep
+ * notes source-scoped and measure wording changes with the routing gate.
  */
 
-// Lumenloop notes — the residue of the 2026-07-03 skills harvest (Solo todo
-// 825): everything the retired lumenloop-api onboarding skills and the
-// playbook gotchas teach was checked against the inventory descriptions, and
-// almost all of it is already carried there (search_directory semantic
-// fallback, compact=true, summaries vs verbatim text, videos/av alias,
-// per-collection sort fields) or normalized by the adapter (get_document
-// not-found prose → soft-empty). What remains is the one trap the
-// descriptions miss, live-verified 2026-07-03: find_content_by_entity with
-// entity_type "person" answers success:true + all-empty groups even for the
-// most heavily covered people (control: organization returns full groups) —
-// an envelope-ok empty that reads as evidence of absence but is lane behavior.
-// Lumenloop/scout boundary contrast (Solo todo 835, agentic-lane evidence
-// 2026-07-03): after the stellar-light description enrichment, agent callers
-// took "what is X / who builds X" project-lookup questions to
-// scout.searchProjects even when the asker wanted the narrative/editorial
-// answer lumenloop carries. The pair of notes below (here and on
-// scout.searchProjects) states the contrast each side is blind to: lumenloop
-// = editorial context + directory descriptions, scout = structured fields.
-// Wording is collision-checked against the routing corpus (2026-07-04):
-// every non-trivial token is either already present in the entry or has zero
-// cross-labeled query hits ("narrative", "editorial", "context", "lane");
-// "who builds X" is a deliberate claim — that phrasing appears only in
-// lumenloop-labeled questions. Avoided on this side: hackathon, partner,
-// funding, award, live, history (all appear in scout/mixed-labeled queries).
+// These notes cover verified gaps in the upstream descriptions. They state
+// source boundaries and evidence semantics that apply beyond one query.
 export const LUMENLOOP_DESCRIPTION_NOTES = {
   find_content_by_entity:
     'Catalog note: entity_type "person" can return ok data with all-empty groups even for heavily covered people (live-verified 2026-07-03). This is a data-shaped empty, not a transport or soft-empty failure. It supports only the scoped statement that this exact lookup linked no content. For open-world person coverage, use search_content_semantic, then require exact identity plus source and date before attribution.',
   search_directory:
-    "Catalog note: prefer this lane plus find_content_about_project when a what is X or who builds X question wants narrative editorial context about a named ecosystem project; the scout project search returns structured fields only. A match_mode semantic row is a candidate, not exact identity proof.",
+    "Catalog note: use this lane plus find_content_about_project for narrative editorial context about a named ecosystem project; the scout project search returns structured fields only. A match_mode semantic row is a candidate, not exact identity proof.",
   search_content_semantic:
     "Catalog note: this is the wide-net recovery lane for open-world identity, history, event, and obscure-topic questions after directory, entity, or docs lookups are empty or off-target. Raven normalizes every returned collection into one items array, globally sorted by the upstream similarity score; each row carries collection, while counts and meta preserve shape context. Filter items before projecting compact fields. Semantic rows are candidates, not attribution: require exact identity plus source and date, and discard merely adjacent results."
 };
+
+// Whole-skill discovery descriptions are host-owned routing text. An override
+// does not modify pinned source bytes; skill.read still applies its existing
+// exposure scrub. Keep overrides exact-ID and narrow. Every generator validates
+// that each key still resolves, so a rename cannot silently drop curated text.
+export const SKILL_DESCRIPTION_OVERRIDES = Object.freeze({
+  "skills.trustless-work.trustless-work-dev":
+    "Escrow-as-a-service integration for single-release and multi-release escrows, milestone releases, dispute handling, and the provider REST API, React SDK, or Blocks UI."
+});
+
+export function skillDescription(id, upstreamDescription) {
+  return SKILL_DESCRIPTION_OVERRIDES[id] ?? upstreamDescription;
+}
+
+export function assertSkillDescriptionOverrideIdsResolve(skillIds, consumer) {
+  const known = skillIds instanceof Set ? skillIds : new Set(skillIds);
+  const stale = Object.keys(SKILL_DESCRIPTION_OVERRIDES).filter((id) => !known.has(id));
+  if (stale.length > 0) {
+    throw new Error(
+      `${consumer}: SKILL_DESCRIPTION_OVERRIDES names skills that no longer exist: ${stale.join(", ")}. ` +
+        "Reconcile scripts/description-notes.mjs with the pinned source."
+    );
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Callable-name rewrite for scout descriptions (shared, deterministic).
@@ -96,17 +96,11 @@ function snakeCase(opId) {
  *    an all-lowercase opId would yield a plain-word needle, far too
  *    match-happy for prose.
  *
- * DELIBERATELY NOT the scout.-prefixed form for the snake rewrites: that
- * variant was built and measured 2026-07-04 and REVERTED on a per-case gate
- * regression — every description gaining its first literal "scout" word gains
- * +5 for any query containing the token "out" ("runs out", "find out", …) via
- * scoreField's raw-substring fallback ("out" is a substring of "scout",
- * description weight 5), which flipped legacy case
- * q-soroban-ttl-expiry-behavior top-1 (scout.analyzeEcosystem 158→163 past
- * stellarDocs.search_soroban_contract_docs at 162). Bare camelCase is
- * score-neutral by construction: the scorer normalizes "get_leaderboard" and
- * "getLeaderboard" to the identical "get leaderboard". The path rewrites DO
- * carry the scout. prefix — measured zero per-case deltas there.
+ * Use bare camelCase for snake rewrites. A service namespace prefix can add
+ * unrelated raw-substring matches under the vendor scorer. The surrounding
+ * Scout operation already supplies the service context, so the prefix adds no
+ * callable information. Path rewrites keep the prefix because they replace an
+ * uncallable REST reference with a complete sandbox call target.
  */
 export function scoutRefRewrites(openapi) {
   const pairs = [];
@@ -171,6 +165,46 @@ export function rewriteScoutRefs(text, pairs) {
   return out.replace(/(^|[\s(/])\?([a-z])/g, "$1$2");
 }
 
+/**
+ * Remove non-exposed Scout endpoint spellings from schema descriptions.
+ *
+ * Schemas are emitted through catalog signatures, codemode.describe(), and
+ * the super spec. Upstream component prose can therefore advertise an
+ * excluded endpoint even when its own operation never reaches the manifest.
+ * Derive the replacements from the exposure data so every excluded endpoint
+ * receives the same treatment. The catalog guard remains the fail-loud
+ * backstop for references in non-description schema fields.
+ */
+export function scrubNonExposedScoutSchemaRefs(value) {
+  if (Array.isArray(value)) return value.map(scrubNonExposedScoutSchemaRefs);
+  if (!value || typeof value !== "object") return value;
+
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (key !== "description" || typeof item !== "string") {
+      out[key] = scrubNonExposedScoutSchemaRefs(item);
+      continue;
+    }
+
+    let description = item;
+    const rewrites = [...EXCLUDED_SCOUT_OPS]
+      .flatMap((signature) => {
+        const path = signature.slice(signature.indexOf(" ") + 1);
+        const label = `upstream ${path.split("/").filter(Boolean).at(-1).replaceAll("-", " ")}`;
+        return [
+          [signature, label],
+          [path, label]
+        ];
+      })
+      .sort((a, b) => b[0].length - a[0].length);
+    for (const [needle, replacement] of rewrites) {
+      description = description.split(needle).join(replacement);
+    }
+    out[key] = description;
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Excluded-endpoint clause scrubs (ADR-0003).
 //
@@ -202,14 +236,6 @@ export const SCOUT_DESCRIPTION_SCRUBS = {
     // page is backed by the excluded assistant endpoint; the directory-browse
     // alternative before the ";" stays.
     "; interactive human chat → the /partners/chat page (backed by /api/partners/assistant)"
-  ],
-  partnerOnboard: [
-    // "Use when: ... structured profile fields (then submit via
-    // POST /api/partners/submit-listing)." — the submission step is excluded.
-    " (then submit via POST /api/partners/submit-listing)",
-    // "Not for: finding partners → /api/partners/match or /assistant." — the
-    // assistant is excluded; the match alternative stays.
-    " or /assistant"
   ]
 };
 
@@ -236,12 +262,8 @@ export function scrubScoutDescription(opId, text) {
 }
 
 export const SCOUT_DESCRIPTION_NOTES = {
-  // Boundary twin of LUMENLOOP_DESCRIPTION_NOTES.search_directory (todo 835)
-  // — see the collision-check rationale there. Avoided on this side: news,
-  // talks, content, coverage, written, builds (all appear in
-  // lumenloop-labeled queries and would lexically pull them toward scout);
-  // "articles", "AV", "interviews", "summaries", "editorial", "pieces" have
-  // zero query hits in the routing corpus (2026-07-04).
+  // Boundary twin of LUMENLOOP_DESCRIPTION_NOTES.search_directory. Keep the
+  // source distinction aligned across both operation descriptions.
   searchProjects:
     "Catalog note: results are structured directory facts, not editorial pieces — for articles, AV, interviews, or research summaries about a project, use the lumenloop semantic and directory ops.",
   searchRepos:

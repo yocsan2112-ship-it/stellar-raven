@@ -14,7 +14,7 @@
  * thin fetch router is exercised through these same building blocks.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { OAuthProvider } from "@cloudflare/workers-oauth-provider";
+import { AuthorizationError, OAuthProvider, getOAuthApi } from "@cloudflare/workers-oauth-provider";
 import type { AuthRequest, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import {
   ACCESS_TOKEN_TTL_SECONDS,
@@ -26,6 +26,7 @@ import {
   rewritePath,
   timingSafeEqualBytes
 } from "../src/auth/gate";
+import { hasAllowedRedirectTransport } from "../src/auth/redirects";
 import {
   API_KEY_NAME_PATTERN,
   API_KEY_PREFIX,
@@ -35,6 +36,7 @@ import {
   parseApiKeyCredential
 } from "../src/auth/api-keys";
 import {
+  CONSENT_CSRF_TTL_SECONDS,
   LOGIN_STATE_TTL_SECONDS,
   WorkOSAuthHandler,
   demoLoginRedirect,
@@ -42,6 +44,7 @@ import {
   workosAuthenticateBody
 } from "../src/auth/workos";
 import { DEMO_COOKIE_NAME, verifyDemoCookie } from "../src/demo/auth";
+import { getDocCatalogCounts } from "../src/site";
 
 // ---------------------------------------------------------------------------
 // Stubs
@@ -50,8 +53,18 @@ function memoryKv(): KVNamespace & { store: Map<string, string> } {
   const store = new Map<string, string>();
   return {
     store,
-    async get(key: string) {
-      return store.get(key) ?? null;
+    // Honors `{ type: "json" }`. The real provider reads client records that
+    // way, so a stub that always returns the raw string hands back a string
+    // where an object is expected and fails deep inside the library.
+    async get(key: string, options?: { type?: string } | string) {
+      const raw = store.get(key) ?? null;
+      const type = typeof options === "string" ? options : options?.type;
+      if (raw === null || type !== "json") return raw;
+      try {
+        return JSON.parse(raw);
+      } catch {
+        return null;
+      }
     },
     async put(key: string, value: string) {
       store.set(key, value);
@@ -276,6 +289,56 @@ describe("OAuthProvider wiring (real @cloudflare/workers-oauth-provider)", () =>
     expect(REFRESH_TOKEN_TTL_SECONDS).toBeGreaterThan(ACCESS_TOKEN_TTL_SECONDS);
   });
 
+  it("rejects non-loopback HTTP redirects through the registration endpoint", async () => {
+    const env = testEnv();
+    const response = await provider.fetch(
+      new Request("https://mcp.test/register", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          client_name: "Reserved-domain client",
+          redirect_uris: ["http://client.example/callback"],
+          grant_types: ["authorization_code", "refresh_token"],
+          response_types: ["code"],
+          token_endpoint_auth_method: "none"
+        })
+      }),
+      env,
+      ctx()
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: "invalid_client_metadata" });
+    const kv = env.OAUTH_KV as unknown as { store: Map<string, string> };
+    expect([...kv.store.keys()].some((key) => key.startsWith("client:"))).toBe(false);
+  });
+
+  it.each([
+    ["HTTPS", "https://client.example/callback"],
+    ["IPv4 loopback HTTP", "http://127.0.0.1:8912/callback"],
+    ["IPv6 loopback HTTP", "http://[::1]:8912/callback"],
+    ["native-app scheme", "org.example.app:/oauth/callback"]
+  ])("allows %s redirects through the registration endpoint", async (_label, redirectUri) => {
+    const response = await provider.fetch(
+      new Request("https://mcp.test/register", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          client_name: "Reserved-domain client",
+          redirect_uris: [redirectUri],
+          grant_types: ["authorization_code", "refresh_token"],
+          response_types: ["code"],
+          token_endpoint_auth_method: "none"
+        })
+      }),
+      testEnv(),
+      ctx()
+    );
+
+    expect(response.status).toBe(201);
+    expect(await response.json()).toMatchObject({ redirect_uris: [redirectUri] });
+  });
+
   it("unauthenticated POST /mcp → 401 with WWW-Authenticate resource_metadata pointer", async () => {
     mcpFetch.mockClear();
     const response = await provider.fetch(
@@ -286,17 +349,151 @@ describe("OAuthProvider wiring (real @cloudflare/workers-oauth-provider)", () =>
     expect(response.status).toBe(401);
     const wwwAuthenticate = response.headers.get("www-authenticate") ?? "";
     expect(wwwAuthenticate).toContain("Bearer");
-    expect(wwwAuthenticate).toContain('error="invalid_token"');
     expect(wwwAuthenticate).toContain(
       'resource_metadata="https://mcp.test/.well-known/oauth-protected-resource/mcp"'
     );
-    const body = (await response.json()) as { error: string };
-    expect(body.error).toBe("invalid_token");
+    // RFC 6750 §3: a request carrying NO credentials must not be told which
+    // error occurred — there is no token to call invalid. The pointer to the
+    // protected-resource metadata is what the client actually needs.
+    expect(wwwAuthenticate).not.toContain("error=");
+    // No body to leak an error code into either — the challenge header carries
+    // everything a credential-less client is entitled to know.
+    expect(await response.text()).toBe("");
     // The MCP handler must never run without a valid token.
     expect(mcpFetch).not.toHaveBeenCalled();
   });
 
-  it("garbage bearer token on /mcp → 401, handler untouched", async () => {
+  /**
+   * The load-bearing contract behind the error redirects in workos.ts: the REAL
+   * provider must refuse to attach `redirectUri` until it has validated the
+   * client and the redirect URI, because that field is what we treat as
+   * permission to redirect. Stub-based tests cannot see an upstream ordering
+   * regression — this can, and it is the reason to pay for a real-provider test.
+   */
+  it("real provider withholds redirect context until client + redirect_uri are validated", async () => {
+    const env = testEnv();
+    const registered = "https://client.example/cb";
+    const helpers = getOAuthApi(options as never, env as never);
+    const { clientId } = await helpers.createClient({
+      clientName: "Contract Test Client",
+      redirectUris: [registered],
+      responseTypes: ["code"],
+      grantTypes: ["authorization_code", "refresh_token"],
+      tokenEndpointAuthMethod: "none"
+    });
+
+    const authorizeUrl = (params: Record<string, string>) =>
+      new Request(`https://mcp.test/authorize?${new URLSearchParams(params)}`);
+
+    // Unregistered redirect_uri: MUST NOT carry redirect context (redirecting
+    // there would be the vulnerability, not the fix).
+    await expect(
+      helpers.parseAuthRequest(
+        authorizeUrl({
+          response_type: "code",
+          client_id: clientId,
+          redirect_uri: "https://attacker.example/steal",
+          code_challenge: "a".repeat(43),
+          code_challenge_method: "S256"
+        })
+      )
+    ).rejects.toSatisfy(
+      (e: unknown) => e instanceof AuthorizationError && e.redirectUri === undefined
+    );
+
+    // Unknown client: same — nothing to redirect to.
+    await expect(
+      helpers.parseAuthRequest(
+        authorizeUrl({ response_type: "code", client_id: "no-such-client", redirect_uri: registered })
+      )
+    ).rejects.toSatisfy(
+      (e: unknown) => e instanceof AuthorizationError && e.redirectUri === undefined
+    );
+
+    // Registered client + registered URI, failing a LATER check: redirect
+    // context present, which is what authorizationErrorResponse acts on.
+    await expect(
+      helpers.parseAuthRequest(
+        authorizeUrl({
+          response_type: "code",
+          client_id: clientId,
+          redirect_uri: registered,
+          state: "abc",
+          code_challenge: "a".repeat(43),
+          code_challenge_method: "plain"
+        })
+      )
+    ).rejects.toSatisfy(
+      (e: unknown) =>
+        e instanceof AuthorizationError && e.redirectUri === registered && e.state === "abc"
+    );
+  });
+
+  /**
+   * `clientIdMetadataDocumentEnabled: true` is an advertised surface, and
+   * ChatGPT is its largest consumer: OpenAI's connector prefers CIMD whenever
+   * `client_id_metadata_document_supported` is true and never falls back to
+   * dynamic registration. On 2026-08-09 every ChatGPT connect to production
+   * answered 400 while the whole suite stayed green, because provider 0.10.1
+   * rejected the document's SCALAR `token_endpoint_auth_method` before it
+   * looked at the plural field offering the `none` we do support.
+   *
+   * The shape below is ChatGPT's real live document. This test fails on
+   * 0.10.1 and guards the negotiation across every future provider bump —
+   * the one thing our own code cannot assert about itself.
+   */
+  it("resolves a ChatGPT-shaped CIMD client_id by negotiating down to `none`", async () => {
+    // CIMD is gated on the compat flag (wrangler.jsonc sets it in production).
+    vi.stubGlobal("Cloudflare", { compatibilityFlags: { global_fetch_strictly_public: true } });
+    const clientId = "https://chatgpt.com/oauth/TESTCLIENT/client.json";
+    const redirectUri = "https://chatgpt.com/connector/oauth/TESTCLIENT";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          client_id: clientId,
+          client_name: "ChatGPT",
+          client_uri: "https://chatgpt.com/",
+          redirect_uris: [redirectUri],
+          // The pair that broke it: prefers an asymmetric method we do not
+          // support, while offering one we do.
+          token_endpoint_auth_method: "private_key_jwt",
+          token_endpoint_auth_methods_supported: ["none", "private_key_jwt"],
+          token_endpoint_auth_signing_alg: "RS256",
+          jwks_uri: "https://chatgpt.com/oauth/jwks.json",
+          grant_types: ["authorization_code", "refresh_token"],
+          response_types: ["code"]
+        })
+      )
+    );
+
+    const helpers = getOAuthApi(options as never, testEnv() as never);
+    const parsed = await helpers.parseAuthRequest(
+      new Request(
+        `https://mcp.test/authorize?${new URLSearchParams({
+          response_type: "code",
+          client_id: clientId,
+          redirect_uri: redirectUri,
+          scope: "mcp",
+          state: "chatgpt-state",
+          // ChatGPT sends RFC 8707 `resource` on both legs.
+          resource: "https://mcp.test/mcp",
+          code_challenge: "a".repeat(43),
+          code_challenge_method: "S256"
+        })}`
+      )
+    );
+    expect(parsed.clientId).toBe(clientId);
+    expect(parsed.redirectUri).toBe(redirectUri);
+
+    // Negotiated to the public method, which is what keeps PKCE load-bearing
+    // and lets the /token exchange succeed with no client credentials.
+    const client = await helpers.lookupClient(clientId);
+    expect(client?.tokenEndpointAuthMethod).toBe("none");
+    expect(client?.redirectUris).toEqual([redirectUri]);
+  });
+
+  it("garbage bearer token on /mcp → 401 naming invalid_token, handler untouched", async () => {
     mcpFetch.mockClear();
     const response = await provider.fetch(
       new Request("https://mcp.test/mcp", {
@@ -307,6 +504,9 @@ describe("OAuthProvider wiring (real @cloudflare/workers-oauth-provider)", () =>
       ctx()
     );
     expect(response.status).toBe(401);
+    // A token WAS presented and was rejected, so RFC 6750 §3 wants the reason.
+    // This is the half of the pair that must keep the error code.
+    expect(response.headers.get("www-authenticate") ?? "").toContain('error="invalid_token"');
     expect(mcpFetch).not.toHaveBeenCalled();
   });
 
@@ -402,9 +602,15 @@ describe("WorkOSAuthHandler", () => {
     const page = await terms.text();
     expect(page).toContain("Stellar Raven Terms of Service");
     expect(page).toContain(`<link rel="canonical" href="https://raven.stellar.org/terms"/>`);
-    expect(page).toContain("Raven's structured content logging and AI Gateway request logging are disabled");
-    expect(page).toContain("currently no longer than seven days");
-    expect(page).not.toContain("may include the queries submitted and the responses returned");
+    // Section 9 tracks the counsel-approved Terms document, not current runtime
+    // behaviour. The Terms state the OUTER BOUND of what the Service may do;
+    // today's stricter practice (content-free logs, 7-day platform retention)
+    // is described on the privacy page instead. Keeping the bound wider than
+    // the practice is deliberate: the 30-day content store is planned, and the
+    // Terms must already permit it. Do not narrow these back to the runtime.
+    expect(page).toContain("may include the queries submitted and the responses returned");
+    expect(page).toContain("for 30\ndays, after which it is deleted");
+    expect(page).toContain("You may opt out of query and response logging");
     // Script-free legal surface: CSP must not allow inline script.
     expect(terms.headers.get("content-security-policy")).not.toContain("script-src");
     expect(page).not.toContain("<script");
@@ -414,6 +620,62 @@ describe("WorkOSAuthHandler", () => {
       env
     );
     expect(await consent.text()).toContain(`href="/terms"`);
+  });
+
+  it("GET /docs serves the documentation page without authentication", async () => {
+    const env = testEnv({ OAUTH_PROVIDER: stubHelpers() });
+    const response = await WorkOSAuthHandler.fetch(new Request("https://mcp.test/docs"), env);
+    expect(response.status).toBe(200);
+    const page = await response.text();
+    expect(page).toContain("Stellar Raven documentation");
+    // Counts come from the same accessor the page renders from, so a catalog
+    // rebuild moves the assertion with the copy instead of failing on a stale
+    // literal.
+    const counts = getDocCatalogCounts();
+    expect(page).toContain(`${counts.operations} operations`);
+    expect(page).toContain(`${counts.skills} skills`);
+    expect(page).toContain(`${counts.sections} sections`);
+    expect(page).toContain("https://raven.stellar.org/mcp");
+    expect(page).toContain("1 hour");
+    expect(page).toContain("90 days");
+    expect(page).toContain("search");
+    expect(page).toContain("execute");
+    expect(page).toContain("no network");
+    for (const family of ["Lumenloop", "Scout", "Stellar Docs", "Skills"]) {
+      expect(page).toContain(family);
+    }
+    expect(page).toContain("{ ok: true, data }");
+    expect(page).toContain("{ ok: false, error }");
+    expect(page).toContain("soft-empty");
+    expect(page).toContain("/health/skills");
+    expect(page).toContain("codemode.artifact.read");
+    expect(response.headers.get("content-security-policy")).not.toContain("script-src");
+    expect(page).not.toContain("<script");
+  });
+
+  it("HEAD /docs returns the public status and headers with no body", async () => {
+    const env = testEnv({ OAUTH_PROVIDER: stubHelpers() });
+    const response = await WorkOSAuthHandler.fetch(
+      new Request("https://mcp.test/docs", { method: "HEAD" }),
+      env
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(response.headers.get("cache-control")).toBe("public, max-age=300");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(response.headers.get("content-security-policy")).not.toContain("script-src");
+    const getResponse = await WorkOSAuthHandler.fetch(new Request("https://mcp.test/docs"), env);
+    expect(getResponse.status).toBe(response.status);
+    for (const header of [
+      "content-type",
+      "cache-control",
+      "x-content-type-options",
+      "referrer-policy",
+      "content-security-policy"
+    ]) {
+      expect(response.headers.get(header)).toBe(getResponse.headers.get(header));
+    }
   });
 
   it("GET /authorize renders a consent page naming the client and scopes, with a CSRF cookie", async () => {
@@ -436,11 +698,157 @@ describe("WorkOSAuthHandler", () => {
     expect(page).toContain(`name="csrf_token" value="${csrf}"`);
     // Explicit Terms/Privacy acknowledgement checkbox gates the grant.
     expect(page).toContain(`type="checkbox" name="tos_agree"`);
+    // The page names the validated redirect destination and identifies the name source.
+    expect(page).toContain("Return address");
+    expect(page).toContain("After sign-in, your browser returns here.");
+    expect(page).toContain("https://client.example/cb");
+    expect(page).toContain("not verified by Stellar Raven");
   });
 
-  it("POST /authorize rejects a missing/mismatched CSRF token", async () => {
+  it("GET /authorize refuses a plain-http redirect_uri to a non-loopback host", async () => {
+    const insecure = { ...AUTH_REQ, redirectUri: "http://client.example/cb" };
+    const env = testEnv({
+      OAUTH_PROVIDER: stubHelpers({
+        parseAuthRequest: vi.fn(async () => insecure as AuthRequest)
+      })
+    });
+    const response = await WorkOSAuthHandler.fetch(
+      new Request("https://mcp.test/authorize?client_id=client-abc"),
+      env
+    );
+    // RFC 6749 §4.1.2.1: never redirect to an invalid redirect URI — local
+    // 400, no Location, no consent page, no fresh CSRF cookie.
+    expect(response.status).toBe(400);
+    expect(response.headers.get("location")).toBeNull();
+    expect(cookieValue(response, "__Host-MCP_CONSENT_CSRF")).toBeUndefined();
+  });
+
+  it.each(["GET", "POST"])(
+    "%s /authorize refuses unsafe redirect metadata from a parse error",
+    async (method) => {
+      const workosFetch = vi.fn();
+      vi.stubGlobal("fetch", workosFetch);
+      const helpers = stubHelpers({
+        parseAuthRequest: vi.fn(async () => {
+          throw new AuthorizationError("unsupported_response_type", {
+            description: "Unsupported response type",
+            redirectUri: "http://client.example/callback",
+            state: "client-state",
+            issuer: "https://mcp.test"
+          });
+        })
+      });
+      const env = testEnv({
+        OAUTH_PROVIDER: helpers
+      });
+      const response = await WorkOSAuthHandler.fetch(
+        new Request("https://mcp.test/authorize?client_id=client-abc", { method }),
+        env
+      );
+
+      expect(response.status).toBe(400);
+      expect(response.headers.get("location")).toBeNull();
+      expect(cookieValue(response, "__Host-MCP_CONSENT_CSRF")).toBeUndefined();
+      expect(workosFetch).not.toHaveBeenCalled();
+      expect(helpers.completeAuthorization).not.toHaveBeenCalled();
+      const kv = env.OAUTH_KV as unknown as { store: Map<string, string> };
+      expect(kv.store.size).toBe(0);
+    }
+  );
+
+  it("GET /authorize still allows http loopback and custom-scheme redirects", async () => {
+    for (const redirectUri of ["http://127.0.0.1:8912/cb", "myapp://oauth/cb"]) {
+      const allowed = { ...AUTH_REQ, redirectUri };
+      const env = testEnv({
+        OAUTH_PROVIDER: stubHelpers({
+          parseAuthRequest: vi.fn(async () => allowed as AuthRequest)
+        })
+      });
+      const response = await WorkOSAuthHandler.fetch(
+        new Request("https://mcp.test/authorize?client_id=client-abc"),
+        env
+      );
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain("Return address");
+    }
+  });
+
+  // `allowPlainPKCE: false` only rejects the plain METHOD. The provider leaves an
+  // absent code_challenge undefined and, at redemption, derives
+  // `isPkceEnabled = !!grantData.codeChallenge` — so a request claiming S256 with
+  // no challenge yields a grant whose code is redeemable with no verifier at all.
+  // Both /authorize legs must refuse it before a consent page is ever rendered.
+  it.each([
+    ["no code_challenge at all", { responseType: "code", clientId: "client-abc", redirectUri: "https://client.example/cb", scope: ["mcp"], state: "client-state", codeChallengeMethod: "S256" }],
+    ["a plain challenge", { ...AUTH_REQ, codeChallengeMethod: "plain" }],
+    ["no method", { ...AUTH_REQ, codeChallengeMethod: undefined }]
+  ])("GET /authorize refuses an authorization request with %s", async (_label, parsed) => {
+    const env = testEnv({
+      OAUTH_PROVIDER: stubHelpers({
+        parseAuthRequest: vi.fn(async () => parsed as AuthRequest)
+      })
+    });
+    const response = await WorkOSAuthHandler.fetch(
+      new Request("https://mcp.test/authorize?client_id=client-abc"),
+      env
+    );
+    // The client and redirect_uri parsed fine, so OAuth 2.1 §4.1.2.1 wants the
+    // error delivered to the client rather than rendered at the user.
+    expect(response.status).toBe(303);
+    const location = new URL(response.headers.get("location") ?? "");
+    expect(location.origin + location.pathname).toBe("https://client.example/cb");
+    expect(location.searchParams.get("error")).toBe("invalid_request");
+    expect(location.searchParams.get("state")).toBe("client-state");
+    // Never mint a consent cookie for a request that could not be safely granted.
+    expect(cookieValue(response, "__Host-MCP_CONSENT_CSRF")).toBeUndefined();
+  });
+
+  it("logs the error CODE, never the description, when redirecting an authorization error", async () => {
+    const env = testEnv({
+      OAUTH_PROVIDER: stubHelpers({
+        parseAuthRequest: vi.fn(async () => ({ ...AUTH_REQ, codeChallenge: undefined }) as AuthRequest)
+      })
+    });
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    await WorkOSAuthHandler.fetch(new Request("https://mcp.test/authorize?client_id=client-abc"), env);
+    const events = log.mock.calls.map(([line]) => JSON.parse(String(line)));
+    // Upstream descriptions interpolate request-supplied values; a log field is
+    // the wrong home for attacker-chosen text.
+    expect(events).toContainEqual({ evt: "auth_reject", status: 303, reason: "invalid_request" });
+    log.mockRestore();
+  });
+
+  it("POST /authorize refuses a PKCE-less authorization request before parking state", async () => {
+    const env = testEnv({
+      OAUTH_PROVIDER: stubHelpers({
+        parseAuthRequest: vi.fn(async () => ({ ...AUTH_REQ, codeChallenge: undefined }) as AuthRequest)
+      })
+    });
+    const form = new URLSearchParams({ csrf_token: "token-1", tos_agree: "on" });
+    const response = await WorkOSAuthHandler.fetch(
+      new Request("https://mcp.test/authorize?client_id=client-abc", {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          cookie: "__Host-MCP_CONSENT_CSRF=token-1"
+        },
+        body: form
+      }),
+      env
+    );
+    // 303 and not 302 on this leg specifically: a 302 only PERMITS the agent to
+    // drop the method, so the consent form body — csrf_token included — could be
+    // replayed to the client's redirect URI.
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toContain("error=invalid_request");
+    const kv = env.OAUTH_KV as unknown as { store: Map<string, string> };
+    expect(kv.store.size).toBe(0);
+  });
+
+  it("POST /authorize rejects a missing/mismatched CSRF token, and logs a distinguishing reason", async () => {
     const env = testEnv({ OAUTH_PROVIDER: stubHelpers() });
     const form = new URLSearchParams({ csrf_token: "attacker-guess" });
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
     const response = await WorkOSAuthHandler.fetch(
       new Request("https://mcp.test/authorize?client_id=client-abc", {
         method: "POST",
@@ -452,7 +860,21 @@ describe("WorkOSAuthHandler", () => {
       }),
       env
     );
-    expect(response.status).toBe(400);
+    // Recoverable, not a dead end: back to the form action so the GET handler
+    // issues a fresh token + cookie. The old bare 400 ALSO cleared the cookie,
+    // so every retry reported a CSRF mismatch no matter what failed first.
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe("/authorize?client_id=client-abc");
+    expect(cookieValue(response, "__Host-MCP_CONSENT_CSRF")).toBeUndefined();
+    // The reason still has to reach the logs — the redirect is indistinguishable
+    // from the terms-acknowledgement one in platform events.
+    const events = log.mock.calls.map(([line]) => JSON.parse(String(line)));
+    expect(events).toContainEqual({
+      evt: "auth_reject",
+      status: 303,
+      reason: "CSRF token mismatch"
+    });
+    log.mockRestore();
   });
 
   it("POST /authorize rejects a missing Terms/Privacy acknowledgement", async () => {
@@ -470,8 +892,97 @@ describe("WorkOSAuthHandler", () => {
       }),
       env
     );
-    expect(response.status).toBe(400);
+    // Same recovery path as the CSRF branch — the CSS gate on the button is
+    // mouse-only, so a keyboard submit lands here and must stay retryable.
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe("/authorize?client_id=client-abc");
     // No state parked when the acknowledgement is missing.
+    const kv = env.OAUTH_KV as unknown as { store: Map<string, string> };
+    expect(kv.store.size).toBe(0);
+  });
+
+  it("POST /authorize accepts a CSRF-validated denial before the Terms check", async () => {
+    const helpers = stubHelpers({
+      parseAuthRequest: vi.fn(async () => ({ ...AUTH_REQ, issuer: "https://mcp.test" }))
+    });
+    const env = testEnv({ OAUTH_PROVIDER: helpers });
+    const workosFetch = vi.fn();
+    vi.stubGlobal("fetch", workosFetch);
+    const response = await WorkOSAuthHandler.fetch(
+      new Request("https://mcp.test/authorize?client_id=client-abc", {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          cookie: "__Host-MCP_CONSENT_CSRF=token-1"
+        },
+        body: new URLSearchParams({ csrf_token: "token-1", decision: "deny" })
+      }),
+      env
+    );
+
+    expect(response.status).toBe(303);
+    const location = new URL(response.headers.get("location") ?? "");
+    expect(location.origin + location.pathname).toBe("https://client.example/cb");
+    expect(location.searchParams.get("error")).toBe("access_denied");
+    expect(location.searchParams.get("state")).toBe("client-state");
+    expect(location.searchParams.get("iss")).toBe("https://mcp.test");
+    expect(workosFetch).not.toHaveBeenCalled();
+    expect(helpers.completeAuthorization).not.toHaveBeenCalled();
+    const kv = env.OAUTH_KV as unknown as { store: Map<string, string> };
+    expect(kv.store.size).toBe(0);
+    const cookies = (response.headers as unknown as { getSetCookie(): string[] }).getSetCookie();
+    expect(cookies).toContainEqual(expect.stringContaining("__Host-MCP_CONSENT_CSRF=;"));
+    expect(cookies).toContainEqual(expect.stringContaining("Max-Age=0"));
+    expect(cookieValue(response, "__Host-MCP_STATE")).toBeUndefined();
+  });
+
+  it("POST /authorize does not accept a denial with invalid CSRF", async () => {
+    const helpers = stubHelpers();
+    const env = testEnv({ OAUTH_PROVIDER: helpers });
+    const workosFetch = vi.fn();
+    vi.stubGlobal("fetch", workosFetch);
+    const response = await WorkOSAuthHandler.fetch(
+      new Request("https://mcp.test/authorize?client_id=client-abc", {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          cookie: "__Host-MCP_CONSENT_CSRF=real-token"
+        },
+        body: new URLSearchParams({ csrf_token: "wrong-token", decision: "deny" })
+      }),
+      env
+    );
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe("/authorize?client_id=client-abc");
+    expect(workosFetch).not.toHaveBeenCalled();
+    expect(helpers.completeAuthorization).not.toHaveBeenCalled();
+    const kv = env.OAUTH_KV as unknown as { store: Map<string, string> };
+    expect(kv.store.size).toBe(0);
+  });
+
+  it.each([
+    ["an unknown decision", ["approve"]],
+    ["duplicate decisions", ["deny", "deny"]],
+    ["conflicting decisions", ["deny", "approve"]]
+  ])("POST /authorize rejects %s instead of treating it as approval", async (_label, decisions) => {
+    const env = testEnv({ OAUTH_PROVIDER: stubHelpers() });
+    const form = new URLSearchParams({ csrf_token: "token-1", tos_agree: "on" });
+    for (const decision of decisions) form.append("decision", decision);
+    const response = await WorkOSAuthHandler.fetch(
+      new Request("https://mcp.test/authorize?client_id=client-abc", {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          cookie: "__Host-MCP_CONSENT_CSRF=token-1"
+        },
+        body: form
+      }),
+      env
+    );
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe("/authorize?client_id=client-abc");
     const kv = env.OAUTH_KV as unknown as { store: Map<string, string> };
     expect(kv.store.size).toBe(0);
   });
@@ -511,7 +1022,17 @@ describe("WorkOSAuthHandler", () => {
     expect(parked.oauthReq.clientId).toBe("client-abc");
     // The browser-binding cookie matches what was parked.
     expect(cookieValue(response, "__Host-MCP_STATE")).toBe(parked.binding);
+    // The two clocks are deliberately different, and the parked-state one is the
+    // one that must stay short: /callback consumes `login:${state}` BEFORE it
+    // checks the binding cookie, so a leaked state is a login-DoS whose window
+    // this value sets. Consent dwell has no such surface.
     expect(LOGIN_STATE_TTL_SECONDS).toBe(600);
+    expect(CONSENT_CSRF_TTL_SECONDS).toBe(1800);
+    expect(cookieValue(response, "__Host-MCP_STATE")).toBeTruthy();
+    const bindingCookie = (response.headers as unknown as { getSetCookie(): string[] })
+      .getSetCookie()
+      .find((c) => c.startsWith("__Host-MCP_STATE="));
+    expect(bindingCookie).toContain(`Max-Age=${LOGIN_STATE_TTL_SECONDS}`);
   });
 
   it("GET /callback rejects unknown state and binding-cookie mismatches (single-use)", async () => {
@@ -613,7 +1134,7 @@ describe("WorkOSAuthHandler", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Parked-login union + /callback demo branch (demo-playground review finding 2)
+// Parked-login union and /callback demo branch
 
 describe("login-state union on /callback", () => {
   function callbackRequest(state: string, binding: string): Request {
@@ -714,6 +1235,20 @@ describe("login-state union on /callback", () => {
     expect(response.status).toBe(400);
     expect(kv.store.has("login:stY")).toBe(false);
     expect(workosFetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["HTTPS redirect", "https://client.example/cb", true],
+    ["IPv4 loopback HTTP", "http://127.0.0.1:8912/cb", true],
+    ["IPv6 loopback HTTP", "http://[::1]:8912/cb", true],
+    ["localhost HTTP", "http://localhost:3000/cb", true],
+    ["native-app scheme", "org.example.app:/oauth/cb", true],
+    ["public HTTP host", "http://client.example/cb", false],
+    ["documentation IP HTTP", "http://203.0.113.7/cb", false],
+    ["uppercase HTTP scheme", "HTTP://client.example/cb", false],
+    ["malformed URI", "not a URI", false]
+  ])("redirect transport: %s → allowed=%s", (_label, uri, allowed) => {
+    expect(hasAllowedRedirectTransport(uri as string)).toBe(allowed);
   });
 });
 

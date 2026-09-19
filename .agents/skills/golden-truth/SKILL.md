@@ -30,6 +30,10 @@ with non-empty `evidence` + `rootCause` — that lint is the successor to the re
 override-file enforcement, and it moves the check from compile-time bookkeeping to the moment
 of change.
 
+The same evidence bar applies to a separately frozen provenance-bearing suite when its contract
+invokes this skill. Keep that suite in its contract-owned file. Do not compile it into the battery
+or existing routing lanes. Evaluation lanes never merge.
+
 ## Step 1 — classify the truth domain (this picks the verification standard)
 
 | Domain | What gospel means | Examples |
@@ -51,6 +55,22 @@ that the declined fact is false. Preserve independently corroborated truth, and 
 grader caution when needed so an answer is not penalized either for accurately stating the canonical
 fact or for using the owner's accurate operational phrasing without claiming a stronger invariant.
 
+### Canonical-page conflict grading
+
+When a canonical page conflicts with stronger applicable authority, verify both claims and keep the
+truth domain explicit. A reconciled answer may receive `correct`. An attributed but unresolved
+canonical-page claim may receive at most `partial`. The same false claim without attribution remains
+`wrong`. Put the caution in the affected case's `golden.notes`; do not create a global judge
+exception.
+
+Every caution names the conflicting page, its finding or root cause, and its expiry. Remove it
+through this workflow when the finding reaches `fixed-upstream` and the live page no longer carries
+the wording. A `declined-upstream` finding makes the caution durable until a later owner decision.
+Use the lint-canonical form: name the canonical, official, or upstream page or source; state that an
+attributed quote is not a wrong claim; and state the partial cap or grade. ADR-0008 fixes the
+accepted boundary at three cases. Expansion needs this evidence bar, independent review, and a
+later owner decision.
+
 ## Step 2 — know your source classes (independence is between CLASSES)
 
 Tool names below are examples from current agent environments, not a Claude-only contract.
@@ -65,6 +85,8 @@ not present.
   or direct Lumenloop / Stellar Light calls. **The aggregator being checked NEVER counts as
   corroboration for its own claims** — if the claim came from Scout, probing Scout again is
   re-reading the same witness.
+  Use a documented read path for a read-only probe. Treat provisioning, issuing, and creation
+  endpoints as side effects, including endpoints that use `GET`.
 - **D. General-web research** — `mcp__perplexity__perplexity_search/ask/research/reason`;
   `mcp__parallel-search__web_search_preview`; `mcp__parallel-task__createDeepResearch` for
   analyst-grade single topics; the `parallel-cli` bin (`~/.local/bin/parallel-cli` —
@@ -118,9 +140,9 @@ mandatory (a stranger must be able to re-walk the trail); "unverifiable" is an h
 useful verdict — never stretch weak evidence; when two agents disagree, run a targeted
 follow-up probe — never coin-flip, never average.
 
-Route generic Solo mechanics through global `fan-solo`; use `solo-orchestrate-agents` for the
+Route pane and agent mechanics through the global `herdr` skill; split one pane per lane for the
 verification lanes and select model/effort explicitly per `AGENTS.md`. Lane-specific rule: create
-or reuse round scratchpad, assign one independent agent per claim cluster, and have workers append
+or reuse the round ledger, assign one independent agent per claim cluster, and have workers append
 matrices directly. Author edits owned case files only after reconciling matrices.
 For broad corpus-health or drift-refresh work, let `truth-maintenance` coordinate this lane
 alongside eval and improvements review.
@@ -151,9 +173,9 @@ lower the claim's standing. Honesty > false precision.
 
 **Updating `truth.verified` (required on every gospel change).** The case file carries the
 LATEST verification event only — git history holds the rest. Set `date`, `by` (who/what
-verified — a lane, sweep, or scratchpad ref), `evidence` (live provenance a stranger can
-re-walk: URLs, `solo://` refs), and — whenever the event changed gospel — `rootCause`:
-`improvements/` paths for upstream defects, `solo://` refs for eval-side authoring flaws, or
+verified — a lane, sweep, or round-ledger ref), `evidence` (live provenance a stranger can
+re-walk: URLs, ledger paths), and — whenever the event changed gospel — `rootCause`:
+`improvements/` paths for upstream defects, `.agents/TODO.md` entries for eval-side authoring flaws, or
 the explicit value `freshness-drift`. The lint rejects rootCause lists that are only
 score/result rationales — "the judge failed this case" is never a reason to change truth.
 Refresh `truth.asOf` for volatile facts and set a new staggered, quarter-granular
@@ -165,7 +187,7 @@ sibling kept the old fact — producing goldens that cannot both be true. Before
 gospel change: enumerate other cases touching the same entity/topic (grep the battery files
 for the entity names and key numbers), confirm the changed fact doesn't contradict them, and
 record the sweep (cases checked, verdict) in `truth.verified.evidence` or the round
-scratchpad. Then run `npm run eval:qa:register` — it re-stamps consistency-register member
+ledger. Then run `npm run eval:qa:register` — it re-stamps consistency-register member
 hashes and auto-reopens any cluster whose member content changed.
 
 **Provenance correction.** If the debunked fact also lives in the archival snapshots
@@ -178,7 +200,7 @@ correction is recorded so it can't silently resurrect.
 - `npm run eval:qa:compile` — validation passes; exactly the intended cases changed
   (parsed-JSON diff, not line diff); regenerated `cases.json`/`sample.json` are committed with
   the case edits (CI byte-pins both).
-- `npm run eval:qa:lint -- --since <ref>` — the documented pre-push check for Solo lanes:
+- `npm run eval:qa:lint -- --since <ref>` — the documented pre-push check for every lane:
   runs every deterministic lane **plus** the gospel-change guard against the ref you branched
   from, exactly as CI will against the merge base. Add `--stale` when touching `reverifyBy`
   dates. No new judge-blind avoid items.
@@ -189,8 +211,42 @@ correction is recorded so it can't silently resurrect.
   (`judgeCase` on `rows[].answer`) and record the flip direction in the round record —
   a fix that only ever flips verdicts toward "correct" is a smell (see the score-laundering
   note below).
-- Solo: record the corroboration matrices in the round/working scratchpad; close the todo
-  with commit refs.
+- Ledger: record the corroboration matrices and every affected case ID in the round ledger; close
+  the `.agents/TODO.md` item with commit refs. A later comparison must read this list instead of
+  reconstructing it from git history.
+
+## Lifecycle verdicts
+
+Use `truth.lifecycle.state` for `proposed | active | quarantined |
+retired` and the orthogonal `truth.lifecycle.reviewState` for `none | queued | in-review |
+resolved`. Proposed files stay outside the battery until this workflow verifies and activates them.
+Retired tombstones stay outside the battery. The generated registry records digests, permanently
+reserves proposed and retired IDs, and rejects ID reuse. After registry genesis, land each new ID
+as a proposal in one commit. Activate it in a later commit with activation evidence. The compiler
+uses the prior registry from Git history and refuses direct battery additions.
+
+Activate a proposal only after source verification, duplicate and boundary checks, and an
+independent reviewer. Retire only for a score-independent reason such as duplication, obsolete
+scope, unanswerable wording, or lost product relevance. The tombstone records evidence, reviewer,
+date, last digest, and any replacement IDs.
+
+A credible truth or validity conflict triggers quarantine before the next aggregate, after an
+independent reviewer confirms a score-independent cause. Judge noise without golden-ambiguity
+evidence sets review state `queued` and keeps trusted truth active.
+
+Queue review from verified observability failures, landed improvements, live drift, verified user
+failures, and recurrent eval evidence. A trigger changes no gospel by itself. Every quarantine
+records its author, independent reviewer, evidence, ledger, start date, and a decision date within
+30 days. The deadline cannot precede the start date. That decision corrects, retires, or
+independently renews the case. Each renewal records its own evidence, ledger, reviewer, and new
+decision date. That deadline cannot precede the renewal date or exceed 30 days. Reactivation is
+never automatic.
+Score direction never establishes a lifecycle verdict.
+
+Start a frozen mass review when 25 active cases are queued, five percent of active cases are queued,
+or one quarter passes. Use the earliest trigger. Bind an open review to the named
+`qa-mass-review-rules-v1` digest. Keep reviewers blind to desired score movement, record every
+affected ID, and report corpus health separately from system performance.
 
 **Score laundering is the failure mode all of this guards against** — "correcting" a golden
 until the agent's answer grades right. The live-evidence bar plus the root-cause pointer keep

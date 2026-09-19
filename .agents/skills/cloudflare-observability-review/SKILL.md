@@ -11,7 +11,8 @@ events, and OTel spans.
 
 When the investigation is part of an eval round, agent-run forensic review, or other
 multi-agent maintenance pass, record the query inputs, Ray IDs, and verdict in the relevant
-Solo scratchpad/todo so the evidence survives outside the current context window.
+round ledger (`.agents/rounds/`) or `.agents/TODO.md` so the evidence survives outside the
+current context window.
 
 ## Principle
 
@@ -248,6 +249,18 @@ High-value fields:
   (null outside attributed OAuth); rejected events omit them entirely.
 - The older `auth` app field is redacted to `*****` by Cloudflare and is not
   useful for grouping; the `/mcp` summary deliberately uses `accessMode`.
+- Browser auth-flow rejections: `evt = "auth_reject"` with `status` and
+  `reason`. Emitted from the single `text()` helper in `src/auth/workos.ts`,
+  so it covers every `/authorize` and `/callback` refusal. `reason` is the
+  constant response body — group by it, because the platform event alone is
+  the same `POST /authorize -> 400` line for a `CSRF token mismatch`, a
+  `Terms acknowledgement required`, and an `Invalid authorization request`.
+  `/callback` splits the same way into `Invalid or expired state`,
+  `Invalid login state`, and `State binding mismatch`. No identity fields: a
+  rejected flow has no attributed subject, and the rejected credential must
+  never be hashed. Token-exchange failures inside
+  `@cloudflare/workers-oauth-provider` (`/token`, `/register`) stay opaque —
+  status and path only.
 - App JSON logs: `evt`, `queryChars`,
   `requestedLimit`, `effectiveLimit`, `omittedCount`, `gatedHits`, `backfillHits`,
   `hits`, `total`, `truncated`, `top`,
@@ -307,6 +320,18 @@ number looks plausible, and nothing signals the error.
 - **`sourceBasis` (and its `canonicalUrlCount`) exists only on truncated
   execute results.** It is computed from the full pre-truncation value, so a
   zero count can never demonstrate that truncation dropped something.
+- **A single wide-window `view: "events"` query returns a tiny, unrepresentative
+  slice — it is NOT "all the matching events under `limit`."** Measured
+  2026-08-06 on the same filter (`cf-worker-event`, `path = /authorize`,
+  `limit: 500`): one flat 7-day query returned **4** events; the identical
+  filter run over twenty-eight consecutive 6-hour windows returned **416**. Not
+  a 10x ABR ratio — roughly 100x, and the 4 survivors looked like a plausible
+  complete set, which is what makes this lethal. A returned count far below
+  `limit` is therefore NOT evidence that few events matched. Slice any window
+  wider than ~6h and sum, and never conclude "this never happens" from a flat
+  multi-day query. This trap produced a confidently wrong "zero POST /authorize
+  in the retention window" — the real number was 173, of which 31 were the
+  failure being investigated.
 - **ABR sampling is not an iid sample of the filtered set.** `abr_level` is 1
   for windows of about 12h or less and 10 for wider ones; concatenating windows
   at different levels biases any ratio computed across them. Query in equal,
@@ -316,6 +341,18 @@ number looks plausible, and nothing signals the error.
   false. `verdict` is an object whose label is `verdict.score`, so comparing
   verdicts directly compares object identity and reports 100% change. Both
   mistakes fail silently and look like findings.
+- **The AI Gateway replays completions, so repeats are not samples.** The demo
+  gateway carries `cache_ttl: 300`; within that window an identical request
+  returns the recorded completion. It is invisible from inside the Worker — same
+  frames, same telemetry, no marker — and gateway logs will not settle it either,
+  because the demo sets `collectLog: false`. The tell is arithmetic: a repeat
+  that returns byte-identical answer text at a latency no inference could
+  produce. Measured 2026-08-06 before the fix: a 3-step agentic turn replayed
+  4567 identical chars in 1041 ms, a one-step turn in 129 ms. `demoModelSettings`
+  now sends `cf-aig-skip-cache: true` on every demo request, so repeats are
+  independent again — but any run predating that, and any NEW measured surface
+  that talks to a gateway, needs the header or the same trap returns. Compare
+  repeat latency AND output length before trusting a p50.
 
 ## Decision Heuristic
 

@@ -8,8 +8,9 @@
   "golden": {
     "answer": "- A Tier 1 org must run **three (3) geographically dispersed Full Validators**, each publishing a **separate history archive** [1].\n- Tier 1 status is **earned** by other Tier 1 orgs including you in their **quorum sets** (trust / invitation) — **not** granted by application to SDF, and **not** by staking XLM or paying a fee [1].\n- Targets **~99.9%+ uptime** with 24/7 monitoring [1], and requires **SEP-1** (`stellar.toml`) and **SEP-20** self-verification [1].\n- **Why three**: if one node is down for maintenance/failure, **2-of-3** of your nodes can still vote on your behalf [1].\n- The process takes **months, not weeks**; starting with a single validator builds experience first [1].",
     "keyFacts": [
-      "States a Tier 1 organization must run three (3) geographically dispersed Full Validators, each publishing a separate history archive.",
-      "States Tier 1 status is earned by other Tier 1 orgs including you in their quorum sets (trust/invitation), not granted by application."
+      "Requires three (3) geographically dispersed Full Validators.",
+      "Requires a different history archive for each validator.",
+      "Attributes Tier 1 status to quorum-set trust from Tier 1 peers."
     ],
     "avoid": [
       "Do NOT claim Tier 1 requires staking a minimum amount of XLM or paying a fee.",
@@ -24,6 +25,10 @@
     "freshness": "stable"
   },
   "truth": {
+    "lifecycle": {
+      "state": "active",
+      "reviewState": "none"
+    },
     "domain": "real-world",
     "status": "confirmed",
     "sources": [
@@ -33,11 +38,48 @@
         "note": "class inferred at migration"
       }
     ],
+    "corroboration": [
+      {
+        "claim": "Tier 1 status is earned by other Tier 1 orgs including you in their quorum sets (trust / invitation) — not granted by application to SDF, and not by staking XLM or paying a fee.",
+        "verdict": "confirmed",
+        "evidence": [
+          {
+            "class": "A",
+            "ref": "https://developers.stellar.org/docs/learn/fundamentals/stellar-consensus-protocol",
+            "note": "Exact quotes: ‘no central authority dictates whose vote is required for consensus.’ ‘There are no monetary rewards for being a validator on the Stellar network.’",
+            "observedAt": "2026-08-29"
+          },
+        {
+          "class": "A",
+          "ref": "https://developers.stellar.org/docs/validators/tier-1-orgs",
+          "note": "Exact quotes: ‘Joining is not a unilateral SDF decision’; ‘every existing Tier 1 organization independently decides whether to add you to their quorum set.’",
+          "observedAt": "2026-08-29"
+        },
+        {
+          "class": "D",
+          "ref": "https://range.org/blog/range-is-now-a-tier-1-validator-on-stellar",
+          "observedAt": "2026-08-29",
+          "note": "Dated web sweep query `Stellar Tier 1 organization quorum set invitation SDF staking fee`: Range says each validator chooses trusted peers, `Tier 1 is not a designation an organization can claim on its own`, operators coordinate with existing operators, and they run `not for financial return`. No primary result described an SDF application, stake, or fee."
+        }
+        ]
+      }
+    ],
     "verified": {
-      "date": "2026-07-11",
-      "by": "GT-34-soroban-launch-archival-core-tier1-validators-history accepted in Solo scratchpad 575 rev 291",
+      "date": "2026-08-29",
+      "by": "golden-truth session 3 (2026-08-29, corroboration lane, worker gt3-sol-a)",
       "evidence": [
-        "solo://proj/49/scratchpad/truth-maintenance-20--575"
+        "solo://proj/49/scratchpad/truth-maintenance-20--575",
+        "Structural re-form (negative-predicate): Split the validator/archive fact and retained the application trap in golden.avoid; truth unchanged",
+        "Live re-check 2026-08-27: https://developers.stellar.org/docs/validators/tier-1-orgs — the current requirements specified three geographically dispersed Full Validators.",
+        "Live re-check 2026-08-27: https://developers.stellar.org/docs/validators/tier-1-orgs — the current requirements specified a separate history archive for each validator.",
+        "Live re-check 2026-08-27: https://developers.stellar.org/docs/validators/tier-1-orgs — Tier 1 peers independently granted trust through quorum-set inclusion rather than an SDF application.",
+        "Sibling sweep 2026-08-27: grep Tier 1|Full Validators|quorum sets|history archive → q-edge-validators-reverse-tx-fork-detection, q-protocol-quorum-slice-vs-quorum, q-protocol-scp-consensus-algorithm, q-protocol-validator-node-roles; no contradiction",
+      "Corroboration audit 2026-08-29: added 1 row(s) for Tier 1 trust and admission boundaries; class agreement Sol+Grok",
+      "Final-review fix 2026-08-29: added a second evidence class to 1 corroboration row(s) (Grok final review finding 1)"
+      ],
+      "rootCause": [
+        ".agents/TODO.md — Golden authoring lint warnings burn-down (negative-predicate class)",
+        ".agents/TODO.md — Audit sourcing-guard and corroboration warning classes"
       ]
     },
     "origin": "raven-next q-protocol-tier1-requirements"

@@ -13,7 +13,7 @@
     "avoid": [
       "Do NOT state 3–5 seconds or exactly five seconds as an immutable guarantee based on one adjacent-ledger delta."
     ],
-    "notes": "~3-5s ledger close. Trap is importing Bitcoin (10 min) or Ethereum (12s) block times.\nAlso good if the answer: Notes the close time is set by the proposing validator and recorded in the ledger header, and that SCP determines the agreed close time.\nGolden cites: The validators / fundamentals docs on developers.stellar.org (or the network dashboard).\nGT-32 CORRECTION 2026-07-10: current multi-ledger sample and Docs support 5–7 seconds; one delta is insufficient."
+    "notes": "Ledger close is roughly 5–7 seconds by dated multi-ledger samples, with rare 8–9-second deltas. Trap is importing Bitcoin (10 min) or Ethereum (12s) block times.\nAlso good if the answer: Notes the close time is set by the proposing validator and recorded in the ledger header, and that SCP determines the agreed close time.\nGolden cites: The validators / fundamentals docs on developers.stellar.org (or the network dashboard)."
   },
   "tags": {
     "category": "protocol-core",
@@ -21,6 +21,10 @@
     "freshness": "stable"
   },
   "truth": {
+    "lifecycle": {
+      "state": "active",
+      "reviewState": "none"
+    },
     "domain": "real-world",
     "status": "confirmed",
     "sources": [
@@ -33,6 +37,21 @@
         "class": "B",
         "ref": "https://github.com/stellar/stellar-protocol/blob/master/core/cap-0070.md",
         "note": "class inferred at migration"
+      },
+      {
+        "class": "A",
+        "ref": "https://developers.stellar.org/docs/validators",
+        "note": "On 2026-09-09, the rendered page and its indexed record both say every 5-7 seconds. The September 9 crawl removed the pre-deploy snippet."
+      },
+      {
+        "class": "A",
+        "ref": "https://developers.stellar.org/docs/learn/fundamentals/stellar-data-structures/ledgers",
+        "note": "closeTime accuracy: may lag a few seconds or run up to 60 seconds ahead; strictly monotonic."
+      },
+      {
+        "class": "C",
+        "ref": "https://horizon.stellar.org/ledgers?order=desc&limit=200",
+        "note": "Fresh consecutive-ledger samples on 2026-08-30 (two independent lanes)."
       }
     ],
     "corroboration": [
@@ -59,16 +78,154 @@
             "note": "verbatim legacy evidence descriptor imported at migration"
           }
         ]
+      },
+      {
+        "claim": "Fresh 2026-08-30 Pubnet samples: 199 consecutive deltas over ledgers 64193568–64193767 were min 5 / max 7 / mean 5.678 / median 6 s; a second 199-delta sample over 64193795–64193994 was min 5 / max 9 (one delta) / mean 5.673 / median 6 s.",
+        "verdict": "confirmed-as-of",
+        "evidence": [
+          {
+            "class": "C",
+            "ref": "https://horizon.stellar.org/ledgers?order=desc&limit=200",
+            "observedAt": "2026-08-30",
+            "note": "Blind lane sample: 5s×78, 6s×107, 7s×14."
+          },
+          {
+            "class": "C",
+            "ref": "https://horizon.stellar.org/ledgers?order=desc&limit=200",
+            "observedAt": "2026-08-30",
+            "note": "Proposer sample: 5s×77, 6s×112, 7s×9, 9s×1."
+          },
+          {
+            "class": "A",
+            "ref": "https://developers.stellar.org/docs/learn/fundamentals/stellar-stack",
+            "observedAt": "2026-08-30",
+            "note": "'Generally, nodes reach consensus, apply a transaction set, and update the ledger every 5-7 seconds.'"
+          }
+        ]
+      },
+      {
+        "claim": "Stellar ledgers close every 3–5 seconds (the golden.avoid trap).",
+        "verdict": "contradicted",
+        "evidence": [
+          {
+            "class": "A",
+            "ref": "https://developers.stellar.org/docs/learn/fundamentals/stellar-stack",
+            "observedAt": "2026-08-30",
+            "note": "States 5-7 seconds."
+          },
+          {
+            "class": "C",
+            "ref": "https://horizon.stellar.org/ledgers?order=desc&limit=200",
+            "observedAt": "2026-08-30",
+            "note": "Two 199-delta samples had no delta below 5 s; medians were 6 s."
+          },
+          {
+            "class": "B",
+            "ref": "https://github.com/stellar/stellar-protocol/blob/master/core/cap-0070.md",
+            "observedAt": "2026-08-30",
+            "note": "ledgerTargetCloseTimeMilliseconds initial 5000, range [4000, 5000]; a target, not an observed range."
+          },
+          {
+            "class": "A",
+            "ref": "https://developers.stellar.org/docs/validators",
+            "observedAt": "2026-08-30",
+            "note": "Still says 'every 3-5 seconds'; stale against the stack page and the samples. Docs-finding candidate; the answer's avoid item punishes only an immutable-guarantee claim from one delta, so an attributed quote of this page is not in the trap."
+          },
+          {
+            "class": "A",
+            "ref": "https://developers.stellar.org/docs/validators",
+            "observedAt": "2026-08-31",
+            "note": "Still says 'every 3-5 seconds' in rendered HTML and raw MDX (blob 37f879807c150e794578e80d2e751597938f8423); conflicts with the Stellar Stack page's 'every 5-7 seconds'. Tracked as sd-047."
+          },
+          {
+            "class": "B",
+            "ref": "https://github.com/stellar/stellar-core/blob/0752b5176d22c8d57ed562c93038f76ab97e8285/src/ledger/NetworkConfig.h",
+            "observedAt": "2026-08-31",
+            "note": "The configured target cannot be set below 4000 ms. That is a target floor, not an observed-close floor; the two 2026-08-31 samples had no delta below 5 s."
+          },
+          {
+            "class": "A",
+            "ref": "https://developers.stellar.org/docs/validators",
+            "observedAt": "2026-09-08",
+            "note": "The rendered page now says every 5-7 seconds and contains no 3-5-second claim."
+          },
+          {
+            "class": "E",
+            "ref": "stellarDocs.search_docs({query:'3-5 seconds',hitsPerPage:10,includeContent:true})",
+            "observedAt": "2026-09-08",
+            "note": "Production Raven still returned the pre-deploy Validators snippet after the source deployment."
+          }
+        ]
+      },
+      {
+        "claim": "Fresh 2026-08-31 Pubnet samples: two 199-delta windows (ledgers 64209159–64209358 and 64209225–64209424) were min 5 / max 9 / median 6 s with 196–198 of 199 deltas inside 5–7 s; the configured target is 5000 ms with a legal range of 4000–5000 ms.",
+        "verdict": "confirmed-as-of",
+        "evidence": [
+          {
+            "class": "C",
+            "ref": "https://horizon.stellar.org/ledgers?order=desc&limit=200",
+            "observedAt": "2026-08-31",
+            "note": "Two independent fetches at 13:10:23Z (blind lane) and 13:16:30Z (lane B); each 200 records, consecutive sequences."
+          },
+          {
+            "class": "F",
+            "ref": "https://horizon.stellar.org/ledgers?order=desc&limit=200",
+            "observedAt": "2026-08-31",
+            "note": "199 closed_at deltas computed per fetch: 5s×75–77, 6s×111–113, 7s×8–10, 8s×0–1, 9s×1–2; mean 5.688–5.693 s."
+          },
+          {
+            "class": "B",
+            "ref": "https://github.com/stellar/stellar-core/blob/0752b5176d22c8d57ed562c93038f76ab97e8285/src/ledger/NetworkConfig.h",
+            "observedAt": "2026-08-31",
+            "note": "InitialSorobanNetworkConfig::LEDGER_TARGET_CLOSE_TIME_MILLISECONDS = 5000; Minimum 4000; Maximum 5000. These bound the configured target, not observed closes."
+          }
+        ]
+      },
+      {
+        "claim": "As of 2026-09-09, Validators and Stellar Stack state every 5-7 seconds in their rendered pages, current source, and indexed records.",
+        "verdict": "confirmed-as-of",
+        "evidence": [
+          {
+            "class": "A",
+            "ref": "https://developers.stellar.org/docs/validators",
+            "observedAt": "2026-09-09",
+            "note": "The rendered introduction says every 5-7 seconds."
+          },
+          {
+            "class": "A",
+            "ref": "https://developers.stellar.org/docs/learn/fundamentals/stellar-stack",
+            "observedAt": "2026-09-09",
+            "note": "The Stellar Core section says every 5-7 seconds."
+          },
+          {
+            "class": "B",
+            "ref": "https://github.com/stellar/stellar-docs/blob/db501fe9f2d856f2b38c4da7bf57b325806fe842/docs/validators/README.mdx",
+            "observedAt": "2026-09-09",
+            "note": "Blob f74c26290ba7653f584805bb3b02867b97aee3af contains the corrected sentence."
+          },
+          {
+            "class": "E",
+            "ref": "stellarDocs.search_docs({query:'5-7 seconds',hitsPerPage:10,includeContent:true})",
+            "observedAt": "2026-09-09",
+            "note": "Both corrected positive records are present. The original 3-5 seconds query no longer returns the stale Validators sentence."
+          }
+        ]
       }
     ],
     "verified": {
-      "date": "2026-07-11",
-      "by": "Golden-truth sweep import — The inherited 3–5 second cadence was stale and a single-delta primary check under-sampled current behavior.",
+      "date": "2026-09-09",
+      "by": "Root integration after independent Sol high ingestion verification and blind Grok 4.6 high re-verification",
       "evidence": [
-        "Solo scratchpad 575 GT-32 blind 3284, resolving primary under-sampling."
+        ".agents/rounds/2026-09-09-docs-ingestion-sol.md",
+        ".agents/rounds/2026-09-09-docs-retirement-review-grok.md",
+        "Deployed Docs source: https://github.com/stellar/stellar-docs/blob/db501fe9f2d856f2b38c4da7bf57b325806fe842. Sol checked deployment runs 34242504493 and 34255828473 and the subsequent completed September 9 crawl.",
+        "Source classes A, B, and E agree on the corrected occurrence. Each new corroboration row records the exact page, source, and production query.",
+        "Only the latest source/index verification changes. All judge-facing fields, historical samples, target-versus-observation distinctions, and dated historical contradiction rows remain unchanged.",
+        "Sibling consistency sweep and register review: .agents/rounds/2026-09-09-truth-maintenance.md. No saved answer was re-judged and no paid QA ran."
       ],
       "rootCause": [
-        "Old target/marketing range and insufficient empirical sampling."
+        "improvements/resolved.json entry sd-047; source commit 176513cc5e058fa12ad81f607ea4ca0d514a659a",
+        "The September 9 crawl ingested the deployed source correction; the former source/index conflict no longer applies."
       ]
     },
     "origin": "raven-next q-protocol-ledger-close-time"

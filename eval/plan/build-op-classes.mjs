@@ -57,8 +57,8 @@ const PREFIX_CLASSES = {
  *   partners[], rfps[], builders[], clusters[], leaderboard projects[];
  *   lumenloop get_related_projects returns a related-project collection)
  * - analytics rollups are ecosystem-wide entry points, i.e. broad
+ * - multi-source composites return collection blocks and are broad entry points
  * - vocab/enum/schema discovery and status/changelog are meta
- * - AI compute that is not a read progression step (partnerOnboard) is meta
  *
  * Overrides are keyed on EXPOSED catalog ops only — classifyOp is only ever
  * called for ops in the manifest, so keys for build-time-excluded ops
@@ -66,6 +66,7 @@ const PREFIX_CLASSES = {
  */
 const OP_OVERRIDES = {
   // collections behind singular-looking prefixes → broad
+  "scout.getChanges": "broad",
   "scout.getHackathons": "broad",
   "scout.getPartners": "broad",
   "scout.getRfps": "broad",
@@ -75,16 +76,19 @@ const OP_OVERRIDES = {
   "scout.getPeople": "broad",
   "scout.getStablecoins": "broad",
   "scout.analyzeEcosystem": "broad",
+  "scout.hackathonBrief": "broad",
+  "scout.scfPitch": "broad",
+  "scout.vetIdea": "broad",
   "lumenloop.get_related_projects": "broad",
   // vocab/enum/schema discovery → meta
   "scout.getStatus": "meta",
   "scout.getChangelog": "meta",
+  // one resolved identity → detail
+  "scout.resolveProject": "detail",
   "lumenloop.get_categories": "meta",
   "lumenloop.get_regions": "meta",
   "lumenloop.get_tags_vocabulary": "meta",
-  "lumenloop.get_project_tags_vocabulary": "meta",
-  // AI compute, not a read progression step → meta
-  "scout.partnerOnboard": "meta"
+  "lumenloop.get_project_tags_vocabulary": "meta"
 };
 
 /** camelCase → snake_case, then the first token: "searchProjects" → "search". */

@@ -2,7 +2,7 @@
 /**
  * run-routing.mjs — grade searchCatalog() routing accuracy against the compiled cases.
  *
- * Consumes (frozen search contract, scratchpad 514):
+ * Consumes these frozen search inputs:
  *   - src/catalog/search.ts  → loadManifest(json), searchCatalog(catalog, opts), SearchHit
  *   - catalog/manifest.json
  *   - eval/routing-cases.json (produced by eval/compile-routing.mjs)
@@ -11,16 +11,18 @@
  * whether any hit's service matches expected_service at top-1 / top-3 / top-5, plus
  * card-level hit@5 when expected_cards is present (tolerant normalizer in lib/grade.mjs).
  *
- * Skills lane + overlay (todo 809), applied HERE at load time so that re-running
+ * The skills lane and overlay are applied here at load time. Re-running
  * compile-routing.mjs (which regenerates routing-cases.json) never wipes them:
  *   - eval/skills-cases.json          hand-authored supplement; expected_service=skills.
  *     Graded as its own lane ("skills lane"), NEVER mixed into the legacy aggregate.
- *   - eval/build-question-overlay.json hand-reviewed ids of legacy cases that get
- *     expected_any (accept-either) applied. Those cases are reported BOTH ways:
+ *   - eval/build-question-overlay.json hand-reviewed per-case expected_any records
+ *     for legacy or extended cases. Those cases are reported BOTH ways:
  *     strict (expected_service only — the legacy numbers, unchanged) and
  *     accept-either (any service in expected_any counts).
+ *   - eval/protocol-history-cases.json frozen diagnostic. It stays outside
+ *     every routing denominator. Controls forbid target capture at any top-five rank.
  *
- * Todo 817 additions (all strict-grading-neutral):
+ * Accept-either inputs do not affect strict grading:
  *   - compiled cases may carry corpus-derived expected_any (from acceptable_cards);
  *     per case it is unioned with the overlay's, and a legacy accept-either overall
  *     is reported alongside the unchanged strict aggregate.
@@ -45,9 +47,11 @@
  *      eval/.build/ using the repo's own `typescript` package, then import that.
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { dirname, resolve, join } from "node:path";
+import { createHash } from "node:crypto";
+import { dirname, resolve, join, relative } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { aggregate, gradeCase, tableRows } from "./lib/grade.mjs";
+import { aggregate, cardMatchesExact, gradeCase, tableRows } from "./lib/grade.mjs";
+import { overlayExpectedAnyById, unionExpectedAny } from "./lib/labels.mjs";
 
 const EVAL_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(EVAL_DIR, "..");
@@ -61,10 +65,67 @@ const MANIFEST =
     : join(REPO, "catalog", "manifest.json");
 const CASES = join(EVAL_DIR, "routing-cases.json");
 const SKILLS_CASES = join(EVAL_DIR, "skills-cases.json");
+const HOLDOUT_CASES = join(EVAL_DIR, "holdout-cases.json");
+const PROTOCOL_HISTORY_CASES = join(EVAL_DIR, "protocol-history-cases.json");
 const OVERLAY = join(EVAL_DIR, "build-question-overlay.json");
 const GATES = join(EVAL_DIR, "gates.json");
 const RESULTS_DIR = join(EVAL_DIR, "results");
 const ENFORCE_GATE = process.argv.includes("--gate");
+const GATE_EVIDENCE_INPUTS = [
+  "catalog/manifest.json",
+  "eval/routing-cases.json",
+  "eval/skills-cases.json",
+  "eval/holdout-cases.json",
+];
+
+function gateEvidenceFailures(gateConfig) {
+  const failures = [];
+  const evidence = gateConfig.evidence;
+  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) {
+    return ["gates.json evidence is missing — re-baseline with committed input fingerprints and accepted totals"];
+  }
+
+  if (!Array.isArray(evidence.inputs)) {
+    failures.push("gates.json evidence.inputs must be an array");
+  } else {
+    const inputs = new Map();
+    for (const input of evidence.inputs) {
+      if (!input || typeof input.path !== "string" || typeof input.sha256 !== "string") {
+        failures.push("gates.json evidence.inputs entries must contain path and sha256 strings");
+        continue;
+      }
+      if (inputs.has(input.path)) failures.push(`gates.json evidence.inputs repeats ${input.path}`);
+      inputs.set(input.path, input.sha256);
+    }
+    for (const path of GATE_EVIDENCE_INPUTS) {
+      const expected = inputs.get(path);
+      if (!expected) {
+        failures.push(`gates.json evidence.inputs is missing ${path}`);
+        continue;
+      }
+      if (!/^[a-f0-9]{64}$/.test(expected)) {
+        failures.push(`gates.json evidence.inputs has an invalid SHA-256 for ${path}`);
+        continue;
+      }
+      const actual = createHash("sha256").update(readFileSync(join(REPO, path))).digest("hex");
+      if (actual !== expected) failures.push(`${path} SHA-256 does not match the committed gate evidence — re-baseline gates.json explicitly`);
+    }
+    for (const path of inputs.keys()) {
+      if (!GATE_EVIDENCE_INPUTS.includes(path)) failures.push(`gates.json evidence.inputs contains unexpected path ${path}`);
+    }
+  }
+
+  const totals = evidence.acceptedTotals;
+  for (const lane of ["legacy", "skills", "holdout"]) {
+    if (!totals?.[lane] || typeof totals[lane] !== "object" || Array.isArray(totals[lane])) {
+      failures.push(`gates.json evidence.acceptedTotals.${lane} is missing`);
+    }
+  }
+  if (evidence.localTrace !== undefined && (typeof evidence.localTrace !== "string" || evidence.localTrace.length === 0)) {
+    failures.push("gates.json evidence.localTrace must be a non-empty string when present");
+  }
+  return failures;
+}
 // --dump-ranked <file>: additionally write { caseId: [hitId, ...] } — the ordered
 // top-5 hit ids per graded case across ALL lanes (legacy + extended + skills).
 // This is the §10.1a rank/membership-identity artifact (research/skill-run-design.md):
@@ -80,7 +141,7 @@ const DUMP_RANKED_PATH = (() => {
 })();
 
 async function loadSearchModule() {
-  if (!existsSync(SEARCH_TS)) throw new Error(`missing ${SEARCH_TS} — Lane C not landed yet?`);
+  if (!existsSync(SEARCH_TS)) throw new Error(`missing ${SEARCH_TS} — run from a complete checkout`);
   try {
     return await import(pathToFileURL(SEARCH_TS).href);
   } catch (directErr) {
@@ -141,36 +202,33 @@ async function main() {
   if (typeof loadManifest !== "function" || typeof searchCatalog !== "function") {
     throw new Error("search.ts does not export loadManifest + searchCatalog (contract violation)");
   }
-  if (!existsSync(MANIFEST)) throw new Error(`missing ${MANIFEST} — Lane C not landed yet?`);
+  if (!existsSync(MANIFEST)) throw new Error(`missing ${MANIFEST} — run: node scripts/build-catalog.mjs`);
   if (!existsSync(CASES)) throw new Error(`missing ${CASES} — run: node eval/compile-routing.mjs`);
 
-  const manifestJson = JSON.parse(readFileSync(MANIFEST, "utf8"));
+  const manifestBytes = readFileSync(MANIFEST);
+  const manifestSha256 = createHash("sha256").update(manifestBytes).digest("hex");
+  const manifestJson = JSON.parse(manifestBytes.toString("utf8"));
   const catalog = loadManifest(manifestJson);
   const compiled = JSON.parse(readFileSync(CASES, "utf8"));
 
-  // --- overlay: attach expected_any to hand-reviewed legacy case ids (load-time, so
+  // --- overlay: attach expected_any to hand-reviewed case ids (load-time, so
   // compile-routing.mjs regenerating routing-cases.json never wipes it) ---------------
   let overlay = null;
   const expectedAnyById = new Map();
   if (existsSync(OVERLAY)) {
     overlay = JSON.parse(readFileSync(OVERLAY, "utf8"));
-    const known = new Set(compiled.cases.map((c) => c.id));
-    for (const id of overlay.case_ids) {
-      if (!known.has(id)) {
-        console.warn(`overlay warning: case id "${id}" not present in routing-cases.json — ignored`);
-        continue;
-      }
-      expectedAnyById.set(id, overlay.expected_any);
-    }
+    const known = new Set([...compiled.cases, ...(compiled.extendedCases ?? [])].map((c) => c.id));
+    for (const [id, expectedAny] of overlayExpectedAnyById(overlay, known, (id) => {
+      console.warn(`overlay warning: case id "${id}" not present in routing-cases.json — ignored`);
+    })) expectedAnyById.set(id, expectedAny);
   }
 
   const runCase = (c) => {
-    // Union of corpus-derived tolerance (compiled expected_any, from acceptable_cards —
-    // todo 817) and the hand-reviewed overlay (adds "skills" on build questions). Strict
+    // Union corpus-derived tolerance (compiled expected_any, from acceptable_cards)
+    // with the hand-reviewed overlay (adds "skills" on build questions). Strict
     // top1/3/5 grading ignores expected_any entirely, so legacy numbers are unaffected.
     const overlayAny = expectedAnyById.get(c.id);
-    const union = new Set([...(c.expected_any ?? []), ...(overlayAny ?? [])]);
-    const expectedAny = union.size > 0 ? [c.expected_service, ...[...union].filter((s) => s !== c.expected_service).sort()] : undefined;
+    const expectedAny = unionExpectedAny(c.expected_service, c.expected_any, overlayAny);
     const hits = searchCatalog(catalog, { query: c.question, limit: 5 });
     const grade = gradeCase(hits, c.expected_service, c.expected_cards, expectedAny);
     return {
@@ -194,21 +252,6 @@ async function main() {
   // (strict `agg` above is untouched; this is the corpus-authored-tolerance view)
   const acceptEitherAgg = aggregate(perCase.map(asAny));
 
-  // --- overlay dual grading: strict vs accept-either, over the overlay subset only ----
-  let overlayReport = null;
-  if (overlay) {
-    const overlayCases = perCase.filter((r) => expectedAnyById.has(r.id));
-    overlayReport = {
-      expected_any: overlay.expected_any,
-      n: overlayCases.length,
-      strict: aggregate(overlayCases).overall,
-      acceptEither: aggregate(overlayCases.map(asAny)).overall,
-      // legacy overall recomputed with overlay cases graded accept-either (context only;
-      // `overall` above stays the strict legacy number)
-      legacyOverallAcceptEither: aggregate(perCase.map((r) => (expectedAnyById.has(r.id) ? asAny(r) : r))).overall,
-    };
-  }
-
   // --- extended lane: net-new 538-corpus cases (own aggregate, never merged) ----------
   let extendedLane = null;
   let extendedPerCase = [];
@@ -217,6 +260,28 @@ async function main() {
     extendedLane = {
       strict: aggregate(extendedPerCase),
       acceptEither: aggregate(extendedPerCase.map(asAny)).overall,
+    };
+  }
+
+  // --- overlay dual grading: keep legacy and extended subsets separate ----------------
+  let overlayReport = null;
+  if (overlay) {
+    const report = (cases) => {
+      const selected = cases.filter((r) => expectedAnyById.has(r.id));
+      return {
+        n: selected.length,
+        strict: aggregate(selected).overall,
+        acceptEither: aggregate(selected.map(asAny)).overall,
+      };
+    };
+    overlayReport = {
+      cases: [...expectedAnyById].map(([id, expected_any]) => ({ id, expected_any })),
+      legacy: {
+        ...report(perCase),
+        // Context only; the strict legacy aggregate above remains the gate.
+        overallAcceptEither: aggregate(perCase.map((r) => (expectedAnyById.has(r.id) ? asAny(r) : r))).overall,
+      },
+      extended: report(extendedPerCase),
     };
   }
 
@@ -229,11 +294,111 @@ async function main() {
     skillsLane = { authoredAt: supplement.authoredAt, ...aggregate(skillsPerCase).overall };
   }
 
+  // --- frozen blind holdout (card rank + forbidden capture; diagnostic only) --------
+  let holdoutLane = null;
+  let holdoutPerCase = [];
+  if (existsSync(HOLDOUT_CASES)) {
+    const supplement = JSON.parse(readFileSync(HOLDOUT_CASES, "utf8"));
+    const searchableEntries = catalog.entries.filter((e) => e.searchable !== false && e.kind !== "skill-section");
+    for (const c of supplement.cases) {
+      for (const card of [...c.expected_cards, ...c.forbidden_cards]) {
+        const matches = searchableEntries.filter((entry) => cardMatchesExact(card, entry));
+        if (matches.length !== 1) {
+          throw new Error(`holdout card "${card}" resolves to ${matches.length} searchable catalog entries (case ${c.id})`);
+        }
+      }
+    }
+    holdoutPerCase = supplement.cases.map((c) => {
+      const hits = searchCatalog(catalog, { query: c.question, limit: 5 });
+      const expectedIndex = hits.findIndex((hit) => c.expected_cards.some((card) => cardMatchesExact(card, hit)));
+      const expectedRank = expectedIndex === -1 ? null : expectedIndex + 1;
+      const forbiddenHits = hits
+        .filter((hit) => c.forbidden_cards.some((card) => cardMatchesExact(card, hit)))
+        .map((hit) => hit.id);
+      const top1 = expectedRank === 1;
+      const top3 = expectedRank !== null && expectedRank <= 3;
+      const top5 = expectedRank !== null && expectedRank <= 5;
+      const forbiddenCapture = forbiddenHits.length > 0;
+      return {
+        id: c.id,
+        expected_service: c.expected_service,
+        expected_cards: c.expected_cards,
+        forbidden_cards: c.forbidden_cards,
+        expectedRank,
+        top1,
+        top3,
+        top5,
+        cardHit5: top5,
+        forbiddenCapture,
+        forbiddenHits,
+        pass: top5 && !forbiddenCapture,
+        topHits: hits.map((h) => ({ id: h.id, service: h.service, score: h.score })),
+      };
+    });
+    const holdoutAgg = aggregate(holdoutPerCase);
+    holdoutLane = {
+      authoredAt: supplement.authoredAt,
+      ...holdoutAgg.overall,
+      forbiddenCaptures: holdoutPerCase.filter((r) => r.forbiddenCapture).length,
+      passed: holdoutPerCase.filter((r) => r.pass).length,
+    };
+  }
+
+  // --- protocol-history / incident diagnostic (never merged into a gate) -----------
+  let protocolHistoryLane = null;
+  let protocolHistoryPerCase = [];
+  if (existsSync(PROTOCOL_HISTORY_CASES)) {
+    const diagnostic = JSON.parse(readFileSync(PROTOCOL_HISTORY_CASES, "utf8"));
+    const target = catalog.entries.filter(
+      (entry) => entry.id === diagnostic.targetOperation && entry.searchable !== false
+    );
+    if (target.length !== 1 || target[0]?.kind !== "operation") {
+      throw new Error(
+        `protocol-history target "${diagnostic.targetOperation}" resolves to ${target.length} searchable operation entries`
+      );
+    }
+    const runDiagnosticCase = (c, role) => {
+      const hits = searchCatalog(catalog, { query: c.question, limit: 5 });
+      const index = hits.findIndex((hit) => hit.id === diagnostic.targetOperation);
+      return {
+        id: c.id,
+        class: c.class,
+        role,
+        targetRank: index === -1 ? null : index + 1,
+        ...(c.sourceCase ? { sourceCase: c.sourceCase } : {}),
+        topHits: hits.map((hit) => ({ id: hit.id, service: hit.service, score: hit.score }))
+      };
+    };
+    protocolHistoryPerCase = [
+      ...diagnostic.positiveCases.map((c) => runDiagnosticCase(c, "positive")),
+      ...diagnostic.controlCases.map((c) => runDiagnosticCase(c, "control"))
+    ];
+    const positives = protocolHistoryPerCase.filter((c) => c.role === "positive");
+    const controls = protocolHistoryPerCase.filter((c) => c.role === "control");
+    protocolHistoryLane = {
+      contract: diagnostic.contract,
+      frozen: diagnostic.frozen,
+      authoredAt: diagnostic.authoredAt,
+      targetOperation: diagnostic.targetOperation,
+      positives: positives.length,
+      top1: positives.filter((c) => c.targetRank === 1).length,
+      top3: positives.filter((c) => c.targetRank !== null && c.targetRank <= 3).length,
+      top5: positives.filter((c) => c.targetRank !== null && c.targetRank <= 5).length,
+      controls: controls.length,
+      controlTop5Captures: controls.filter(
+        (c) => c.targetRank !== null && c.targetRank <= 5
+      ).length
+    };
+    protocolHistoryLane.pass =
+      protocolHistoryLane.top5 === protocolHistoryLane.positives &&
+      protocolHistoryLane.controlTop5Captures === 0;
+  }
+
   // --- gate check (eval/gates.json; EVALS.md: two gates, everything else diagnostic) --
   let gate = null;
   if (existsSync(GATES)) {
     const g = JSON.parse(readFileSync(GATES, "utf8"));
-    const failures = [];
+    const failures = gateEvidenceFailures(g);
     if (g.gradingRule !== "v3-manifest-exposed") {
       failures.push(`gates.json gradingRule "${g.gradingRule}" is not what this runner grades (v3-manifest-exposed) — re-baseline`);
     }
@@ -253,7 +418,33 @@ async function main() {
     } else if (skillsLane.top1 < g.skills.minTop1) {
       failures.push(`skills lane top-1=${skillsLane.top1} below floor ${g.skills.minTop1}`);
     }
-    gate = { pass: failures.length === 0, failures, baselinedAt: g.baselinedAt, baselineResults: g.baselineResults };
+    // Holdout: a no-regression vector, not a target. Each rank floor and the forbidden-capture
+    // ceiling are checked SEPARATELY so a gain in one metric cannot pay for damage in another —
+    // the failure this lane exists to catch is a scorer change that rescues one skill family by
+    // capturing another's territory, which a single combined score would hide. No ±band: at n=49
+    // one case is 2% of the denominator, so slack here would swallow real movement. These floors
+    // are the frozen first measurement; moving them is a re-baseline like any other.
+    if (g.holdout) {
+      if (!holdoutLane) {
+        failures.push("holdout lane absent (eval/holdout-cases.json missing) — the holdout gate cannot be evaluated");
+      } else if (holdoutLane.n !== g.holdout.n) {
+        failures.push(`holdout lane n=${holdoutLane.n} ≠ baselined n=${g.holdout.n} — the frozen set changed; re-baseline gates.json explicitly`);
+      } else {
+        for (const [k, floor] of [["top1", g.holdout.minTop1], ["top3", g.holdout.minTop3], ["top5", g.holdout.minTop5]]) {
+          if (holdoutLane[k] < floor) failures.push(`holdout lane ${k}=${holdoutLane[k]} below floor ${floor}`);
+        }
+        if (holdoutLane.forbiddenCaptures > g.holdout.maxForbiddenCaptures) {
+          failures.push(`holdout forbidden captures=${holdoutLane.forbiddenCaptures} above ceiling ${g.holdout.maxForbiddenCaptures}`);
+        }
+      }
+    }
+    gate = {
+      pass: failures.length === 0,
+      failures,
+      holdoutChecked: Boolean(g.holdout && holdoutLane),
+      baselinedAt: g.baselinedAt,
+      evidence: g.evidence,
+    };
   } else if (ENFORCE_GATE) {
     throw new Error(`--gate passed but ${GATES} is missing`);
   }
@@ -261,7 +452,7 @@ async function main() {
   // --- ranked-id dump (--dump-ranked): every graded case, every lane, in grade order --
   if (DUMP_RANKED_PATH) {
     const ranked = {};
-    for (const r of [...perCase, ...extendedPerCase, ...skillsPerCase]) {
+    for (const r of [...perCase, ...extendedPerCase, ...skillsPerCase, ...protocolHistoryPerCase]) {
       if (r.id in ranked) throw new Error(`--dump-ranked: duplicate case id "${r.id}" across lanes — dump would silently drop one`);
       ranked[r.id] = r.topHits.map((h) => h.id);
     }
@@ -279,6 +470,7 @@ async function main() {
       {
         ranAt: new Date().toISOString(),
         gradingRule: "v3-manifest-exposed",
+        manifest: { path: relative(REPO, MANIFEST), sha256: manifestSha256 },
         ...(MANIFEST_FLAG >= 0 ? { manifestOverride: MANIFEST } : {}),
         ...(gate ? { gate } : {}),
         casesFile: { generatedAt: compiled.generatedAt, source: compiled.source, counts: compiled.counts },
@@ -288,10 +480,14 @@ async function main() {
         skipped: compiled.counts.skipReasonCounts,
         ...(extendedLane ? { extendedLane: { strict: extendedLane.strict.overall, perService: extendedLane.strict.perService, acceptEither: extendedLane.acceptEither } } : {}),
         ...(skillsLane ? { skillsLane } : {}),
+        ...(holdoutLane ? { holdoutLane } : {}),
+        ...(protocolHistoryLane ? { protocolHistoryLane } : {}),
         ...(overlayReport ? { overlay: overlayReport } : {}),
         cases: perCase,
         ...(extendedPerCase.length > 0 ? { extendedCases: extendedPerCase } : {}),
         ...(skillsPerCase.length > 0 ? { skillsCases: skillsPerCase } : {}),
+        ...(holdoutPerCase.length > 0 ? { holdoutCases: holdoutPerCase } : {}),
+        ...(protocolHistoryPerCase.length > 0 ? { protocolHistoryCases: protocolHistoryPerCase } : {}),
       },
       null,
       2,
@@ -319,14 +515,55 @@ async function main() {
     console.log(`\nskills lane — ${skillsPerCase.length} hand-authored cases (eval/skills-cases.json), strict grading\n`);
     console.table(tableRows(aggregate(skillsPerCase)));
   }
+  if (holdoutLane) {
+    console.log(`\nholdout lane — ${holdoutPerCase.length} FROZEN blind-authored cases (expected exact-card rank; pass = expected top-5 and no forbidden top-5 capture)\n`);
+    console.table(tableRows(aggregate(holdoutPerCase)));
+    console.table(holdoutPerCase.map((r) => ({
+      id: r.id,
+      rank: r.expectedRank ?? "miss",
+      top1: r.top1 ? "PASS" : "FAIL",
+      top3: r.top3 ? "PASS" : "FAIL",
+      top5: r.top5 ? "PASS" : "FAIL",
+      forbidden: r.forbiddenCapture ? r.forbiddenHits.join(", ") : "none",
+      result: r.pass ? "PASS" : "FAIL",
+    })));
+    console.log(`holdout forbidden captures: ${holdoutLane.forbiddenCaptures}/${holdoutLane.n}`);
+  }
+  if (protocolHistoryLane) {
+    console.log(
+      `\nprotocol-history diagnostic — ${protocolHistoryLane.positives} positives and ` +
+        `${protocolHistoryLane.controls} controls (target ${protocolHistoryLane.targetOperation}; diagnostic only)\n`
+    );
+    console.table(
+      protocolHistoryPerCase.map((r) => ({
+        id: r.id,
+        class: r.class,
+        role: r.role,
+        targetRank: r.targetRank ?? "miss",
+        top: r.topHits[0]?.id ?? "none"
+      }))
+    );
+    console.log(
+      `protocol-history target: top-1 ${protocolHistoryLane.top1}/${protocolHistoryLane.positives}, ` +
+        `top-3 ${protocolHistoryLane.top3}/${protocolHistoryLane.positives}, ` +
+        `top-5 ${protocolHistoryLane.top5}/${protocolHistoryLane.positives}; ` +
+        `control top-five captures ${protocolHistoryLane.controlTop5Captures}/${protocolHistoryLane.controls}; ` +
+        `diagnostic ${protocolHistoryLane.pass ? "PASS" : "FAIL"}`
+    );
+  }
   if (overlayReport) {
-    const p = (num) => `${((100 * num) / overlayReport.n).toFixed(1)}%`;
-    console.log(`\noverlay — ${overlayReport.n} build-shaped stellarDocs cases, dual grading (accept set: ${overlayReport.expected_any.join(", ")})\n`);
-    console.table([
-      { grading: "strict (legacy)", "top-1": p(overlayReport.strict.top1), "top-3": p(overlayReport.strict.top3), "top-5": p(overlayReport.strict.top5) },
-      { grading: "accept-either", "top-1": p(overlayReport.acceptEither.top1), "top-3": p(overlayReport.acceptEither.top3), "top-5": p(overlayReport.acceptEither.top5) },
-    ]);
-    const lo = overlayReport.legacyOverallAcceptEither;
+    const printOverlayLane = (name, lane) => {
+      if (lane.n === 0) return;
+      const p = (num) => `${((100 * num) / lane.n).toFixed(1)}%`;
+      console.log(`\noverlay ${name} — ${lane.n} cases, dual grading\n`);
+      console.table([
+        { grading: "strict", "top-1": p(lane.strict.top1), "top-3": p(lane.strict.top3), "top-5": p(lane.strict.top5) },
+        { grading: "accept-either", "top-1": p(lane.acceptEither.top1), "top-3": p(lane.acceptEither.top3), "top-5": p(lane.acceptEither.top5) },
+      ]);
+    };
+    printOverlayLane("legacy", overlayReport.legacy);
+    printOverlayLane("extended", overlayReport.extended);
+    const lo = overlayReport.legacy.overallAcceptEither;
     console.log(
       `legacy overall if overlay cases were graded accept-either (context only): ` +
         `top-1 ${((100 * lo.top1) / lo.n).toFixed(1)}%, top-3 ${((100 * lo.top3) / lo.n).toFixed(1)}%, top-5 ${((100 * lo.top5) / lo.n).toFixed(1)}%`,
@@ -335,7 +572,11 @@ async function main() {
   console.log("\nskipped at compile:", compiled.counts.skipReasonCounts);
   if (gate) {
     if (gate.pass) {
-      console.log(`\nGATE PASS — legacy 338 within band and skills lane at/above floor (baseline ${gate.baselineResults})`);
+      // Name every lane the gate actually checked. A PASS that only mentions two of three lanes
+      // reads as "the holdout was not evaluated" to anyone who did not open gates.json.
+      console.log(
+        `\nGATE PASS — legacy 338 within band, skills lane at/above floor${gate.holdoutChecked ? ", holdout lane at/above floors and under its capture ceiling" : ""} (baseline ${gate.baselinedAt}; committed evidence verified${gate.evidence.localTrace ? `; local trace ${gate.evidence.localTrace}` : ""})`,
+      );
     } else {
       console.log(`\nGATE FAIL${ENFORCE_GATE ? "" : " (advisory — enforce with --gate)"}:`);
       for (const f of gate.failures) console.log(`  - ${f}`);

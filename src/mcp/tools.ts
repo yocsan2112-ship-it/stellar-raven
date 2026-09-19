@@ -2,15 +2,11 @@
  * MCP tool registration for the unified `search` + `execute` server.
  *
  *  - `search`  → host-side ranked search over the generated catalog
- *                (catalog/manifest.json). This is the SHIPPED shape per
- *                ADR-0001 (research/decisions/0001-search-tool-shape.md):
- *                the code-shaped spec search that briefly held this slot
- *                (todo 801, A/B candidate B) lost the golden Q→A A/B on
- *                reliability and retired INTO `execute`'s sandbox, where
- *                `codemode.spec()` / `codemode.search` / `codemode.catalog()`
- *                keep arbitrary discovery-in-code available at zero extra
- *                turn cost. Operation hits carry rendered TypeScript
- *                signatures.
+ *                (catalog/manifest.json), as defined by ADR-0001. The
+ *                `execute` sandbox also provides `codemode.spec()`,
+ *                `codemode.search()`, and `codemode.catalog()`. These helpers
+ *                keep discovery in one model turn. Operation hits carry
+ *                rendered TypeScript signatures.
  *  - `execute` → runs LLM JavaScript in a Dynamic Worker sandbox via
  *                the injected `runExecute` (src/executor/run.ts, wired
  *                by src/server.ts). The runner is INJECTED because run.ts
@@ -27,17 +23,18 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/server";
 import {
-  searchCatalogPage,
-  catalogServices,
-  recoveryCandidates,
   type RecoveryCandidate,
+  type SearchConfidence,
+  type SearchHit,
   type SearchPage,
+  type SearchRecoveryMetadata,
   type WiderCandidate
 } from "../catalog/search.ts";
+import { prepareCatalogSearch } from "../catalog/search-resolution.ts";
 import { getCatalog } from "../catalog/load.ts";
-import { SEARCH_KINDS, RETRIEVAL_REASONS, type RetrievalReason } from "../catalog/types.ts";
+import { SEARCH_KINDS, RETRIEVAL_REASONS } from "../catalog/types.ts";
 import type { ExecuteCallContext, ExecuteRunner } from "../executor/run.ts";
-import type { BuildSourceBasisManifestInput, SourceBasisCall } from "../policy/source-basis.ts";
+import { projectSourceBasisTelemetry } from "../policy/source-basis.ts";
 import { logEvent } from "../observability.ts";
 import { searchEventFields } from "../observability-search.ts";
 import { truncateForModel, truncateLogsForModel } from "../policy/truncate.ts";
@@ -152,14 +149,38 @@ export const recoveryCandidateSchema = z.object({
 });
 
 export const widerCandidateSchema = z.object({
-  id: z.string().describe("Exact exposed broad-operation id recommended for a structurally poor search page."),
+  id: z.string().describe("Exact exposed operation id recommended as advisory search recovery."),
   service: z.string(),
-  lane: z.enum(["semantic", "research", "av", "corpus"]),
-  basis: z.enum(["page-broad-hit", "catalog-anchor"]),
+  lane: z.enum(["directory", "semantic", "research", "av", "corpus"]),
+  basis: z.enum(["short-query-directory", "page-broad-hit", "catalog-anchor"]),
   description: z.string(),
   signature: z.string().optional(),
   outputKeys: z.array(z.string()).optional(),
   outputItemKeys: z.record(z.string(), z.array(z.string())).optional()
+});
+
+export const searchConfidenceSchema = z.object({
+  hitCount: z.number().int().nonnegative(),
+  topScoreGap: z.number().nonnegative().nullable(),
+  topScoreTiers: z
+    .object({ first: z.enum(["gated", "backfill"]), second: z.enum(["gated", "backfill"]) })
+    .nullable()
+    .describe("Tiers of the first two ordered hits. Use them with the absolute topScoreGap.")
+});
+
+export const serviceFilterExcludedSkillAdvisorySchema = z.object({
+  id: z.string(),
+  service: z.literal("skills"),
+  kind: z.literal("skill"),
+  score: z.number(),
+  tier: z.enum(["gated", "backfill"]),
+  basis: z.literal("service-filter-excluded-skill"),
+  description: z.string(),
+  availableSections: z.array(z.string()).optional()
+});
+
+export const searchRecoveryMetadataSchema = z.object({
+  serviceFilterExcludedSkills: z.array(serviceFilterExcludedSkillAdvisorySchema).max(3)
 });
 
 export const rankedSearchOutputSchema = {
@@ -187,8 +208,14 @@ export const rankedSearchOutputSchema = {
   widerCandidates: z
     .array(widerCandidateSchema)
     .describe(
-      "Up to three advisory broad operations on zero-hit or all-backfill operation pages. Separate from ranked hits and derived only from page tiers plus manifest retrieval metadata."
+      "Up to three advisory operations. Short unresolved queries can add a directory hub. Zero-hit or all-backfill pages add broad operations. The entries stay separate from ranked hits and come from manifest retrieval metadata."
     ),
+  confidence: searchConfidenceSchema.describe(
+    "Ranking facts for caller-controlled broadening or abstention. topScoreGap is absolute because tier ordering can differ from score ordering."
+  ),
+  recoveryMetadata: searchRecoveryMetadataSchema.describe(
+    "Advisory skill matches excluded only by a non-skills service filter. These entries do not change ranked hits."
+  ),
   nextSteps: z.string().describe("What to do with these results (server hint).")
 };
 
@@ -201,29 +228,6 @@ export const executeInputSchema = {
     )
 };
 
-function sourceBasisCallTotals(calls: SourceBasisCall[]): Record<SourceBasisCall["outcome"], number> {
-  const totals = { ok: 0, error: 0, "soft-empty": 0 };
-  for (const call of calls) totals[call.outcome] += 1;
-  return totals;
-}
-
-function sourceBasisForTelemetry(sourceBasis: BuildSourceBasisManifestInput | undefined): unknown {
-  if (!sourceBasis) return null;
-  const calls = sourceBasis.calls ?? [];
-  return {
-    shape: sourceBasis.shape.kind,
-    calls: {
-      first: calls.slice(0, SOURCE_BASIS_TELEMETRY_CALL_LIMIT),
-      total: calls.length,
-      omitted: Math.max(0, calls.length - SOURCE_BASIS_TELEMETRY_CALL_LIMIT),
-      totals: sourceBasisCallTotals(calls)
-    },
-    canonicalUrlCount: sourceBasis.canonicalUrls?.length ?? 0,
-    artifactState: sourceBasis.artifact?.state ?? "absent",
-    skillSectionAdvice: sourceBasis.skillSectionAdvice === true
-  };
-}
-
 // Runnable-skill sentences (research/skill-run-design.md §11 row 13) — one
 // each in SEARCH_DESCRIPTION, EXECUTE_DESCRIPTION, SERVER_INSTRUCTIONS, and
 // the search nextSteps text below. Leave-with-the-feature rule: if the
@@ -231,9 +235,21 @@ function sourceBasisForTelemetry(sourceBasis: BuildSourceBasisManifestInput | un
 // (ADR-0003 spirit — consumers are never told about, and never sold, what
 // the gateway cannot do). Exported (with EXECUTE_DESCRIPTION) so the /demo
 // playground drives the exact production tool contract.
+// One official upstream documentation URL per source family, appended to the
+// END of both tool descriptions.
+//
+// The trailing placement is load-bearing. Claude Code clips a tool description
+// at 2,048 characters, so whatever sits early spends the model's whole prefix
+// budget. These URLs are trailing reference metadata and provide no runtime
+// guidance, so they ride last, behind the behavior contract the model acts on.
+//
+// test/mcp-instructions.test.ts pins both invariants: the URLs ship in the full
+// description, and they stay out of the clipped prefix.
+export const UPSTREAM_DOC_LINKS = `Upstream documentation: Lumenloop — API guide https://api.lumenloop.com/v1/docs; Stellar Light/Scout (scout) — OpenAPI https://stellarlight.xyz/api/openapi.json; Stellar Docs — https://developers.stellar.org/docs.`;
+
 export const SEARCH_DESCRIPTION = `Ranked lexical search over every exposed service operation (lumenloop.*, scout.*, stellarDocs.*) and whole skill. Skill sections are exact-read affordances exposed on whole-skill hits through availableSections; they are not independent ranked hits.
 
-Returns ranked hits with rendered TypeScript signatures so you can call them from the \`execute\` tool without guessing. Structurally poor operation pages also return bounded \`widerCandidates\` that explicitly recommend broad semantic/research/A/V/corpus operations without changing ranking. Pass caller-reported exact attempted ids in \`recoverFrom\` (and optionally \`reason\`) to receive bounded recovery candidates separately from both ranking and wider-page advice.
+Returns TypeScript signatures, \`confidence\`, and \`recoveryMetadata\`. Unresolved one-content-token queries can add directory \`widerCandidates\` even with gated hits. Unresolved means no operation-name token match. Zero-hit/all-backfill pages can add broad semantic/research/A/V/corpus advice. Advice never changes ranking. Pass attempted exact IDs in \`recoverFrom\` (optional \`reason\`) for separate recovery candidates.
 
 ## Workflow
 
@@ -258,9 +274,13 @@ Most questions have a primary family and a corroborating one — pick both up fr
 - Skill hits are operational playbooks and carry \`availableSections\` — read those sections via \`codemode.skill.read(id, { sections })\` inside \`execute\`.
 - A few skills are also RUNNABLE — their hits additionally carry a \`signature\` whose callable line is \`codemode.skill.run("<exact id>", input)\`: one call inside \`execute\` that runs the skill's whole data-gathering pipeline and resolves to the standard { ok: true, data } | { ok: false, error } envelope.
 - Operation signatures are compact: the input type and callable line are always complete, but a very large OUTPUT type is stubbed down to its top-level field names. When you need the full output shape (or the raw JSON schemas), call \`codemode.describe("<exact id>")\` inside \`execute\`.
-- Deeper or arbitrary discovery lives inside \`execute\`: \`codemode.search(...)\` (this same ranked search, mid-script), \`codemode.describe(id)\` (one entry's full detail), \`codemode.catalog({ kind?, service?, compact? })\` (exact-filtered catalog data; default/full includes schemas, \`compact: true\` omits them), and \`codemode.spec()\` (the unified OpenAPI super spec) — use them for follow-ups without another tool round-trip.`;
+- Deeper or arbitrary discovery lives inside \`execute\`: \`codemode.search(...)\` (this same ranked search, mid-script), \`codemode.describe(id)\` (one entry's full detail), \`codemode.catalog({ kind?, service?, compact? })\` (exact-filtered catalog data; default/full includes schemas, \`compact: true\` omits them), and \`codemode.spec()\` (the unified OpenAPI super spec) — use them for follow-ups without another tool round-trip.
+
+${UPSTREAM_DOC_LINKS}`;
 
 export const EXECUTE_DESCRIPTION = `Execute JavaScript in a sandboxed Worker isolate with access to the service SDKs discovered via the \`search\` tool.
+
+Calls return one text result; failures set \`isError\`. The sandbox result, console output, and thrown errors each have a separate model-boundary cap of roughly 6k tokens by default. Service-call payloads live under \`.data\`. The sandbox has no direct network access, and \`fetch()\` fails.
 
 Write an async arrow function in JavaScript that returns the result. One script should compose MANY operations: broad discovery calls first (in parallel where independent), then targeted deeper calls parameterized by their results, then return one merged, compact value.
 
@@ -287,7 +307,7 @@ Every service call resolves (never throws) to either { ok: true, data } or { ok:
 
 - The ONLY globals are \`lumenloop\`, \`scout\`, \`stellarDocs\`, \`codemode\`, and standard JavaScript. There is no \`host\`, \`fs\`, \`require\`, \`process\`, or Node.js API.
 - Never guess method names — call an operation as \`<service>.<name>(args)\` exactly as the spec's operationId / x-execute line (or a search hit's signature) shows. Unknown names fail; there is no fuzzy resolution.
-- Mid-script discovery: \`codemode.spec()\` returns the unified OpenAPI-style super spec covering every service ($refs resolved inline — paths keyed "/{service}/{operation}", operationId = the exact callable, x-execute = the exact sandbox call line); \`codemode.search("targeted query")\` (or \`{ query, kind?, service?, limit?, recoverFrom?, reason? }\`) for RANKED results plus advisory broad-operation and exact-ID recovery candidates — resolves to { ok: true, hits, total, truncated, widerCandidates, recovery }. \`widerCandidates\` is populated only for structurally poor operation pages and never changes ranking; \`recovery\` requires explicit \`recoverFrom\` ids. Truncated means more entries matched than returned (raise \`limit\`, try the other candidate family, or vary vocabulary — \`total\` is a floor, not exhaustive: it counts only the scorer tiers consulted for this page and can grow at a higher \`limit\`), and an unknown \`kind\`/\`service\`/\`recoverFrom\` value comes back as an error listing the valid scope; and \`codemode.catalog({ kind?, service?, compact? })\` for exact-filtered catalog data. Default/full entries include id, service, kind, description, inputSchema, outputSchema, and any retrievalProfile; \`compact: true\` omits the schemas. Everything listed is callable/readable. Use these for follow-ups instead of ending the script early.
+- Mid-script discovery: \`codemode.spec()\` returns the unified OpenAPI-style super spec covering every service ($refs resolved inline — paths keyed "/{service}/{operation}", operationId = the exact callable, x-execute = the exact sandbox call line); \`codemode.search("targeted query")\` (or \`{ query, kind?, service?, limit?, recoverFrom?, reason? }\`) for RANKED results plus advisory directory/broad-operation and exact-ID recovery candidates — resolves to { ok: true, hits, total, truncated, widerCandidates, recovery, confidence, recoveryMetadata }. \`confidence\` reports hit count, the absolute top-score gap, and both compared tiers. \`recoveryMetadata\` reports matching skills excluded only by a service filter. \`widerCandidates\` can add one directory recommendation for a one-content-token query without an operation-name token match, including gated pages. Zero-hit and all-backfill pages can add broad recommendations. This advice never changes ranking; \`recovery\` requires explicit \`recoverFrom\` ids. Truncated means more entries matched than returned (raise \`limit\`, try the other candidate family, or vary vocabulary — \`total\` is a floor, not exhaustive: it counts only the scorer tiers consulted for this page and can grow at a higher \`limit\`), and an unknown \`kind\`/\`service\`/\`recoverFrom\` value comes back as an error listing the valid scope; and \`codemode.catalog({ kind?, service?, compact? })\` for exact-filtered catalog data. Default/full entries include id, service, kind, description, inputSchema, outputSchema, and any retrievalProfile; \`compact: true\` omits the schemas. Everything listed is callable/readable. Use these for follow-ups instead of ending the script early.
 - \`codemode.describe("<exact id>")\` is the canonical detail step after \`search\`: for an operation it returns the FULL rendered signature (complete output type, even where the search hit showed a compacted stub), the raw inputSchema/outputSchema as data, and a \`usage\` line; for a skill, its \`availableSections\` plus the skill.read call to make; for a skill section, the parent skill id, section key, and the exact skill.read call. Reach for it whenever a search hit's stub, description, or field names aren't enough to write the call or select payload fields.
 - Skills are operational playbooks — tested build/integration/recovery procedures: \`codemode.skill.read("<exact skill id>", { sections: ["<section-slug>"] })\`; section keys come from search hits' \`availableSections\` or the spec's x-skill-index. \`{ sections }\` is the ONLY option (unknown option keys are rejected, not ignored). It resolves to { ok: true, id, content | sections, availableSections, notice? } — skill content sits at the TOP LEVEL of the result, not under \`.data\` (that envelope is for service calls); failures are { ok: false, error } as usual. Large reads come back whole for in-sandbox use (grep/aggregate freely) with an advisory \`notice\` — but RETURN sections or aggregates from the script, not whole bodies. Pair build skill sections with \`stellarDocs.search_*\` for current reference truth. When designing a new contract, app, integration, protocol, or infrastructure component, also run one prior-art pass in the SAME script: at most two \`scout.searchRepos\`/\`scout.searchProjects\` discovery calls, one focused detail call, and three returned candidates. Use it for scope, pitfalls, and build-vs-integrate decisions; return exact URL, role/applicability, freshness/provenance, and limitations, with license/audit/deployment/compatibility unknown unless source-backed. It is never API, security, maintenance, or production authority. Skip it for single-step how-tos and debugging; purely factual questions use docs first.
 - A few skills are RUNNABLE: \`codemode.skill.run("<exact skill id>", input)\` executes that skill's data-gathering pipeline host-side in one call, resolving to the ordinary service-call envelope ({ ok: true, data } | { ok: false, error }) with \`data.calls\` auditing every constituent call it made — ids are exact-match (runnable search hits and \`codemode.describe\` show the exact callable line and input type), and \`skill.read\` on the same id still returns the prose playbook: run gathers the data, read carries the judgment steps.
@@ -299,27 +319,29 @@ Every service call resolves (never throws) to either { ok: true, data } or { ok:
 - Directory/list-style results are summaries: most services pair them with a per-item detail operation (\`lumenloop.get_project\`, \`scout.getHackathon\`, \`lumenloop.get_document\`, …). When the question needs specifics beyond a list row, follow up with the detail call parameterized by the row — answering detail questions from a broad payload alone is a known failure mode.
 - Evidence sufficiency is answer-level, not envelope-level. For a closed-world question (is X in this directory/index?), an exact empty may be reported only at that source's scope. For an open-world identity, history, or topic question, an ok call whose rows are empty, off-target, adjacent, or only semantic candidates grounds no negative conclusion — several such calls ground nothing together. Make one wider pass in the SAME script: use \`lumenloop.search_content_semantic\` for ecosystem content/events, \`scout.searchResearch\` for cited history, \`lumenloop.find_av_passages\` for spoken material, or \`stellarDocs.search_docs\` for official technical wording. After a successful profiled broad call, the host may append a standalone conditional checkpoint naming uncalled alternatives from the manifest recovery graph; it observes operation classes, not row relevance, so stop when exact evidence or the named closed-world answer already resolves the question and otherwise make at most one bounded alternative pass. Treat semantic rows as candidates: require exact identity or canonical slug plus source and date before attribution; otherwise return a scoped unverified result or ask for context.
 - Avoid lossy list filtering: inspect row keys, call \`codemode.describe\` when output fields are unclear, and filter against raw row JSON or nested/common field variants before projecting compact columns. Projecting first can erase evidence and create false no-match answers.
-- The final return value is truncated at the configured model-boundary cap (default ~6k tokens) — select fields, slice arrays, aggregate in-script, and read skills by section rather than returning raw payloads or whole skill bodies. console.log output comes back as logs.`;
+- The final return value is truncated at the configured model-boundary cap (default ~6k tokens) — select fields, slice arrays, aggregate in-script, and read skills by section rather than returning raw payloads or whole skill bodies. console.log output comes back as logs.
+
+${UPSTREAM_DOC_LINKS}`;
 
 /**
  * MCP initialize-time instructions (SDK ServerOptions.instructions) — clients
  * that inject them surface this in the system prompt, where it outlives
  * per-tool descriptions over a long session. HARD BUDGET: Claude Code — the
  * largest agentic-client population — truncates injected instructions at
- * exactly 2,048 characters (measured in production 2026-07-13, todo 971:
- * the old 2,160-char BASE cut off mid-sentence and the micro-map below it
- * never arrived at all). BASE must therefore be a complete, self-sufficient
+ * exactly 2,048 characters. BASE must therefore be a complete, self-sufficient
  * workflow/envelope contract within that budget; test/mcp-instructions
  * enforces the cap and the load-bearing phrases. The micro-map rides after
  * BASE for clients that inject instructions in full.
  */
-export const BASE_SERVER_INSTRUCTIONS = `Unified Stellar-ecosystem gateway: \`search\` discovers every service operation and skill; \`execute\` composes discovered operations in sandboxed JavaScript.
+export const BASE_SERVER_INSTRUCTIONS = `Unified Stellar-ecosystem gateway: \`search\` discovers service operations and skills. \`execute\` composes them in sandboxed JavaScript.
 
-Workflow: classify the claim scope, plan candidate source families, \`search\` once per family with targeted vocabulary, then write ONE \`execute\` script (Promise.all for independent calls, then result-parameterized follow-ups). Oversized output types are stubbed in hits; use \`codemode.describe("<exact id>")\` for full signatures/schemas. Filter raw list rows (and nested field variants) before projecting compact columns. Read skill sections via \`codemode.skill.read(id, { sections })\`; runnable skills use \`codemode.skill.run("<exact id>", input)\` and return an ordinary envelope plus \`data.calls\`.
+Workflow: classify claim scope; plan source families; \`search\` each family with vocabulary; write ONE \`execute\` script. Use Promise.all for independent calls, then follow up from results. Use \`codemode.describe("<exact id>")\` for stubbed schemas. Filter raw list rows (and nested field variants) before projecting compact columns. Read sections via \`codemode.skill.read(id, { sections })\`. Runnable skills use \`codemode.skill.run("<exact id>", input)\`; calls are in \`data.calls\`.
 
-Every service call resolves to { ok: true, data } or { ok: false, error: { kind, message, hint? } }. Payloads live under .data (for example \`r.data.projects\`, never \`r.projects\`). error.kind is "error" or "soft-empty" (inconclusive, NOT evidence of absence). A closed-world question (is X in this directory/index?) may report an exact empty only at that source's scope. For an open-world identity, history, or topic question, ok rows that are empty, off-target, adjacent, or only semantic candidates are inconclusive too: make one broad pass before a negative. Prefer \`lumenloop.search_content_semantic\` for ecosystem content/events, \`scout.searchResearch\` for cited history, \`lumenloop.find_av_passages\` for spoken material, and \`stellarDocs.search_docs\` for official technical wording. Require exact identity or canonical slug plus source and date before attribution; otherwise say unverified or ask for context.
+Every service call resolves to { ok: true, data } or { ok: false, error: { kind, message, hint? } }. Payloads live under .data (\`r.data.projects\`, never \`r.projects\`). error.kind is "error" or "soft-empty" (inconclusive, NOT evidence of absence). A closed-world exact empty applies only there. For an open-world identity, history, or topic question, ok rows that are empty, off-target, adjacent, or only semantic candidates are inconclusive: make one broad pass. Use \`lumenloop.search_content_semantic\` for content, \`scout.searchResearch\` for history, \`lumenloop.find_av_passages\` for speech, and \`stellarDocs.search_docs\` for technical text. Require exact identity or canonical slug plus source and date before attribution; otherwise say unverified or ask for context.
 
-Truncated results include a source-basis block; if it lists an artifact id, read it via \`codemode.artifact.info(id)\` / \`codemode.artifact.read(id)\` in a later execute and return a compact projection. Operation and skill ids are exact-match — never guess them; discover via \`search\` or \`codemode.search\` mid-script.`;
+Evidence discipline: date volatile values with their as-of date. Copy exact symbols, types, formulas, and identifiers from results. Say "not found in these sources", not "does not exist". State visible source conflicts instead of choosing silently. Broaden vocabulary or abstain after empty entity lookups.
+
+Host blocks preserve metadata and truncation. Read listed artifacts with \`codemode.artifact.info(id)\` / \`codemode.artifact.read(id)\`, then return a compact projection. Operation and skill ids are exact-match — never guess them; discover via \`search\` or \`codemode.search\` mid-script.`;
 
 export const SERVER_INSTRUCTIONS = `${BASE_SERVER_INSTRUCTIONS}\n\n${MICRO_MAP}`;
 
@@ -345,117 +367,113 @@ export function registerTools(server: McpServer, options: RegisterToolsOptions =
   server.registerTool(
     SEARCH_TOOL_NAME,
     {
+      title: "Discover Stellar tools and skills",
       description: SEARCH_DESCRIPTION,
       inputSchema: z.object(rankedSearchInputSchema),
-      outputSchema: z.object(rankedSearchOutputSchema)
+      outputSchema: z.object(rankedSearchOutputSchema),
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        openWorldHint: false
+      }
     },
     async (args) => {
       const t0 = Date.now();
       const catalog = getCatalog();
 
-      // Filter validation (todo 839): `kind` is already zod-enum-guarded at
-      // the tool boundary, but `service` is a free string — a near-miss like
-      // "stellardocs" or "stellar-docs" used to silently exact-match nothing
-      // and read as "the capability is missing". searchCatalog stays silent
-      // on filters by (frozen) contract, so the correction lives here: keep
-      // the zero-hit response SHAPE and put the diagnosis in nextSteps.
-      const services = catalogServices(catalog);
       const respond = (structured: {
-        hits: unknown[];
+        hits: SearchHit[];
         total: number;
         truncated: boolean;
         recovery: RecoveryCandidate[];
         widerCandidates: WiderCandidate[];
+        confidence: SearchConfidence;
+        recoveryMetadata: SearchRecoveryMetadata;
         nextSteps: string;
-      }, page: SearchPage | null) => {
+      }, page: SearchPage | null, isError?: true) => {
         const text = JSON.stringify(structured);
         logEvent("search", {
           source: "tool",
           ...searchEventFields({
             query: args.query,
             requestedLimit: args.limit ?? null,
-            page
+            page,
+            summary: structured
           }),
-          hits: structured.hits.length,
-          total: structured.total,
-          truncated: structured.truncated,
-          top: (structured.hits as { id: string }[]).slice(0, 3).map((h) => h.id),
-          recovery: structured.recovery.length,
-          recoveryTop: structured.recovery.slice(0, 3).map((candidate) => candidate.id),
-          widerCandidates: structured.widerCandidates.length,
-          widerCandidateTop: structured.widerCandidates.slice(0, 3).map((candidate) => candidate.id),
-          // Context-cost observability: this measured the pre-cap response
-          // sizes that set COMPACT_OUTPUT_THRESHOLD (todo 841 — oversized
-          // output types in hits are now stubbed); it stays on to verify the
-          // compaction holds and to ground any future page-level cap in data.
+          // Keep response size observable for compaction and future limits.
           responseChars: text.length,
           ms: Date.now() - t0
         });
         return {
           content: [{ type: "text" as const, text }],
-          structuredContent: structured
+          structuredContent: structured,
+          ...(isError === undefined ? {} : { isError })
         };
       };
 
-      if (args.service !== undefined && !services.includes(args.service)) {
+      const prepared = prepareCatalogSearch(catalog, args.service);
+      if (!prepared.ok) {
         return respond({
           hits: [],
           total: 0,
           truncated: false,
           recovery: [],
           widerCandidates: [],
-          nextSteps: `Unknown service "${args.service}" — service filter values are exact-match. Valid services: ${services.join(", ")}. Retry with one of those exact values, or drop the \`service\` filter.`
-        }, null);
+          confidence: { hitCount: 0, topScoreGap: null, topScoreTiers: null },
+          recoveryMetadata: { serviceFilterExcludedSkills: [] },
+          nextSteps: `Unknown service "${prepared.issue.service}" — service filter values are exact-match. Valid services: ${prepared.issue.validServices.join(", ")}. Retry with one of those exact values, or drop the \`service\` filter.`
+        }, null, true);
       }
 
-      const operationIds = new Set(
-        catalog.entries.filter((entry) => entry.kind === "operation").map((entry) => entry.id)
-      );
-      const unknownRecoveryIds = (args.recoverFrom ?? []).filter((id) => !operationIds.has(id));
-      if (unknownRecoveryIds.length > 0) {
+      const recoveryStage = prepared.checkRecoveryIds(args.recoverFrom);
+      if (!recoveryStage.ok) {
         return respond({
           hits: [],
           total: 0,
           truncated: false,
           recovery: [],
           widerCandidates: [],
-          nextSteps: `Unknown recoverFrom operation id(s): ${unknownRecoveryIds.map((id) => JSON.stringify(id)).join(", ")}. Recovery ids are exact-match; discover valid operations with search first.`
-        }, null);
+          confidence: { hitCount: 0, topScoreGap: null, topScoreTiers: null },
+          recoveryMetadata: { serviceFilterExcludedSkills: [] },
+          nextSteps: `Unknown recoverFrom operation id(s): ${recoveryStage.issue.ids.map((id) => JSON.stringify(id)).join(", ")}. Recovery ids are exact-match; discover valid operations with search first.`
+        }, null, true);
       }
 
-      const page = searchCatalogPage(catalog, {
+      const { page, recovery } = recoveryStage.resolve({
         query: args.query,
         kind: args.kind,
-        service: args.service,
-        limit: args.limit
+        limit: args.limit,
+        reason: args.reason
       });
-      const { hits, total, truncated, widerCandidates } = page;
-      // Recovery reflects a caller-reported prior operation, never a hint
-      // inferred from uncalled ranked hits. The host validates exact IDs and
-      // exposure, not an execution ledger. A bare reason is therefore inert.
-      const recoverFrom = args.recoverFrom ?? [];
-      const recovery = recoverFrom.length > 0
-        ? recoveryCandidates(catalog, recoverFrom, args.reason as RetrievalReason | undefined)
-        : [];
+      const { hits, total, truncated, widerCandidates, confidence, recoveryMetadata } = page;
       const baseNextSteps =
         hits.length > 0
           ? `These hits are composable: write ONE \`execute\` script that calls the several relevant operations (Promise.all across services for independent calls), then follows up with deeper calls parameterized by their results — e.g. \`await lumenloop.search_directory({ query: "..." })\` then \`lumenloop.get_project({ slug })\`. Every call resolves to { ok: true, data } or { ok: false, error: { kind, message, hint? } } — payload fields live under \`.data\` (\`r.data.projects\`, never \`r.projects\`); check \`r.ok\` first. Skill hits are operational playbooks — read the sections you need in-script via \`codemode.skill.read(id, { sections })\` (keys: the hit's \`availableSections\`), and pair them with stellarDocs searches for current reference truth. For a design-stage request to create a new artifact, make one prior-art pass before architecture: at most two \`scout.searchRepos\`/\`scout.searchProjects\` discovery calls, one focused detail call, and three returned candidates. Return exact URL, role/applicability, freshness/provenance, and limitations; license/audit/deployment/compatibility stay unknown unless source-backed. Skip it for a single-step how-to or debugging task. Hits whose \`signature\` shows a \`codemode.skill.run("<exact id>", input)\` line are runnable skills — call that line verbatim to run the whole pipeline in one step (payload under \`.data\`, constituent calls audited in \`data.calls\`). Hit order is the ranking to trust: gated hits rank first, and a backfill hit appears above gated hits only when its score decisively dominates them. Recovery candidates are bounded exact-ID contingencies, separate from ranking: use relevant ones in the same execute when an open-world answer remains empty, weak, adjacent, ambiguous, or partial, and validate identity/source/date before asserting. Signatures with a stubbed output type (\`{ /* N top-level fields: ... */ }\`) list the payload's top-level field names — for the full output shape call \`codemode.describe("<exact id>")\` inside \`execute\`. For directory/list rows, inspect keys or filter raw row JSON and nested/common field variants before projecting compact columns. Use \`codemode.search(...)\` mid-script for follow-up discovery; search again here with the other candidate family, varied vocabulary, or \`kind\`/\`service\` filters if none fit.${truncated ? " More entries matched than shown (truncated) — raise `limit`, try the other candidate family, or vary vocabulary if none of these fit." : ""}`
           : "No hits. Try the other candidate family, vary vocabulary (entity name first, then capability phrase), or drop the `kind`/`service` filters. Do not conclude the capability is missing from one empty result.";
       const nextSteps =
-        widerCandidates.length > 0
+        widerCandidates.some((candidate) => candidate.basis === "short-query-directory")
+          ? `${baseNextSteps} This query has one content token without an operation-name token match. Use the advisory directory candidate for a bounded name lookup when the ranked hits do not identify the requested entity.${widerCandidates.some((candidate) => candidate.lane !== "directory") ? " If that lookup does not answer the question, use one relevant broad advisory for a bounded pass." : ""}`
+          : widerCandidates.length > 0
           ? hits.length > 0
             ? `${baseNextSteps} This page has no gated operation match, so the ranked hits are lexical-only candidates; prefer the leading hit that fits the question, and if none does, run one bounded broad pass over the advisory widerCandidates.`
             : `${baseNextSteps} No gated operation matched either; run one bounded broad pass over the advisory widerCandidates before retrying, and still do not conclude absence.`
           : baseNextSteps;
-      return respond({ hits, total, truncated, recovery, widerCandidates, nextSteps }, page);
+      return respond({ hits, total, truncated, recovery, widerCandidates, confidence, recoveryMetadata, nextSteps }, page);
     }
   );
 
   server.registerTool(
     EXECUTE_TOOL_NAME,
     {
+      title: "Run Stellar research code",
       description: EXECUTE_DESCRIPTION,
-      inputSchema: z.object(executeInputSchema)
+      inputSchema: z.object(executeInputSchema),
+      annotations: {
+        // A truncated result can persist a private artifact for a later execute call.
+        readOnlyHint: false,
+        destructiveHint: false,
+        openWorldHint: true
+      }
     },
     async (args) => {
       const runExecute = options.runExecute;
@@ -483,7 +501,16 @@ export function registerTools(server: McpServer, options: RegisterToolsOptions =
         outcome = {
           ok: false as const,
           error: e instanceof Error ? e.message : String(e),
-          logs: []
+          logs: [],
+          operationSummary: { total: 0, ok: 0, error: 0, softEmpty: 0 },
+          evidenceSummary: {
+            kind: "none",
+            skillRead: false,
+            buildAuthoritySkillIds: [],
+            buildAuthorityRoles: [],
+            skillRuns: 0,
+            artifactReads: 0
+          }
         };
       }
       // Logs get their own token budget at the model boundary (equal to the
@@ -508,11 +535,13 @@ export function registerTools(server: McpServer, options: RegisterToolsOptions =
         logLines: outcome.logs.length,
         logsTruncated: shapedLogs.truncated,
         errorTruncated: shapedError ? shapedError.truncated : null,
-        artifactReadCount: outcome.artifactReadCount ?? 0,
+        artifactReadCount: outcome.evidenceSummary.artifactReads,
         artifactReadBytes: outcome.artifactReadBytes ?? 0,
-        operationSummary: outcome.operationSummary ?? null,
+        operationSummary: outcome.operationSummary,
         recoveryHint: outcome.ok ? (outcome.recoveryHint ?? null) : null,
-        sourceBasis: outcome.ok ? sourceBasisForTelemetry(outcome.sourceBasis) : null
+        sourceBasis: outcome.ok
+          ? projectSourceBasisTelemetry(outcome.sourceBasis, SOURCE_BASIS_TELEMETRY_CALL_LIMIT)
+          : null
       });
 
       const logsBlock =
@@ -531,9 +560,13 @@ export function registerTools(server: McpServer, options: RegisterToolsOptions =
       }
 
       const operationSummary = outcome.operationSummary;
-      const noData = operationSummary && operationSummary.total > 0 && operationSummary.ok === 0;
-      const recoveryBlock = !noData
-        ? ""
+      const noData = operationSummary.total > 0 && operationSummary.ok === 0;
+      const allSuccessfulCallsEmpty =
+        operationSummary.ok > 0 && outcome.evidenceSummary.kind === "service-inconclusive";
+      const recoveryBlock = allSuccessfulCallsEmpty
+        ? `\n\n--- EVIDENCE RECOVERY ---\nAll ${operationSummary.ok} successful service call(s) returned structurally empty collections. Their { ok: true, data } envelopes remain unchanged, but they are inconclusive for an open-world negative. ${outcome.recoveryHint ? "Use the exact recovery guidance below." : "Make one broad pass before making an open-world negative."} For a closed-world question, report the empty result only at the named source's scope.`
+        : !noData
+          ? ""
         : operationSummary.error > 0 && operationSummary.softEmpty === 0
           ? `\n\n--- SERVICE ERRORS ---\nAll ${operationSummary.total} service calls failed. Errors do not establish absence or an open-world negative: inspect or retry the failures before broadening.`
           : operationSummary.error === 0
@@ -545,17 +578,17 @@ export function registerTools(server: McpServer, options: RegisterToolsOptions =
       // catalog-declared build-authority playbook; any-skill reads stay off this
       // composition cue so landscape/list requests never inherit a build cap.
       const hasPriorArtPreflight = Boolean(
-        outcome.operationSummary?.priorArtCandidates && outcome.evidenceSummary?.buildAuthoritySkillIds?.length
+        outcome.operationSummary.priorArtCandidates && outcome.evidenceSummary.buildAuthoritySkillIds?.length
       );
 
       const candidateBlock = candidateEvidenceBlock(
-        outcome.operationSummary?.candidateEvidence,
+        outcome.operationSummary.candidateEvidence,
         hasPriorArtPreflight
       );
 
       const priorArtEvidenceBlock =
         hasPriorArtPreflight
-          ? `\n\n--- PRIOR-ART CANDIDATES ---\nThis build-stage run paired an implementation playbook with ${outcome.operationSummary?.priorArtCandidates} Scout project/repository discovery or detail call(s). These rows are decision input, not reuse clearance: return no more than three directly relevant candidates with exact URL, role/applicability, freshness/provenance, and limitations. License, audit, deployment, compatibility, security, maintenance, and production readiness remain unknown unless the returned evidence directly establishes each claim; rank, stars, funding, directory status, and public source do not.`
+          ? `\n\n--- PRIOR-ART CANDIDATES ---\nThis build-stage run paired an implementation playbook with ${outcome.operationSummary.priorArtCandidates} Scout project/repository discovery or detail call(s). These rows are decision input, not reuse clearance: return no more than three directly relevant candidates with exact URL, role/applicability, freshness/provenance, and limitations. License, audit, deployment, compatibility, security, maintenance, and production readiness remain unknown unless the returned evidence directly establishes each claim; rank, stars, funding, directory status, and public source do not.`
           : "";
       const evidenceCheckpoint = evidenceCheckpointBlock(outcome.recoveryHint);
 

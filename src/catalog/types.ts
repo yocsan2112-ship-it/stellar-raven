@@ -42,6 +42,21 @@ export type CatalogKind = (typeof CATALOG_KINDS)[number];
 export const SEARCH_KINDS = ["operation", "skill"] as const;
 export type SearchKind = (typeof SEARCH_KINDS)[number];
 
+/**
+ * Positive Scout x-routing fields retained as bounded source phrases.
+ * Each keywords item remains separate. Only a multiword item is a phrase.
+ */
+export const ROUTING_FIELDS = ["purpose", "useWhen", "exampleQuestions", "keywords"] as const;
+export const routingPhraseSchema = z.object({
+  field: z.enum(ROUTING_FIELDS),
+  tokens: z.array(z.string().min(1)).min(1)
+});
+export type RoutingPhrase = z.infer<typeof routingPhraseSchema>;
+export const routingExclusionSchema = z.object({
+  tokens: z.array(z.string().min(1)).min(2)
+});
+export type RoutingExclusion = z.infer<typeof routingExclusionSchema>;
+
 /** A JSON Schema fragment — kept opaque; only the TS renderer walks it. */
 const jsonSchemaShape = z.record(z.string(), z.unknown());
 
@@ -139,7 +154,7 @@ export const retrievalProfileSchema = z.object({
   })).min(1).max(6)
 });
 
-export const catalogEntrySchema = z.object({
+const catalogEntryBaseSchema = z.object({
   /** Exact-match id, `<namespace>.<name>` (+ `#<section>` for skill sections). */
   id: z.string().min(1),
   service: z.enum(CATALOG_SERVICES),
@@ -165,6 +180,20 @@ export const catalogEntrySchema = z.object({
    * schema-derived shrapnel. Never rendered to users.
    */
   routingKeywords: z.array(z.string()).optional(),
+  /**
+   * Positive Scout x-routing source strings used only for intent-preserving
+   * service selection. They never affect scorer admission or score values.
+   */
+  routingPhrases: z.array(routingPhraseSchema).optional(),
+  /**
+   * Scout x-routing notFor clauses before any `->` target label. These
+   * clauses can reject a stronger negative intent, but never add score.
+   */
+  routingExclusions: z.array(routingExclusionSchema).optional(),
+  /** Receipt-backed entity identities, activated only by a complete trigger. */
+  knownAliases: z.array(z.string().trim().min(1)).min(2).optional(),
+  /** Distinctive complete sequences that activate knownAliases during search. */
+  knownAliasTriggers: z.array(z.string().trim().min(1)).min(1).optional(),
   /** Query-independent exact-ID recovery graph, validated at catalog build/load. */
   retrievalProfile: retrievalProfileSchema.optional(),
   /**
@@ -174,13 +203,11 @@ export const catalogEntrySchema = z.object({
    */
   buildAuthorityRoles: z.array(z.enum(BUILD_AUTHORITY_ROLES)).min(1).optional(),
   /**
-   * Search-visibility marker (skills program, Solo scratchpad 608): literal
+   * Search-visibility marker: literal
    * `false` ONLY — absence means searchable. An entry with `searchable:
    * false` stays fully exposed (exact-id describe/read/run, codemode.catalog,
-   * super spec) but never enters search scoring or results. SHIPPED on all
-   * 204 skill-section entries since the 2026-07-13 skills-form A/B (arm B
-   * won: sections crowded operations in search while whole-skill entries
-   * carried every measured discovery need — scratchpad 608 P4).
+   * super spec) but never enters search scoring or results. Every current
+   * skill-section entry uses this marker. The decision record is ADR-0005.
    */
   searchable: z.literal(false).optional(),
   /**
@@ -208,6 +235,15 @@ export const catalogEntrySchema = z.object({
   outputSchema: jsonSchemaShape.nullable(),
   transport: transportSchema.nullable(),
   provenance: provenanceSchema
+});
+
+export const catalogEntrySchema = catalogEntryBaseSchema.superRefine((entry, ctx) => {
+  if ((entry.knownAliases === undefined) !== (entry.knownAliasTriggers === undefined)) {
+    ctx.addIssue({
+      code: "custom",
+      message: "knownAliases and knownAliasTriggers must appear together"
+    });
+  }
 });
 
 export type CatalogEntry = z.infer<typeof catalogEntrySchema>;

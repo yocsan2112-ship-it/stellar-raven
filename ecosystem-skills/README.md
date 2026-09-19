@@ -2,7 +2,7 @@
 
 A version-pinned **reference** to the **Stellar/Soroban agent skills** (Claude-Code-style
 `SKILL.md` playbooks) published across the ecosystem — LumenLoop, OpenZeppelin, the Stellar
-Development Foundation (SDF), and Stellar Light — plus a snapshot of the broader
+Development Foundation (SDF), Stellar Light, and Trustless Work — plus a snapshot of the broader
 [stellarlight.xyz](https://stellarlight.xyz/skills) ecosystem **directory**.
 
 **Skill bodies are not stored here.** This directory holds their addresses: a commit SHA per
@@ -24,7 +24,7 @@ ecosystem-skills/
 ├── INDEX.md         # AUTO-GENERATED themed directory (name + description + source + size), linked upstream
 ├── groups.json      # theme → skill-id mapping that drives INDEX.md grouping
 ├── catalog.json     # full snapshot of the stellarlight.xyz/api/skills directory (42 entries)
-├── build-index.mjs  # regenerates INDEX.md from MANIFEST.json + groups.json
+├── build-index.mjs  # regenerates INDEX.md from MANIFEST.json + catalog.json + groups.json
 ├── update.sh        # re-pins every source (stores nothing), prints the body diff, rebuilds the index
 ├── .cache/          # gitignored working cache of fetched bodies, keyed by blob sha — safe to delete
 └── README.md
@@ -42,11 +42,12 @@ else exists, including non-`skill-md` SDKs/MCP servers/CLIs that this server doe
 | `openzeppelin-stellar` | [`OpenZeppelin/openzeppelin-skills`](https://github.com/OpenZeppelin/openzeppelin-skills) `skills/` | 3 Stellar/Soroban contract skills (cherry-picked from a multi-chain repo) | `gh` tree listing @ pinned commit |
 | `stellar-dev` | [`stellar/stellar-dev-skill`](https://github.com/stellar/stellar-dev-skill) `skills/` | 7 SDF developer skills (soroban, dapp, data, assets, agentic-payments, standards, zk-proofs) | `gh` tree listing @ pinned commit |
 | `stellar-light` | [`Stellar-Light/stellar-scout`](https://github.com/Stellar-Light/stellar-scout) (root) | 1 ecosystem-analyst skill | `gh` tree listing @ pinned commit |
+| `trustless-work` | [`Trustless-Work/trustlesswork-skill`](https://github.com/Trustless-Work/trustlesswork-skill) `trustless-work-dev/` (skill dir at the repo root, cherry-picked) | 1 escrow-integration skill | `gh` tree listing @ pinned commit |
 | _catalog_ | [`stellarlight.xyz/api/skills`](https://stellarlight.xyz/api/skills) | 42-entry ecosystem directory (sdf / stellarlight / lumenloop / external) | `curl` snapshot → `catalog.json` (NOT downloaded as skills) |
 
 Every source is **public**, and each source's upstream `LICENSE`/`NOTICE` file names are recorded
 in `MANIFEST.json` (`license_files`) at the same pinned commit — see `THIRD-PARTY-NOTICES.md` at
-the repo root for the license map. Nothing is redistributed from here.
+the repo root for the license map.
 
 The LumenLoop API exposes 14 skills total (`GET /v1/skills`): the 8 public ones (identical to the
 GitHub repo) and 6 partner-set ones. Only the public set is mirrored. The partner set (the
@@ -73,7 +74,8 @@ back in. The partner skills survive only as name-only stubs in `inventory/lumenl
   someone makes rather than an omission nobody sees.
 - **The ecosystem is bigger than what we mirror.** `catalog.json` captures the full stellarlight
   directory — including SDKs/MCP servers/CLIs that aren't `SKILL.md` skills — so the map of "what
-  exists" stays complete without dragging in non-skill artifacts.
+  exists" stays complete without dragging in non-skill artifacts. `build-index.mjs` reads this
+  directory directly instead of storing a second projection in `MANIFEST.json`.
 - **Swap atomically.** `update.sh` stages the whole pin set in a temp tree and only swaps
   `MANIFEST.json` / `catalog.json` into place on full success. A mid-run failure leaves the
   existing pins untouched — it never produces a half-written manifest.
@@ -143,12 +145,14 @@ nothing silently changes exposure":
   sync renames or removes one, the build fails instead of silently un-retiring it: retire the
   new name, or drop the entry if the skill is gone.
 - **Orphaned description notes** (`scripts/description-notes.mjs`): catalog notes are exact-match
-  data keyed on upstream tool/operation names; a rename orphans the note and fails both builders.
+  data keyed on upstream tool, operation, or skill IDs. A rename orphans the note and fails every
+  affected generator. Skill description overrides change only host discovery text and do not
+  modify pinned source bytes. `codemode.skill.read` still applies its existing exposure scrub.
 
 Eval coupling: `eval/skills-cases.json` grades skills routing. Cases whose target skill leaves
 catalog exposure move to its inert `retiredCases` array (rationale + date), and the skills-lane
 floor in `eval/gates.json` is re-baselined **in the same commit** with the decision recorded in
-Solo (EVALS.md rule 1).
+the round ledger (EVALS.md rule 1).
 
 **Automated drift detection (CI):** the daily `refresh.yml` workflow runs
 `node scripts/check-skills-drift.mjs`, which compares every pin in `MANIFEST.json` against upstream

@@ -16,9 +16,10 @@ artifact. Delete one only after proving it has no package, workflow, documentati
 | `npm run site:fonts` | `src/fonts.ts` | release/operator generated; source fonts are local-only |
 | `npm run site:og` | `src/og.ts` | release/operator generated; requires ImageMagick and local fonts |
 | `node eval/compile-routing.mjs` | `eval/routing-cases.json` | yes |
-| `node eval/qa/compile-qa.mjs` | `eval/qa/cases.json` | yes |
+| `node eval/qa/compile-qa.mjs` | `eval/qa/cases.json`, `eval/qa/sample.json`, `eval/qa/lifecycle-registry.json` | yes |
 | `node eval/plan/build-op-classes.mjs` | `eval/plan/op-classes.json` | yes |
-| `node ecosystem-skills/build-index.mjs` | `ecosystem-skills/INDEX.md` | yes |
+| `node ecosystem-skills/build-index.mjs` | `ecosystem-skills/INDEX.md` from the pin manifest, directory catalog, and groups | yes |
+| `npm run improvements:index` | `improvements/INDEX.md` | yes (`npm run improvements:lint`) |
 
 `build-catalog.mjs` and `build-super-spec.mjs` additionally read skill bodies through
 `scripts/lib/skill-mirror.mjs`, the one non-committed build input: it fetches each file pinned in
@@ -29,6 +30,10 @@ the build rather than baking unreviewed upstream bytes into a generated artifact
 Every CI-gated generator in the table uses `writeFileAtomic` from `scripts/lib/shared.mjs` so an
 interrupted process cannot leave a truncated tracked artifact. Generated modules are never edited by
 hand. Release/operator-only image and font generators are outside that offline CI contract.
+
+`improvements-file-issue.mjs` and `improvements-resolve.mjs` already mutate a finding, so they
+regenerate `improvements/INDEX.md` in-process through `writeIndex` from `improvements-lib.mjs`
+rather than re-spawning the entrypoint; their tracked writes use the same atomic replace.
 
 ## Typing convention
 

@@ -5,7 +5,7 @@
  * /mcp via `createMcpHandler` from agents/mcp (research/codemode.md §6).
  * No Durable Objects; no session state.
  *
- * Auth (PLAN §7 phase 8, research/auth-workos.md): /mcp is wrapped by
+ * Auth (research/auth-workos.md): /mcp is wrapped by
  * @cloudflare/workers-oauth-provider — this server is its own OAuth 2.1
  * authorization server (opaque tokens in OAUTH_KV; /token, /register, and
  * the .well-known discovery docs come from the lib), with WorkOS AuthKit as
@@ -37,11 +37,19 @@ import { runAndStoreSkillCanary } from "./skills/canary";
 import {
   authSubjectFromProps,
   buildMcpRequestObservability,
-  normalizeRayId,
-  type McpAuthMode
+  normalizeRayId
 } from "./observability-request";
 
-const SERVER_INFO = { name: "stellar-raven-codemode", version: "0.1.0" };
+declare const __RAVEN_SOURCE_REVISION__: string | undefined;
+const SOURCE_REVISION =
+  typeof __RAVEN_SOURCE_REVISION__ === "string" && /^[a-f0-9]{40}$/.test(__RAVEN_SOURCE_REVISION__)
+    ? __RAVEN_SOURCE_REVISION__
+    : null;
+const SERVER_INFO = {
+  name: "stellar-raven-codemode",
+  version: "0.1.0",
+  ...(SOURCE_REVISION ? { sourceRevision: SOURCE_REVISION } : {})
+};
 const DEV_LOCAL_ARTIFACT_OWNER = "dev-local";
 // Keep in sync with wrangler.jsonc routes; loopback entries preserve local dev.
 const MCP_ALLOWED_ORIGIN_HOSTNAMES = [
@@ -52,6 +60,11 @@ const MCP_ALLOWED_ORIGIN_HOSTNAMES = [
   "127.0.0.1",
   "[::1]"
 ];
+
+export type McpAccessContext =
+  | { mode: "oauth" }
+  | { mode: "api-key"; apiKeyName: string }
+  | { mode: "dev-bypass" };
 
 // One runner per isolate (providers + catalog + spec are env-stable); each
 // `execute` call still gets its own fresh Dynamic Worker via LOADER.load().
@@ -70,10 +83,11 @@ async function getRunner(env: Env): Promise<ExecuteRunner> {
 
 export function resolveArtifactOwner(
   oauthSubject: string | undefined,
-  devBypassFired: boolean
+  accessContext: McpAccessContext
 ): string | undefined {
-  if (oauthSubject) return oauthSubject;
-  return devBypassFired ? DEV_LOCAL_ARTIFACT_OWNER : undefined;
+  if (accessContext.mode === "oauth") return oauthSubject;
+  if (accessContext.mode === "dev-bypass") return DEV_LOCAL_ARTIFACT_OWNER;
+  return undefined;
 }
 
 // Stateless: fresh McpServer per request (research/codemode.md §6). Used
@@ -84,18 +98,17 @@ export const mcpHandler = {
     request: Request,
     env: Env,
     ctx: ExecutionContext,
-    opts: { devBypassFired?: boolean; authMode?: McpAuthMode; apiKeyName?: string } = {}
+    accessContext: McpAccessContext = { mode: "oauth" }
   ): Promise<Response> {
     // instructions surfaces in the client's system prompt at initialize time
     // (per-session, unlike tool descriptions which models skim once) — the
     // workflow + result-envelope contract lives there too.
     const server = new McpServer(SERVER_INFO, { instructions: SERVER_INSTRUCTIONS });
     const requestId = crypto.randomUUID();
-    const authMode = opts.authMode ?? "oauth";
     const authProps = (ctx as ExecutionContext & { props?: unknown }).props;
     const requestTelemetry = await buildMcpRequestObservability({
-      accessMode: authMode,
-      apiKeyName: opts.apiKeyName,
+      accessMode: accessContext.mode,
+      ...(accessContext.mode === "api-key" ? { apiKeyName: accessContext.apiKeyName } : {}),
       props: authProps,
       rayId: request.headers.get("cf-ray"),
       serverSecret: env.MCP_SERVER_SECRET
@@ -105,7 +118,7 @@ export const mcpHandler = {
     registerTools(server, {
       runExecute: (code, callContext) => runner(code, callContext),
       executeContext: () => ({
-        artifactOwner: resolveArtifactOwner(oauthSubject, opts.devBypassFired === true),
+        artifactOwner: resolveArtifactOwner(oauthSubject, accessContext),
         requestId,
         rayId: requestTelemetry.rayId ?? undefined
       }),
@@ -141,9 +154,8 @@ function isMcpPath(url: URL): boolean {
   return url.pathname === "/mcp" || url.pathname.startsWith("/mcp/");
 }
 
-// Exact paths only (review finding 6: no startsWith that would catch
-// /playgrounds) — anything else under /playground* falls through to the
-// provider's defaultHandler 404.
+// Exact paths prevent `/playgrounds` and similar names from entering the
+// playground handler. Other paths fall through to the provider's 404.
 function isPlaygroundPath(url: URL): boolean {
   return (
     url.pathname === "/playground" ||
@@ -203,10 +215,10 @@ export default {
     if (isMcpPath(url)) {
       const apiKeyName = await authenticateApiKey(request, env);
       if (apiKeyName) {
-        return mcpHandler.fetch(request, env, ctx, { authMode: "api-key", apiKeyName });
+        return mcpHandler.fetch(request, env, ctx, { mode: "api-key", apiKeyName });
       }
       if (allowDevUnauthenticated(env, url.hostname)) {
-        return mcpHandler.fetch(request, env, ctx, { devBypassFired: true, authMode: "dev-bypass" });
+        return mcpHandler.fetch(request, env, ctx, { mode: "dev-bypass" });
       }
     }
 

@@ -3,8 +3,8 @@
 ## Principle
 
 This MCP server's own tuning ceiling is limited. But running evals against it gives
-outsized leverage for **discovering gaps and errors in the four upstream surfaces it
-fronts**. From now on, a primary artifact of every eval run is a recorded,
+outsized leverage for **discovering gaps and errors in the upstream surfaces and
+provider package it depends on**. From now on, a primary artifact of every eval run is a recorded,
 evidence-backed improvement recommendation set for those services. This directory is
 that collection.
 
@@ -26,10 +26,16 @@ that collection.
   `ecosystem-skills/MANIFEST.json`. Recommendations target the source repos. Bodies are not
   vendored here (they are fetched from the pinned commit and hash-verified), so there is no
   local copy to patch — and re-pinning to a fork or a patched branch is not a fix either.
+- `workers-ai-provider/` — findings about Cloudflare's `workers-ai-provider` package and its
+  AI Gateway delegate surface. Recommendations target `cloudflare/ai`.
+- `canonical-source/` — findings about a primary dependency or product source that no service
+  collection above owns, such as a package Raven vendors or a product repository's own docs.
+  Recommendations target the repository that owns the defective fact or code.
 
 Web findings are classified before filing as `docs-content`, `docs-search`, `site-content`,
 `site-search`, or `canonical-source`. The two search categories include the corresponding Algolia
-or crawler layer. These are routing categories, not automatic directories: a missing search result
+or crawler layer. Only `canonical-source` has its own collection. The other categories are routing
+categories, not automatic directories: a missing search result
 does not establish that Docs or `stellar.org` should own the content, and empty collections are not
 created without a verified finding and identified owner. Facts owned by a SEP, CAP, implementation,
 or product repository are corrected there. A dedicated site collection should be added only when a
@@ -42,14 +48,14 @@ One file per finding. YAML-ish frontmatter, then three short sections.
 ```
 ---
 id: <collection>-NNN
-service: lumenloop | stellar-light-scout | stellar-docs | skills
+service: lumenloop | stellar-light-scout | stellar-docs | skills | workers-ai-provider | canonical-source
 status: proposed | verified | reported-upstream | declined-upstream | fixed-upstream
 discovered: YYYY-MM-DD
 upstreamTitle: <reader-first issue title; required before filing>
 evidence:
   - eval/qa/results/<results-file stamp>
   - live verification note
-  - Solo todo/comment ref
+  - .agents/TODO.md item or round-ledger ref
 ---
 
 ## Finding        (what's wrong, factually)
@@ -73,10 +79,9 @@ evidence:
 - Declined, wontfix, legacy, and overfit decisions are retained while the original defect still
   reproduces. A superseded record can be retired only after its upstream ref points to a
   self-contained successor and that successor preserves the essential evidence.
-- Findings here are for the **services**. Fixes to this repo (adapters,
-  normalizers, catalog, eval golden) go to Solo todos instead (the Solo project binding
-  lives in [`AGENTS.md` “Coordination”](../AGENTS.md#coordination)) — a finding file may note
-  that a fix landed here, but the repo work is tracked there.
+- Findings here are for the **services**. Fixes to this repo (adapters, normalizers, catalog,
+  eval goldens, and eval instruments) go to [`.agents/TODO.md`](../.agents/TODO.md). A finding file
+  can note that a fix landed here, but the own-repo work stays in that queue.
 
 ## Upstream filing channels
 
@@ -98,6 +103,10 @@ Known channels (issue access confirmed 2026-07-09):
   (authenticated issue access confirmed 2026-07-13). Directory-record corrections belong in
   <https://github.com/lumenloop/stellar-ecosystem-db>; skill-content findings remain in
   <https://github.com/lumenloop/lumenloop-skills>. Record the exact issue URL in the finding.
+- `workers-ai-provider/` findings → <https://github.com/cloudflare/ai>.
+- `canonical-source/` findings → the owning repository, set as a per-finding override in
+  `improvements/intake.json` after the owner is verified. The service rule is `mixed`, so the filer
+  refuses a finding without an override.
 
 Use `npm run improvements:file -- --file improvements/<collection>/<finding>.md --dry-run` to
 review the resolved owner and standardized body, then omit `--dry-run` to file it. The generated
@@ -136,7 +145,7 @@ is now directly remediable with the operator Algolia credentials in `.env`
   stay **upstream** on `stellar/stellar-docs`. Do not "fix" them by rewriting index records; the
   crawler would overwrite it and we would be diverging a shared corpus from its source.
 - **Search-mechanism gaps** — ranking, tokenization, synonym/vocabulary, or crawler-config issues
-  (`sd-001`, `sd-003`; resolved precedent `sd-006` is in `resolved.json`). These we *can* now remediate directly (a general rule/synonym, an
+  (`sd-003`; `sd-001` and `sd-006` are resolved precedents). These we *can* now remediate directly (a general rule/synonym, an
   index-settings change, a crawler-config fix + reindex), subject to a hard bar:
   - a **general mechanism only** — no per-page/per-query rules or synonyms (same anti-overfitting
     rule the eval loop enforces);
@@ -148,11 +157,12 @@ is now directly remediable with the operator Algolia credentials in `.env`
 
   Record a direct Algolia remediation in the finding's `evidence` (what changed, the A/B before/after,
   the live re-check) exactly like an upstream fix; keep the GitHub ref too when the underlying cause is
-  also a content/crawler issue the docs owner should know about. The resolved `sd-006` receipt is the
-  precedent for retaining a separate monitor-only rule-health canary after the active finding retires.
+  also a content/crawler issue the docs owner should know about. The `sd-001` crawler fix and the
+  resolved `sd-006` precedent retain separate canaries. The `sd-001` canary reports drift, while the
+  load-bearing `sd-006` rule canary fails on drift.
 
-**Analytics as evidence.** The Search Analytics / usage keys give us real user query streams and
-no-result queries — a new, low-risk evidence source. Use them to quantify a finding's prevalence
+**Analytics as evidence.** The Search Analytics / usage keys give us aggregated top-query and
+no-result-query reports — a new, low-risk evidence source. Use them to quantify a finding's prevalence
 (stronger than the eval corpus's approximation) and to surface content/vocabulary gaps we would
 otherwise never see. Cite the analytics query and window in `evidence`.
 

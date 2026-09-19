@@ -11,6 +11,8 @@ evidence:
   - upstream issue filed 2026-07-09: https://github.com/stellar/stellar-docs/issues/2575
   - maintainer response 2026-07-13: https://github.com/stellar/stellar-docs/issues/2575#issuecomment-4962781289 — adding a six-year-old deprecation notice would be noise because the retired SEP-6 interactive components are not otherwise documented on the site
 recurrences:
+  - date: 2026-08-11
+    evidence: live Docs search for `SEP-6 interactive deprecated SEP-24` still returns no deprecated-status text. Issue #2575 remains closed by the docs owner; the recorded maintainer rationale is ElliotFriend's 2026-07-13 noise-and-placement decision.
   - date: 2026-07-10
     evidence: architecture A/B todo 903 — q-sep-6-24-deprecation remained wrong/partial across the two QA arms, and a fresh live stellarDocs search for `SEP-6 interactive deprecated SEP-24` returned no `deprecated` text
   - date: 2026-07-13
@@ -63,6 +65,7 @@ provenance-bearing status note to the upstream `stellar-dev-skill` standards
 reference that already routes agents to SEP-6/SEP-24. If neither surface should
 carry it, treat the QA row as a corpus/source-coverage diagnostic rather than
 ordinary agent-quality evidence until a general official-source mechanism can
-reach `stellar-protocol`. Track that placement decision in Solo todo 989 and
-scratchpad 625; if Docs declines/closes, create a successor skills/source
-finding rather than stretching this Docs finding.
+reach `stellar-protocol`. That placement decision was recorded in Solo todo 989
+and scratchpad 625 (historical; Solo is retired). If Docs declines or closes,
+create a successor skills/source finding rather than stretching this Docs
+finding.

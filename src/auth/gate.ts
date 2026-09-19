@@ -19,22 +19,25 @@
  */
 import type { OAuthProviderOptions } from "@cloudflare/workers-oauth-provider";
 import { WorkOSAuthHandler } from "./workos";
+import { hasAllowedRedirectTransport } from "./redirects";
+// Token lifetimes derive from the retention leaf that privacy disclosures
+// quote, so a published duration can never drift from the enforced one.
+import { RETENTION } from "./retention";
 
 // Re-export from the leaf module (src/auth/timing.ts) — existing importers
 // (tests) keep this path; demo code imports the leaf directly to avoid a
 // module cycle through workos.ts.
 export { timingSafeEqualBytes } from "./timing";
 
-const DAY_SECONDS = 24 * 60 * 60;
 /** Short-lived bearer token; compatible MCP clients refresh it automatically. */
-export const ACCESS_TOKEN_TTL_SECONDS = 60 * 60;
+export const ACCESS_TOKEN_TTL_SECONDS = RETENTION.accessTokenSeconds;
 /**
  * Fixed authorization-grant lifetime. Refresh-token rotation does not extend
  * this window, so clients reauthorize through WorkOS after 90 days.
  */
-export const REFRESH_TOKEN_TTL_SECONDS = 90 * DAY_SECONDS;
+export const REFRESH_TOKEN_TTL_SECONDS = RETENTION.refreshGrantSeconds;
 /** DCR metadata lifetime, independent of user grants and token lifetimes. */
-export const CLIENT_REGISTRATION_TTL_SECONDS = 365 * DAY_SECONDS;
+export const CLIENT_REGISTRATION_TTL_SECONDS = RETENTION.clientRegistrationSeconds;
 
 /** The single scope this server understands. */
 export const MCP_SCOPE = "mcp";
@@ -63,6 +66,19 @@ export function oauthProviderOptions(
     // needs the `global_fetch_strictly_public` compat flag (wrangler.jsonc);
     // the provider gates on BOTH before advertising/serving it.
     clientIdMetadataDocumentEnabled: true,
+    // Reject non-loopback HTTP redirects before the provider stores a DCR client.
+    clientRegistrationCallback: ({ clientMetadata }) => {
+      const uris = (clientMetadata as { redirect_uris?: unknown }).redirect_uris;
+      if (
+        Array.isArray(uris) &&
+        uris.some((uri) => typeof uri !== "string" || !hasAllowedRedirectTransport(uri))
+      ) {
+        return {
+          code: "invalid_client_metadata",
+          description: "redirect_uris must use https for non-loopback hosts."
+        };
+      }
+    },
     // RFC 9728 protected-resource metadata — how Claude/Cursor connectors
     // discover that /mcp is OAuth-protected and where to authorize.
     resourceMetadata: {
@@ -90,8 +106,10 @@ export function allowDevUnauthenticated(
 }
 
 /**
- * workers-oauth-provider 0.8.1 serves RFC 8414 metadata only at the EXACT
- * path `/.well-known/oauth-authorization-server` (verified in its dist).
+ * workers-oauth-provider 0.10.2 serves RFC 8414 metadata only at the EXACT
+ * path `/.well-known/oauth-authorization-server` (verified in its dist —
+ * re-checked on the 0.10.1 → 0.10.2 upgrade; still the only well-known path it
+ * answers besides `/.well-known/oauth-protected-resource`).
  * Two families of client requests are aliased onto that path:
  *  1. the RFC 8414 §3.1 path-suffixed form (`.../oauth-authorization-server/mcp`)
  *     — our issuer has no path component, so only non-conforming clients that
